@@ -1,0 +1,38 @@
+{
+	email {$ACME_EMAIL:ops@example.com}
+}
+
+{$API_DOMAIN:api.localhost} {
+	encode gzip
+	reverse_proxy platform:8080
+}
+
+{$OPS_DOMAIN:ops.localhost} {
+	encode gzip
+	root * /srv/web-ops
+	try_files {path} /index.html
+	file_server
+	handle /api/* {
+		reverse_proxy platform:8080
+	}
+}
+
+{$PORTAL_DOMAIN:portal.localhost} {
+	encode gzip
+	root * /srv/web-portal
+	try_files {path} /index.html
+	file_server
+	handle /api/* {
+		reverse_proxy platform:8080
+	}
+}
+
+{$SUPPLIER_DOMAIN:supplier.localhost} {
+	encode gzip
+	root * /srv/web-supplier
+	try_files {path} /index.html
+	file_server
+	handle /api/* {
+		reverse_proxy platform:8080
+	}
+}

@@ -1,0 +1,919 @@
+openapi: 3.1.0
+info:
+  title: TechLane API
+  version: 1.0.0
+  description: Shared REST API for TechLane ops web, Android, and portals.
+servers:
+  - url: http://localhost:8080/api/v1
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /auth/login:
+    post:
+      security: []
+      summary: Login
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+  /auth/refresh:
+    post:
+      security: []
+      summary: Refresh access token
+      operationId: refresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        "200":
+          description: Tokens rotated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+  /me:
+    get:
+      summary: Current user
+      operationId: getMe
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+  /users:
+    get:
+      summary: List staff
+      operationId: listUsers
+      parameters:
+        - name: role
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Staff list
+    post:
+      summary: Create staff
+      operationId: createUser
+      responses:
+        "201":
+          description: Created
+  /users/{id}:
+    get:
+      summary: Get staff member
+      operationId: getUser
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Staff detail
+    patch:
+      summary: Update staff roles, branches, status
+      operationId: updateUser
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Updated
+  /users/{id}/commission:
+    put:
+      summary: Set optional technician commission
+      operationId: setUserCommission
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Updated
+  /roles:
+    get:
+      summary: Role permission catalog
+      operationId: listRoles
+      responses:
+        "200":
+          description: Roles with default permissions
+  /branches:
+    get:
+      summary: List branches
+      operationId: listBranches
+      responses:
+        "200":
+          description: Branches
+  /technicians:
+    get:
+      summary: List technicians
+      operationId: listTechnicians
+      responses:
+        "200":
+          description: Technicians
+  /commissions:
+    get:
+      summary: List commission entries
+      operationId: listCommissions
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Commission ledger
+  /commissions/{id}/approve:
+    post:
+      summary: Approve pending commission
+      operationId: approveCommission
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Approved
+  /commissions/{id}/mark-paid:
+    post:
+      summary: Mark commission paid
+      operationId: markCommissionPaid
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Paid
+  /customers:
+    post:
+      summary: Create customer
+      operationId: createCustomer
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCustomerRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+    get:
+      summary: List customers
+      operationId: listCustomers
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: List
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Customer"
+  /devices:
+    post:
+      summary: Register device
+      operationId: createDevice
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeviceRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+  /repairs:
+    post:
+      summary: Create repair job
+      operationId: createRepair
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRepairRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepairJob"
+    get:
+      summary: List repairs
+      operationId: listRepairs
+      parameters:
+        - name: branch_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RepairJob"
+  /repairs/{id}:
+    get:
+      summary: Get repair
+      operationId: getRepair
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepairJob"
+  /repairs/{id}/assign:
+    post:
+      summary: Assign technician
+      operationId: assignRepair
+      parameters:
+        - $ref: "#/components/parameters/Id"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [technician_id]
+              properties:
+                technician_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepairJob"
+  /repairs/{id}/status:
+    post:
+      summary: Change repair status
+      operationId: changeRepairStatus
+      parameters:
+        - $ref: "#/components/parameters/Id"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                note:
+                  type: string
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepairJob"
+  /part-requests:
+    post:
+      summary: Request part for repair
+      operationId: createPartRequest
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePartRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartRequest"
+  /part-requests/{id}/approve:
+    post:
+      summary: Approve part request and issue auth code
+      operationId: approvePartRequest
+      parameters:
+        - $ref: "#/components/parameters/Id"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                supplier_id:
+                  type: string
+                  format: uuid
+                unit_cost:
+                  type: number
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupplierIssue"
+  /supplier-issues/{id}/collect:
+    post:
+      summary: Record supplier part collection
+      operationId: collectSupplierIssue
+      parameters:
+        - $ref: "#/components/parameters/Id"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [auth_code]
+              properties:
+                auth_code:
+                  type: string
+      responses:
+        "200":
+          description: Collected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupplierIssue"
+  /payments:
+    post:
+      summary: Record payment
+      operationId: createPayment
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePaymentRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+  /risk/alerts:
+    get:
+      summary: List risk alerts
+      operationId: listRiskAlerts
+      responses:
+        "200":
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RiskAlert"
+  /sync/commands:
+    post:
+      summary: Submit offline sync command
+      operationId: submitSyncCommand
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncCommand"
+      responses:
+        "200":
+          description: Applied or idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncCommandResult"
+  /ready:
+    get:
+      security: []
+      summary: Readiness (database ping)
+      operationId: getReady
+      responses:
+        "200":
+          description: Ready
+        "503":
+          description: Not ready
+  /metrics:
+    get:
+      security: []
+      summary: Process metrics
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus text metrics
+  /notifications:
+    get:
+      summary: Staff notification inbox
+      operationId: listNotifications
+      parameters:
+        - name: unacked
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Inbox items
+  /notifications/{id}/ack:
+    post:
+      summary: Acknowledge staff notification
+      operationId: ackNotification
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "204":
+          description: Acked
+  /shop/profile:
+    get:
+      summary: Shop legal/tax profile
+      operationId: getShopProfile
+      responses:
+        "200":
+          description: Profile
+    put:
+      summary: Update shop legal/tax profile
+      operationId: putShopProfile
+      responses:
+        "200":
+          description: Updated
+  /devices/register:
+    post:
+      summary: Register staff app device
+      operationId: registerDevice
+      responses:
+        "200":
+          description: Registered
+  /devices:
+    get:
+      summary: List registered devices for current user
+      operationId: listDevices
+      responses:
+        "200":
+          description: Devices
+  /devices/{id}/revoke:
+    post:
+      summary: Revoke a registered device
+      operationId: revokeDevice
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "204":
+          description: Revoked
+  /repairs/{id}/warranty:
+    get:
+      summary: Get repair warranty
+      operationId: getRepairWarranty
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Warranty
+    post:
+      summary: Create warranty
+      operationId: createRepairWarranty
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "201":
+          description: Created
+  /repairs/{id}/receipt.pdf:
+    get:
+      summary: Download receipt PDF
+      operationId: getRepairReceiptPdf
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: PDF
+  /repairs/{id}/tax-invoice.pdf:
+    get:
+      summary: Download tax invoice PDF
+      operationId: getRepairTaxInvoicePdf
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: PDF
+  /payments/{id}/mpesa/reconcile:
+    post:
+      summary: Reconcile STK payment via Daraja Query API
+      operationId: reconcileMpesaPayment
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Payment
+  /repairs/{id}/attachments/presign:
+    post:
+      summary: Initiate presigned attachment upload
+      operationId: presignRepairAttachment
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "201":
+          description: Presign info
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    TokenPair:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        expires_in:
+          type: integer
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        display_name:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        roles:
+          type: array
+          items:
+            type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        branch_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+    Customer:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        full_name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+    CreateCustomerRequest:
+      type: object
+      required: [full_name]
+      properties:
+        full_name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        brand:
+          type: string
+        model:
+          type: string
+        imei:
+          type: string
+        serial_number:
+          type: string
+    CreateDeviceRequest:
+      type: object
+      required: [kind]
+      properties:
+        customer_id:
+          type: string
+          format: uuid
+        anonymous:
+          type: boolean
+        kind:
+          type: string
+        brand:
+          type: string
+        model:
+          type: string
+        imei:
+          type: string
+        serial_number:
+          type: string
+    RepairJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        branch_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        device_id:
+          type: string
+          format: uuid
+        technician_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        problem_summary:
+          type: string
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepairStatusEvent"
+    RepairStatusEvent:
+      type: object
+      properties:
+        status:
+          type: string
+        note:
+          type: string
+        at:
+          type: string
+          format: date-time
+        by:
+          type: string
+          format: uuid
+    CreateRepairRequest:
+      type: object
+      required: [branch_id, device_id, problem_summary]
+      properties:
+        branch_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        device_id:
+          type: string
+          format: uuid
+        problem_summary:
+          type: string
+        technician_id:
+          type: string
+          format: uuid
+    CreatePartRequest:
+      type: object
+      required: [repair_job_id, description]
+      properties:
+        repair_job_id:
+          type: string
+          format: uuid
+        variant_id:
+          type: string
+          format: uuid
+        description:
+          type: string
+        quantity:
+          type: integer
+          default: 1
+    PartRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        repair_job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        description:
+          type: string
+    SupplierIssue:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        part_request_id:
+          type: string
+          format: uuid
+        repair_job_id:
+          type: string
+          format: uuid
+        supplier_id:
+          type: string
+          format: uuid
+        auth_code:
+          type: string
+        status:
+          type: string
+        unit_cost:
+          type: number
+        collected_at:
+          type: string
+          format: date-time
+        reconciliation_status:
+          type: string
+    CreatePaymentRequest:
+      type: object
+      required: [method, amount, payable_type, payable_id]
+      properties:
+        method:
+          type: string
+          enum: [cash, mpesa_stk, mpesa_c2b, bank_paybill, bank_transfer, card, store_credit]
+        amount:
+          type: number
+        currency:
+          type: string
+          default: KES
+        payable_type:
+          type: string
+          enum: [repair, sale, order]
+        payable_id:
+          type: string
+          format: uuid
+        branch_id:
+          type: string
+          format: uuid
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        method:
+          type: string
+        amount:
+          type: number
+        status:
+          type: string
+    RiskAlert:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        severity:
+          type: string
+        title:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+    SyncCommand:
+      type: object
+      required: [action_id, command_type, payload]
+      properties:
+        action_id:
+          type: string
+          format: uuid
+        command_type:
+          type: string
+        branch_id:
+          type: string
+          format: uuid
+        device_id:
+          type: string
+          format: uuid
+        local_timestamp:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
+    SyncCommandResult:
+      type: object
+      properties:
+        action_id:
+          type: string
+          format: uuid
+        sync_status:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+        error:
+          type: string

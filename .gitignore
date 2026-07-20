@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+dist/
+build/
+.turbo/
+*.exe
+*.test
+bin/
+coverage/
+.venv/
+__pycache__/
+
+# Compiled Go binaries
+/platform
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Go
+vendor/
+
+# Android
+apps/android/.gradle/
+apps/android/**/build/
+apps/android/local.properties
+*.apk
+*.aab
+
+# Logs / data
+*.log
+data/
+tmp/
+
+# Generated clients (optional keep)
+# contracts/generated/

@@ -1,0 +1,9 @@
+-- TechLane schema bootstrap (database-per-service schemas in one instance)
+CREATE SCHEMA IF NOT EXISTS identity;
+CREATE SCHEMA IF NOT EXISTS repair;
+CREATE SCHEMA IF NOT EXISTS inventory;
+CREATE SCHEMA IF NOT EXISTS sales;
+CREATE SCHEMA IF NOT EXISTS payments;
+CREATE SCHEMA IF NOT EXISTS audit;
+CREATE SCHEMA IF NOT EXISTS notify;
+CREATE SCHEMA IF NOT EXISTS gateway;
