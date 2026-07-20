@@ -45,9 +45,12 @@ BEGIN
     )
   INTO technician;
 
-  IF TG_TABLE_NAME = 'user_roles' AND NEW.role = 'technician' THEN
+  -- NEW is a generic RECORD here (this function is shared by three tables
+  -- with different columns), so route through jsonb instead of NEW.<col> to
+  -- avoid "record \"new\" has no field ..." errors on the other tables.
+  IF TG_TABLE_NAME = 'user_roles' AND (to_jsonb(NEW)->>'role') = 'technician' THEN
     technician := true;
-  ELSIF TG_TABLE_NAME = 'employee_profiles' AND NEW.is_technician THEN
+  ELSIF TG_TABLE_NAME = 'employee_profiles' AND (to_jsonb(NEW)->>'is_technician')::boolean THEN
     technician := true;
   END IF;
 
@@ -58,7 +61,7 @@ BEGIN
 
     IF TG_TABLE_NAME = 'branch_memberships' AND NOT EXISTS (
       SELECT 1 FROM identity.branch_memberships
-      WHERE user_id = target_user_id AND branch_id = NEW.branch_id
+      WHERE user_id = target_user_id AND branch_id = (to_jsonb(NEW)->>'branch_id')::uuid
     ) THEN
       branch_count := branch_count + 1;
     END IF;
