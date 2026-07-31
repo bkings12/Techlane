@@ -1372,19 +1372,19 @@ export function listIntakePresets(kind?: string, opts?: { includeInactive?: bool
   if (kind) q.set("kind", kind);
   if (opts?.includeInactive) q.set("include_inactive", "true");
   const qs = q.toString();
-  return api<{ items: IntakePreset[] }>(`/repairs/intake-presets${qs ? `?${qs}` : ""}`);
+  return api<{ items: IntakePreset[] }>(`/intake-presets${qs ? `?${qs}` : ""}`);
 }
 
 export function createIntakePreset(body: { kind: string; label: string }) {
-  return api<IntakePreset>("/repairs/intake-presets", { method: "POST", body: JSON.stringify(body) });
+  return api<IntakePreset>("/intake-presets", { method: "POST", body: JSON.stringify(body) });
 }
 
 export function updateIntakePreset(id: string, body: { label?: string; is_active?: boolean }) {
-  return api<IntakePreset>(`/repairs/intake-presets/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  return api<IntakePreset>(`/intake-presets/${id}`, { method: "PATCH", body: JSON.stringify(body) });
 }
 
 export function deleteIntakePreset(id: string) {
-  return api<void>(`/repairs/intake-presets/${id}`, { method: "DELETE" });
+  return api<void>(`/intake-presets/${id}`, { method: "DELETE" });
 }
 
 export function listPermissions() {

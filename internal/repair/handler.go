@@ -56,10 +56,11 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 
 	mux.Handle("POST /devices", auth(http.HandlerFunc(h.createDevice)))
 	mux.Handle("POST /repairs/intake", auth(http.HandlerFunc(h.intake)))
-	mux.Handle("GET /repairs/intake-presets", auth(http.HandlerFunc(h.listIntakePresets)))
-	mux.Handle("POST /repairs/intake-presets", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.createIntakePreset))))
-	mux.Handle("PATCH /repairs/intake-presets/{id}", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.updateIntakePreset))))
-	mux.Handle("DELETE /repairs/intake-presets/{id}", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.deleteIntakePreset))))
+	// Top-level path: /repairs/intake-presets/{id} conflicts with /repairs/{id}/schedule in Go ServeMux.
+	mux.Handle("GET /intake-presets", auth(http.HandlerFunc(h.listIntakePresets)))
+	mux.Handle("POST /intake-presets", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.createIntakePreset))))
+	mux.Handle("PATCH /intake-presets/{id}", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.updateIntakePreset))))
+	mux.Handle("DELETE /intake-presets/{id}", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.deleteIntakePreset))))
 	mux.Handle("POST /repairs", auth(http.HandlerFunc(h.createRepair)))
 	mux.Handle("GET /repairs", auth(http.HandlerFunc(h.listRepairs)))
 	mux.Handle("GET /repairs/trash", auth(http.HandlerFunc(h.listTrashedRepairs)))
