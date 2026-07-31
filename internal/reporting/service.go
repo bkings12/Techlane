@@ -24,6 +24,13 @@ type Summary struct {
 	RepairsReady        int `json:"repairs_ready"`
 	RepairsCompleted    int `json:"repairs_completed_period"`
 	RepairsWaitingParts int `json:"repairs_waiting_parts"`
+	RepairsClosedPeriod int `json:"repairs_closed_period"`
+	RepairsOverdue      int `json:"repairs_overdue"`
+
+	// Money still sitting in the workshop / waiting at the counter.
+	RepairsPipelineValue    float64 `json:"repairs_pipeline_value"`
+	RepairsCollectibleValue float64 `json:"repairs_collectible_value"`
+	RepairsUnpriced         int     `json:"repairs_unpriced"`
 
 	PaymentsAllocatedPeriod float64 `json:"payments_allocated_period"`
 	PaymentsCashProvisional float64 `json:"payments_cash_provisional"`
@@ -65,12 +72,39 @@ type BranchMetric struct {
 	SalesTotal float64   `json:"sales_total_period"`
 }
 
+// ClosureMetric answers "why are we losing jobs?" — grouped by the structured
+// reason code recorded when a job is cancelled or written off.
+// RepairProfitability rolls up what we charged for labor against the parts we
+// consumed on jobs finished in the period, so an owner can see whether repair
+// work is actually earning after part costs.
+type RepairProfitability struct {
+	Jobs           int      `json:"jobs"`
+	LaborRevenue   float64  `json:"labor_revenue"`
+	PartsCost      float64  `json:"parts_cost"`
+	Margin         float64  `json:"margin"`
+	MarginPct      *float64 `json:"margin_pct,omitempty"`
+	LossMakingJobs int      `json:"loss_making_jobs"`
+	// Jobs that consumed a part with no buying price on record. Their true cost is
+	// higher than what is reported here, so margin is an upper bound.
+	JobsWithUnpricedParts int `json:"jobs_with_unpriced_parts"`
+}
+
+type ClosureMetric struct {
+	Status         string  `json:"status"`
+	Reason         string  `json:"reason"`
+	Count          int     `json:"count"`
+	LostLaborValue float64 `json:"lost_labor_value"`
+}
+
 type OperationsReport struct {
 	GeneratedAt  time.Time          `json:"generated_at"`
 	PeriodDays   int                `json:"period_days"`
 	Daily        []DailyMetric      `json:"daily"`
 	ByTechnician []TechnicianMetric `json:"by_technician"`
 	ByBranch     []BranchMetric     `json:"by_branch"`
+	Closures     []ClosureMetric    `json:"closures"`
+
+	Profitability RepairProfitability `json:"repair_profitability"`
 }
 
 func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID, days int) (*Summary, error) {
@@ -82,12 +116,64 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID, days int) (*S
 
 	_ = s.pool.QueryRow(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE status NOT IN ('completed', 'collected')),
-			COUNT(*) FILTER (WHERE status = 'completed'),
+			COUNT(*) FILTER (WHERE status NOT IN ('completed', 'collected', 'cancelled', 'unrepairable')),
+			COUNT(*) FILTER (WHERE status = 'ready_for_pickup'),
 			COUNT(*) FILTER (WHERE status = 'waiting_parts'),
-			COUNT(*) FILTER (WHERE status = 'collected' AND updated_at >= $2)
-		FROM repair.repair_jobs WHERE tenant_id = $1`, tenantID, since).
-		Scan(&out.RepairsOpen, &out.RepairsReady, &out.RepairsWaitingParts, &out.RepairsCompleted)
+			COUNT(*) FILTER (WHERE status = 'collected' AND updated_at >= $2),
+			COUNT(*) FILTER (WHERE status IN ('cancelled', 'unrepairable') AND closed_at >= $2),
+			COUNT(*) FILTER (WHERE promised_by < now() AND status NOT IN ('ready_for_pickup', 'completed', 'collected', 'cancelled', 'unrepairable'))
+		FROM repair.repair_jobs WHERE tenant_id = $1 AND deleted_at IS NULL`, tenantID, since).
+		Scan(&out.RepairsOpen, &out.RepairsReady, &out.RepairsWaitingParts, &out.RepairsCompleted, &out.RepairsClosedPeriod, &out.RepairsOverdue)
+
+	_ = s.pool.QueryRow(ctx, `
+		WITH open_jobs AS (
+			SELECT j.id, j.status,
+				COALESCE(j.labor_amount, 0)::float8 AS labor,
+				j.authorized_amount::float8 AS authorized,
+				COALESCE((
+					SELECT SUM(sl.line_total)::float8 FROM repair.job_sale_lines sl
+					WHERE sl.tenant_id = j.tenant_id AND sl.repair_job_id = j.id
+				), 0) AS sales,
+				(
+					SELECT (e.labor_amount + e.parts_amount)::float8
+					FROM repair.repair_estimates e
+					WHERE e.tenant_id = j.tenant_id AND e.repair_job_id = j.id AND e.status = 'approved'
+					ORDER BY e.decided_at DESC NULLS LAST, e.created_at DESC
+					LIMIT 1
+				) AS approved,
+				(
+					SELECT (e.labor_amount + e.parts_amount)::float8
+					FROM repair.repair_estimates e
+					WHERE e.tenant_id = j.tenant_id AND e.repair_job_id = j.id AND e.status = 'pending'
+					ORDER BY e.created_at DESC
+					LIMIT 1
+				) AS pending,
+				COALESCE((
+					SELECT SUM(a.amount)::float8
+					FROM payments.payment_allocations a
+					JOIN payments.payments p ON p.id = a.payment_id
+					WHERE a.tenant_id = j.tenant_id
+					  AND a.payable_type = 'repair'
+					  AND a.payable_id = j.id
+					  AND p.status IN ('allocated', 'confirmed', 'pending_handover', 'provisional')
+				), 0) AS paid
+			FROM repair.repair_jobs j
+			WHERE j.tenant_id = $1
+			  AND j.deleted_at IS NULL
+			  AND j.status NOT IN ('collected', 'cancelled', 'unrepairable')
+		),
+		valued AS (
+			SELECT *,
+				COALESCE(approved, NULLIF(labor, 0), authorized, pending, 0) + sales AS quoted,
+				GREATEST(0, COALESCE(approved, labor, 0) + sales - paid) AS balance
+			FROM open_jobs
+		)
+		SELECT
+			COALESCE(SUM(quoted), 0)::float8,
+			COALESCE(SUM(balance) FILTER (WHERE status IN ('ready_for_pickup', 'completed')), 0)::float8,
+			COUNT(*) FILTER (WHERE quoted <= 0)
+		FROM valued`, tenantID).
+		Scan(&out.RepairsPipelineValue, &out.RepairsCollectibleValue, &out.RepairsUnpriced)
 
 	_ = s.pool.QueryRow(ctx, `
 		SELECT
@@ -142,6 +228,7 @@ func (s *Service) Operations(ctx context.Context, tenantID uuid.UUID, days int) 
 		Daily:        make([]DailyMetric, 0),
 		ByTechnician: make([]TechnicianMetric, 0),
 		ByBranch:     make([]BranchMetric, 0),
+		Closures:     make([]ClosureMetric, 0),
 	}
 
 	rows, err := s.pool.Query(ctx, `
@@ -175,7 +262,7 @@ func (s *Service) Operations(ctx context.Context, tenantID uuid.UUID, days int) 
 
 	rows, err = s.pool.Query(ctx, `
 		SELECT u.id, u.display_name,
-			COUNT(j.id) FILTER (WHERE j.status NOT IN ('completed', 'collected')),
+			COUNT(j.id) FILTER (WHERE j.status NOT IN ('completed', 'collected', 'cancelled', 'unrepairable')),
 			COUNT(j.id) FILTER (WHERE j.status IN ('completed', 'collected') AND j.updated_at >= $2),
 			COALESCE(SUM(j.labor_amount) FILTER (WHERE j.status IN ('completed', 'collected') AND j.updated_at >= $2), 0)::float8
 		FROM identity.users u
@@ -204,7 +291,8 @@ func (s *Service) Operations(ctx context.Context, tenantID uuid.UUID, days int) 
 	rows, err = s.pool.Query(ctx, `
 		SELECT b.id, b.name,
 			(SELECT COUNT(*) FROM repair.repair_jobs j
-				WHERE j.tenant_id = b.tenant_id AND j.branch_id = b.id AND j.status NOT IN ('completed', 'collected')),
+				WHERE j.tenant_id = b.tenant_id AND j.branch_id = b.id
+				AND j.status NOT IN ('completed', 'collected', 'cancelled', 'unrepairable')),
 			(SELECT COUNT(*) FROM repair.repair_jobs j
 				WHERE j.tenant_id = b.tenant_id AND j.branch_id = b.id
 				AND j.status IN ('completed', 'collected') AND j.updated_at >= $2),
@@ -226,5 +314,50 @@ func (s *Service) Operations(ctx context.Context, tenantID uuid.UUID, days int) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
+
+	closures, err := s.pool.Query(ctx, `
+		SELECT status, closure_reason, COUNT(*),
+		       COALESCE(SUM(labor_amount), 0)::float8
+		FROM repair.repair_jobs
+		WHERE tenant_id = $1 AND closure_reason IS NOT NULL AND closed_at >= $2
+		GROUP BY status, closure_reason
+		ORDER BY COUNT(*) DESC`, tenantID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer closures.Close()
+	for closures.Next() {
+		var item ClosureMetric
+		if err := closures.Scan(&item.Status, &item.Reason, &item.Count, &item.LostLaborValue); err != nil {
+			return nil, err
+		}
+		out.Closures = append(out.Closures, item)
+	}
+	if err := closures.Err(); err != nil {
+		return nil, err
+	}
+	closures.Close()
+
+	_ = s.pool.QueryRow(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(j.labor_amount), 0)::float8,
+		       COALESCE(SUM(j.parts_cost), 0)::float8,
+		       COUNT(*) FILTER (WHERE COALESCE(j.parts_cost, 0) > j.labor_amount),
+		       COUNT(*) FILTER (WHERE EXISTS (
+		           SELECT 1 FROM repair.job_costs c
+		           WHERE c.repair_job_id = j.id AND c.unit_cost <= 0
+		       ))
+		FROM repair.repair_jobs j
+		WHERE j.tenant_id = $1 AND j.status IN ('completed', 'collected') AND j.updated_at >= $2`, tenantID, since).
+		Scan(&out.Profitability.Jobs, &out.Profitability.LaborRevenue,
+			&out.Profitability.PartsCost, &out.Profitability.LossMakingJobs,
+			&out.Profitability.JobsWithUnpricedParts)
+	out.Profitability.Margin = out.Profitability.LaborRevenue - out.Profitability.PartsCost
+	if out.Profitability.LaborRevenue > 0 {
+		pct := out.Profitability.Margin / out.Profitability.LaborRevenue * 100
+		out.Profitability.MarginPct = &pct
+	}
+
 	return out, nil
 }

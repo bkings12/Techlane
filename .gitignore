@@ -42,3 +42,6 @@ tmp/
 
 # Generated clients (optional keep)
 # contracts/generated/
+
+# Server-only static assets (never rsync --delete without preserving)
+/web-dist/

@@ -22,6 +22,8 @@ type ShopProfile struct {
 	Country      string    `json:"country"`
 	VATRateBPS   int       `json:"vat_rate_bps"`
 	VATInclusive bool      `json:"vat_inclusive"`
+	CurrencyCode string    `json:"currency_code"`
+	Locale       string    `json:"locale"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
@@ -34,15 +36,17 @@ type UpsertShopProfileInput struct {
 	Country      *string
 	VATRateBPS   *int
 	VATInclusive *bool
+	CurrencyCode *string
+	Locale       *string
 }
 
 func (s *Service) GetShopProfile(ctx context.Context, tenantID uuid.UUID) (*ShopProfile, error) {
 	var p ShopProfile
 	var legalName, tin, addr1, addr2, city *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT tenant_id, legal_name, tin, address_line1, address_line2, city, country, vat_rate_bps, vat_inclusive, updated_at
+		SELECT tenant_id, legal_name, tin, address_line1, address_line2, city, country, vat_rate_bps, vat_inclusive, currency_code, locale, updated_at
 		FROM identity.shop_profiles WHERE tenant_id = $1`, tenantID).
-		Scan(&p.TenantID, &legalName, &tin, &addr1, &addr2, &city, &p.Country, &p.VATRateBPS, &p.VATInclusive, &p.UpdatedAt)
+		Scan(&p.TenantID, &legalName, &tin, &addr1, &addr2, &city, &p.Country, &p.VATRateBPS, &p.VATInclusive, &p.CurrencyCode, &p.Locale, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		p = defaultShopProfile(tenantID)
 		var tenantName string
@@ -82,6 +86,7 @@ func defaultShopProfile(tenantID uuid.UUID) ShopProfile {
 	return ShopProfile{
 		TenantID: tenantID, Country: "KE",
 		VATRateBPS: DefaultVATRateBPS, VATInclusive: true,
+		CurrencyCode: "KES", Locale: "en-KE",
 		UpdatedAt: time.Now().UTC(),
 	}
 }
@@ -118,11 +123,21 @@ func (s *Service) UpsertShopProfile(ctx context.Context, tenantID uuid.UUID, in 
 	if in.VATInclusive != nil {
 		cur.VATInclusive = *in.VATInclusive
 	}
+	if in.CurrencyCode != nil && strings.TrimSpace(*in.CurrencyCode) != "" {
+		code := strings.ToUpper(strings.TrimSpace(*in.CurrencyCode))
+		if len(code) != 3 {
+			return nil, errors.New("currency_code must be a 3-letter ISO 4217 code, e.g. KES, USD, EUR")
+		}
+		cur.CurrencyCode = code
+	}
+	if in.Locale != nil && strings.TrimSpace(*in.Locale) != "" {
+		cur.Locale = strings.TrimSpace(*in.Locale)
+	}
 	now := time.Now().UTC()
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO identity.shop_profiles
-			(tenant_id, legal_name, tin, address_line1, address_line2, city, country, vat_rate_bps, vat_inclusive, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			(tenant_id, legal_name, tin, address_line1, address_line2, city, country, vat_rate_bps, vat_inclusive, currency_code, locale, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			legal_name = EXCLUDED.legal_name,
 			tin = EXCLUDED.tin,
@@ -132,9 +147,12 @@ func (s *Service) UpsertShopProfile(ctx context.Context, tenantID uuid.UUID, in 
 			country = EXCLUDED.country,
 			vat_rate_bps = EXCLUDED.vat_rate_bps,
 			vat_inclusive = EXCLUDED.vat_inclusive,
+			currency_code = EXCLUDED.currency_code,
+			locale = EXCLUDED.locale,
 			updated_at = EXCLUDED.updated_at`,
 		tenantID, nullIfEmpty(cur.LegalName), nullIfEmpty(cur.TIN), nullIfEmpty(cur.AddressLine1),
-		nullIfEmpty(cur.AddressLine2), nullIfEmpty(cur.City), cur.Country, cur.VATRateBPS, cur.VATInclusive, now)
+		nullIfEmpty(cur.AddressLine2), nullIfEmpty(cur.City), cur.Country, cur.VATRateBPS, cur.VATInclusive,
+		cur.CurrencyCode, cur.Locale, now)
 	if err != nil {
 		return nil, err
 	}

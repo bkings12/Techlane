@@ -16,6 +16,12 @@ type TokenPair = {
   expires_in: number;
 };
 
+type LoginOutcome = {
+  tokens?: TokenPair;
+  mfa_required?: boolean;
+  mfa_challenge?: string;
+};
+
 const TOKEN_KEY = "techlane.access";
 const REFRESH_KEY = "techlane.refresh";
 const SESSION_EXPIRED_EVENT = "techlane:session-expired";
@@ -24,6 +30,22 @@ export class SessionExpiredError extends Error {
   constructor(message = "Session expired. Please sign in again.") {
     super(message);
     this.name = "SessionExpiredError";
+  }
+}
+
+export class AccountLockedError extends Error {
+  lockedUntil: string;
+  constructor(message: string, lockedUntil: string) {
+    super(message);
+    this.name = "AccountLockedError";
+    this.lockedUntil = lockedUntil;
+  }
+}
+
+export class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConflictError";
   }
 }
 
@@ -59,26 +81,46 @@ export function onSessionExpired(handler: () => void) {
   return () => window.removeEventListener(SESSION_EXPIRED_EVENT, listener);
 }
 
-let refreshInFlight: Promise<boolean> | null = null;
+/**
+ * "rejected" means the server refused the refresh token (sign-in required);
+ * "unavailable" means we never got an answer (offline, network change, 5xx),
+ * which must not destroy a still-valid session.
+ */
+type RefreshOutcome = "refreshed" | "rejected" | "unavailable";
 
-async function refreshAccessToken(): Promise<boolean> {
+let refreshInFlight: Promise<RefreshOutcome> | null = null;
+
+async function refreshAccessToken(): Promise<RefreshOutcome> {
   if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = (async () => {
+  refreshInFlight = (async (): Promise<RefreshOutcome> => {
     const refresh = getRefreshToken();
-    if (!refresh) return false;
+    if (!refresh) return "rejected";
+    let res: Response;
     try {
-      const res = await fetch(`${API_BASE}/auth/refresh`, {
+      res = await fetch(`${API_BASE}/auth/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: refresh }),
       });
-      if (!res.ok) return false;
-      const tokens = (await res.json()) as TokenPair;
-      if (!tokens.access_token || !tokens.refresh_token) return false;
-      persistTokens(tokens);
-      return true;
     } catch {
-      return false;
+      return "unavailable";
+    }
+    if (res.status >= 500 || res.status === 429) return "unavailable";
+    if (!res.ok) {
+      // Refresh tokens are single-use and rotate server-side. If another tab
+      // already refreshed with this same token while we were in flight, ours
+      // gets rejected — but the session is fine, just not the token we tried.
+      // Only declare it dead if localStorage still holds what we started with.
+      if (getRefreshToken() !== refresh) return "refreshed";
+      return "rejected";
+    }
+    try {
+      const tokens = (await res.json()) as TokenPair;
+      if (!tokens.access_token || !tokens.refresh_token) return "rejected";
+      persistTokens(tokens);
+      return "refreshed";
+    } catch {
+      return "unavailable";
     }
   })().finally(() => {
     refreshInFlight = null;
@@ -86,9 +128,15 @@ async function refreshAccessToken(): Promise<boolean> {
   return refreshInFlight;
 }
 
+async function parseErrorBody(res: Response) {
+  return (await res.json().catch(() => ({}))) as {
+    error?: { message?: string; code?: string; locked_until?: string };
+  };
+}
+
 async function parseErrorMessage(res: Response) {
-  const body = await res.json().catch(() => ({}));
-  return (body as { error?: { message?: string } })?.error?.message ?? res.statusText;
+  const body = await parseErrorBody(res);
+  return body?.error?.message ?? res.statusText;
 }
 
 export async function api<T>(
@@ -107,13 +155,28 @@ export async function api<T>(
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (res.status === 401 && wantsAuth) {
     if (!options._retried) {
-      const refreshed = await refreshAccessToken();
-      if (refreshed) {
+      const outcome = await refreshAccessToken();
+      if (outcome === "refreshed") {
         return api<T>(path, { ...options, _retried: true });
+      }
+      // Couldn't reach the auth server — keep the session and let the caller
+      // retry rather than bouncing the user to the login screen on a blip.
+      if (outcome === "unavailable") {
+        throw new Error("Network unavailable — could not refresh session.");
       }
     }
     notifySessionExpired();
     throw new SessionExpiredError(await parseErrorMessage(res));
+  }
+  if (res.status === 423) {
+    const body = await parseErrorBody(res);
+    throw new AccountLockedError(
+      body?.error?.message ?? "Account temporarily locked",
+      body?.error?.locked_until ?? "",
+    );
+  }
+  if (res.status === 409) {
+    throw new ConflictError(await parseErrorMessage(res));
   }
   if (!res.ok) {
     throw new Error(await parseErrorMessage(res));
@@ -122,14 +185,83 @@ export async function api<T>(
   return res.json() as Promise<T>;
 }
 
-export async function login(email: string, password: string) {
-  const tokens = await api<TokenPair>("/auth/login", {
+export type LoginResult = { status: "ok" } | { status: "mfa_required"; challenge: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
+  const outcome = await api<LoginOutcome>("/auth/login", {
     method: "POST",
     auth: false,
     body: JSON.stringify({ email, password }),
   });
+  if (outcome.mfa_required && outcome.mfa_challenge) {
+    return { status: "mfa_required", challenge: outcome.mfa_challenge };
+  }
+  if (!outcome.tokens) throw new Error("Login failed: no tokens issued");
+  persistTokens(outcome.tokens);
+  return { status: "ok" };
+}
+
+export async function signup(input: {
+  company_name: string;
+  owner_name: string;
+  email: string;
+  password: string;
+}): Promise<LoginResult> {
+  const outcome = await api<LoginOutcome>("/auth/signup", {
+    method: "POST",
+    auth: false,
+    body: JSON.stringify(input),
+  });
+  if (!outcome.tokens) throw new Error("Signup failed: no tokens issued");
+  persistTokens(outcome.tokens);
+  return { status: "ok" };
+}
+
+export async function verifyMfaLogin(challenge: string, code: string) {
+  const tokens = await api<TokenPair>("/auth/mfa/verify", {
+    method: "POST",
+    auth: false,
+    body: JSON.stringify({ mfa_challenge: challenge, code }),
+  });
   persistTokens(tokens);
-  return tokens;
+}
+
+export async function getMfaStatus() {
+  return api<{ enabled: boolean }>("/auth/mfa/status");
+}
+
+export async function setupMfa() {
+  return api<{ secret: string; otpauth_url: string }>("/auth/mfa/setup", { method: "POST" });
+}
+
+export async function enableMfa(code: string) {
+  return api<{ backup_codes: string[] }>("/auth/mfa/enable", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function disableMfa(password: string) {
+  return api<void>("/auth/mfa/disable", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export async function forgotPassword(email: string) {
+  return api<{ message: string }>("/auth/forgot-password", {
+    method: "POST",
+    auth: false,
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function resetPassword(token: string, password: string) {
+  return api<{ message: string }>("/auth/reset-password", {
+    method: "POST",
+    auth: false,
+    body: JSON.stringify({ token, password }),
+  });
 }
 
 export async function getMe() {
@@ -149,6 +281,22 @@ export async function listRepairs(params?: {
   if (params?.technician_id) q.set("technician_id", params.technician_id);
   const qs = q.toString();
   return api<{ items: RepairJob[] }>(`/repairs${qs ? `?${qs}` : ""}`);
+}
+
+export async function listTrashedRepairs() {
+  return api<{ items: RepairJob[] }>("/repairs/trash");
+}
+
+export async function trashRepair(id: string) {
+  return api<void>(`/repairs/${id}`, { method: "DELETE" });
+}
+
+export async function restoreRepair(id: string) {
+  return api<void>(`/repairs/${id}/restore`, { method: "POST", body: "{}" });
+}
+
+export async function purgeRepair(id: string) {
+  return api<void>(`/repairs/${id}/purge`, { method: "DELETE" });
 }
 
 export type Customer = {
@@ -177,6 +325,18 @@ export type RepairNote = {
   author_name?: string;
 };
 
+export type SearchResult = {
+  type: "customer" | "repair" | "order";
+  id: string;
+  title: string;
+  subtitle?: string;
+  url: string;
+};
+
+export async function globalSearch(q: string) {
+  return api<{ results: SearchResult[] }>(`/search?q=${encodeURIComponent(q)}`);
+}
+
 export async function listCustomers(q?: string) {
   const qs = q ? `?q=${encodeURIComponent(q)}` : "";
   return api<{ items: Customer[] }>(`/customers${qs}`);
@@ -188,6 +348,13 @@ export async function getCustomer(id: string) {
 
 export async function createCustomer(body: { full_name: string; phone?: string; email?: string }) {
   return api<Customer>("/customers", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateCustomer(
+  id: string,
+  body: { full_name: string; phone?: string | null; email?: string | null },
+) {
+  return api<Customer>(`/customers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
 }
 
 export async function createDevice(body: {
@@ -208,8 +375,82 @@ export async function createRepair(body: {
   device_id: string;
   problem_summary: string;
   technician_id?: string;
+  labor_amount?: number;
+  promised_by?: string;
+  customer_waiting?: boolean;
+  estimated_wait_minutes?: number;
+  intake_accessories?: string[];
+  intake_condition?: string;
+  device_passcode?: string;
+  service_type?: "repair" | "quick_replacement";
+  customer_credit?: boolean;
+  credit_due_date?: string;
 }) {
   return api<RepairJob>("/repairs", { method: "POST", body: JSON.stringify(body) });
+}
+
+export type IntakeResult = {
+  customer?: Customer;
+  device: Device;
+  repair: RepairJob;
+  estimate?: RepairEstimate;
+};
+
+/** Atomic counter intake — customer + device + job (+ optional estimate) in one request. */
+export async function intakeRepair(body: {
+  branch_id: string;
+  customer_id?: string;
+  anonymous?: boolean;
+  customer_name?: string;
+  customer_phone?: string;
+  device_kind: string;
+  brand?: string;
+  model?: string;
+  imei?: string;
+  serial_number?: string;
+  problem_summary: string;
+  condition_tags?: string[];
+  estimate_labor_amount?: number;
+  estimate_parts_amount?: number;
+  technician_id?: string;
+}) {
+  return api<IntakeResult>("/repairs/intake", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateRepairSchedule(id: string, promisedBy?: string) {
+  return api<RepairJob>(`/repairs/${id}/schedule`, {
+    method: "PATCH",
+    body: JSON.stringify({ promised_by: promisedBy || null }),
+  });
+}
+
+export async function updateRepairDetails(
+  repairId: string,
+  body: {
+    expected_version: number;
+    problem_summary?: string;
+    device_kind?: string;
+    device_brand?: string;
+    device_model?: string;
+    device_imei?: string;
+    device_serial?: string;
+    customer_id?: string;
+    anonymous?: boolean;
+    reason: string;
+  },
+) {
+  return api<RepairJob>(`/repairs/${repairId}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function revealRepairPasscode(id: string) {
+  return api<{ passcode: string }>(`/repairs/${id}/passcode/reveal`, { method: "POST", body: "{}" });
+}
+
+export async function createRepairRework(id: string, reason: string) {
+  return api<RepairJob>(`/repairs/${id}/rework`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export async function listRepairNotes(repairId: string) {
@@ -243,10 +484,19 @@ export type RepairStatusEvent = {
   by?: string;
 };
 
+export type WorkAuthorization = {
+  authorized_at?: string;
+  authorized_by?: string;
+  source?: string;
+  authorized_amount?: number;
+  variance_reason?: string;
+};
+
 export type RepairJob = {
   id: string;
   job_number?: number;
   job_code?: string;
+  pickup_code?: string;
   branch_id: string;
   customer_id?: string;
   customer_name?: string;
@@ -257,9 +507,35 @@ export type RepairJob = {
   status: string;
   problem_summary: string;
   labor_amount?: number;
+  sale_lines_total?: number;
+  sale_lines?: JobSaleLine[];
+  authorized_amount?: number;
+  approved_estimate_total?: number;
+  pending_estimate_total?: number;
+  paid_total?: number;
+  amount_due?: number;
+  balance_due?: number;
+  quoted_value?: number;
   created_at?: string;
+  promised_by?: string;
+  customer_waiting?: boolean;
+  estimated_wait_minutes?: number;
+  intake_accessories?: string[];
+  intake_condition?: string;
+  has_device_passcode?: boolean;
+  parent_job_id?: string;
+  parent_job_code?: string;
+  rework_reason?: string;
+  deleted_at?: string;
+  deleted_by?: string;
+  closure_reason?: string;
+  closed_at?: string;
+  version?: number;
+  authorization?: WorkAuthorization;
+  handover?: Handover | null;
   timeline?: RepairStatusEvent[];
   next_statuses?: string[];
+  closure_reasons?: Record<string, string[]>;
 };
 
 export type SupplierIssue = {
@@ -301,8 +577,9 @@ export type PartRequestQuote = {
 export type RepairEstimate = {
   id: string;
   repair_job_id: string;
-  labor_amount: number;
-  parts_amount: number;
+  total_amount: number;
+  labor_amount?: number;
+  parts_amount?: number;
   currency: string;
   notes?: string;
   status: string;
@@ -316,13 +593,27 @@ export type Payment = {
   method: string;
   amount: number;
   status: string;
+  created_at?: string;
   checkout_request_id?: string;
   phone?: string;
   account_reference?: string;
+  payable_type?: string;
+  payable_id?: string;
+  job_code?: string;
+  customer_id?: string;
+  customer_name?: string;
+  sale_label?: string;
 };
 
 export async function getRepair(id: string) {
   return api<RepairJob>(`/repairs/${id}`);
+}
+
+export async function resendRepairIntakeSMS(id: string) {
+  return api<{ status: string; template_key: string; phone: string }>(`/repairs/${id}/sms/resend-intake`, {
+    method: "POST",
+    body: "{}",
+  });
 }
 
 export async function assignRepair(id: string, technicianId: string) {
@@ -334,9 +625,114 @@ export async function assignRepair(id: string, technicianId: string) {
 
 export async function changeRepairStatus(
   id: string,
-  body: { status: string; note?: string; labor_amount?: number },
+  body: {
+    status: string;
+    note?: string;
+    labor_amount?: number;
+    closure_reason?: string;
+    variance_reason?: string;
+    force?: boolean;
+  },
 ) {
   return api<RepairJob>(`/repairs/${id}/status`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function authorizeRepairWork(id: string, body: { amount?: number; note: string }) {
+  return api<RepairJob>(`/repairs/${id}/authorize-work`, { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Write the job charge down to successful payments so the remaining balance clears. */
+export async function acceptPaidCharge(id: string) {
+  return api<RepairJob>(`/repairs/${id}/accept-paid-charge`, { method: "POST", body: "{}" });
+}
+
+export type Handover = {
+  id: string;
+  repair_job_id: string;
+  collected_by_name: string;
+  relationship: string;
+  id_number?: string;
+  verification_method: "otp" | "staff_vouched";
+  verified_at?: string;
+  released_by?: string;
+  note?: string;
+  created_at: string;
+};
+
+export async function sendHandoverCode(repairId: string) {
+  return api<{ status: string }>(`/repairs/${repairId}/handover/send-code`, { method: "POST", body: "{}" });
+}
+
+export async function recordHandover(
+  repairId: string,
+  body: {
+    collected_by_name: string;
+    relationship?: string;
+    id_number?: string;
+    note?: string;
+    otp_code?: string;
+    pickup_code?: string;
+  },
+) {
+  return api<Handover>(`/repairs/${repairId}/handover`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export type PickupLookup = {
+  id: string;
+  job_code?: string;
+  pickup_code?: string;
+  status: string;
+  problem_summary?: string;
+  balance_due?: number;
+  can_release?: boolean;
+  customer_name?: string;
+};
+
+export async function lookupRepairByPickupCode(code: string) {
+  const q = encodeURIComponent(code.trim());
+  return api<PickupLookup>(`/repairs/by-pickup-code?code=${q}`);
+}
+
+export async function collectRepairByPickupCode(body: {
+  pickup_code: string;
+  collected_by_name: string;
+  relationship?: string;
+  note?: string;
+}) {
+  return api<Handover>("/repairs/collect", { method: "POST", body: JSON.stringify(body) });
+}
+
+export type JobCost = {
+  id: string;
+  cost_type: string;
+  description: string;
+  quantity: number;
+  unit_cost: number;
+  amount: number;
+  created_at: string;
+};
+
+export type JobMargin = {
+  labor_amount: number;
+  parts_cost: number;
+  margin: number;
+  margin_pct?: number;
+  costs: JobCost[];
+  unpriced_parts: number;
+};
+
+export async function getRepairMargin(id: string) {
+  return api<JobMargin>(`/repairs/${id}/margin`);
+}
+
+export async function issuePartFromStock(
+  partRequestId: string,
+  body: { variant_id: string; location_id: string; quantity?: number },
+) {
+  return api<PartRequest>(`/part-requests/${partRequestId}/issue-from-stock`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export async function listPartRequests(repairJobId: string) {
@@ -356,6 +752,7 @@ export async function createPartRequest(body: {
   branch_id: string;
   description: string;
   quantity?: number;
+  supplier_id?: string;
 }) {
   return api<PartRequest>("/part-requests", { method: "POST", body: JSON.stringify(body) });
 }
@@ -387,7 +784,7 @@ export async function listRepairEstimates(repairId: string) {
 
 export async function createRepairEstimate(
   repairId: string,
-  body: { labor_amount: number; parts_amount: number; notes?: string; expires_hours?: number },
+  body: { total_amount: number; notes?: string; expires_hours?: number },
 ) {
   return api<RepairEstimate>(`/repairs/${repairId}/estimates`, {
     method: "POST",
@@ -520,6 +917,19 @@ export async function matchC2BTransaction(id: string, paymentId: string) {
   });
 }
 
+/** Resolves an unmatched C2B deposit by creating a one-line sale for the chosen
+ * product/quantity — deducting stock — and allocating the full received amount
+ * to it, instead of matching against a pre-existing payment. */
+export async function matchC2BToNewSale(
+  id: string,
+  body: { branch_id: string; location_id: string; variant_id: string; quantity: number },
+) {
+  return api<Payment>(`/payments/c2b/${id}/match-sale`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export type ReportSummary = {
   generated_at: string;
   period_days: number;
@@ -527,6 +937,11 @@ export type ReportSummary = {
   repairs_ready: number;
   repairs_completed_period: number;
   repairs_waiting_parts: number;
+  repairs_closed_period: number;
+  repairs_overdue: number;
+  repairs_pipeline_value: number;
+  repairs_collectible_value: number;
+  repairs_unpriced: number;
   payments_allocated_period: number;
   payments_cash_provisional: number;
   payments_stk_pending: number;
@@ -569,12 +984,31 @@ export type BranchMetric = {
   sales_total_period: number;
 };
 
+export type RepairProfitability = {
+  jobs: number;
+  labor_revenue: number;
+  parts_cost: number;
+  margin: number;
+  margin_pct?: number;
+  loss_making_jobs: number;
+  jobs_with_unpriced_parts: number;
+};
+
+export type ClosureMetric = {
+  status: string;
+  reason: string;
+  count: number;
+  lost_labor_value: number;
+};
+
 export type OperationsReport = {
   generated_at: string;
   period_days: number;
   daily: DailyMetric[];
   by_technician: TechnicianMetric[];
   by_branch: BranchMetric[];
+  closures: ClosureMetric[];
+  repair_profitability: RepairProfitability;
 };
 
 export async function getOperationsReport(days = 7) {
@@ -609,6 +1043,22 @@ export async function listAuditEvents(params?: {
   if (params?.limit) q.set("limit", String(params.limit));
   const qs = q.toString();
   return api<{ items: AuditEvent[] }>(`/audit/events${qs ? `?${qs}` : ""}`);
+}
+
+export type ErrorEvent = {
+  id: string;
+  tenant_id?: string;
+  method: string;
+  route: string;
+  status: number;
+  message: string;
+  stack?: string;
+  correlation_id?: string;
+  created_at: string;
+};
+
+export async function listErrorEvents(limit = 100) {
+  return api<{ items: ErrorEvent[] }>(`/platform/errors?limit=${limit}`);
 }
 
 export type PaymentProviderSettings = {
@@ -661,6 +1111,18 @@ export type SMSSettings = {
   updated_at: string;
 };
 
+export type SMSTemplate = {
+  key: string;
+  label: string;
+  description: string;
+  audience: string;
+  helpers: string[];
+  default_body: string;
+  body: string;
+  is_customized: boolean;
+  updated_at?: string;
+};
+
 export async function getSMSSettings() {
   return api<SMSSettings>("/sms/settings");
 }
@@ -676,6 +1138,67 @@ export async function updateSMSSettings(body: {
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+export async function listSMSTemplates() {
+  return api<{ items: SMSTemplate[] }>("/sms/templates");
+}
+
+export async function updateSMSTemplate(key: string, body: string) {
+  return api<SMSTemplate>(`/sms/templates/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ body }),
+  });
+}
+
+export type WhatsAppSettings = {
+  tenant_id: string;
+  enabled: boolean;
+  notify_customers: boolean;
+  notify_suppliers: boolean;
+  also_send_sms: boolean;
+  service_configured: boolean;
+  connected: boolean;
+  connection_status: string;
+  session_id: string;
+  updated_at: string;
+};
+
+export type WhatsAppQR = {
+  success?: boolean;
+  status: string;
+  qr?: string | null;
+  message?: string;
+  user?: unknown;
+  error?: string;
+};
+
+export async function getWhatsAppSettings() {
+  return api<WhatsAppSettings>("/whatsapp/settings");
+}
+
+export async function updateWhatsAppSettings(body: {
+  enabled?: boolean;
+  notify_customers?: boolean;
+  notify_suppliers?: boolean;
+  also_send_sms?: boolean;
+}) {
+  return api<WhatsAppSettings>("/whatsapp/settings", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getWhatsAppQR() {
+  return api<WhatsAppQR>("/whatsapp/qr");
+}
+
+export async function disconnectWhatsApp() {
+  return api<{ ok: boolean }>("/whatsapp/disconnect", { method: "POST" });
+}
+
+export async function reconnectWhatsApp() {
+  return api<{ ok: boolean }>("/whatsapp/reconnect", { method: "POST" });
 }
 
 export type Supplier = {
@@ -771,7 +1294,15 @@ export type RiskAlert = {
   details?: Record<string, unknown>;
 };
 
-export type Branch = { id: string; name: string; code: string };
+export type Branch = {
+  id: string;
+  name: string;
+  code: string;
+  location?: string;
+  phone?: string;
+  hours?: string;
+  map_url?: string;
+};
 
 export type EmployeeProfile = {
   user_id: string;
@@ -876,11 +1407,21 @@ export function listBranches() {
   return api<{ items: Branch[] }>("/branches");
 }
 
-export function createBranch(body: { name: string; code: string }) {
+export function createBranch(body: {
+  name: string;
+  code: string;
+  location?: string;
+  phone?: string;
+  hours?: string;
+  map_url?: string;
+}) {
   return api<Branch>("/branches", { method: "POST", body: JSON.stringify(body) });
 }
 
-export function updateBranch(id: string, body: { name?: string; code?: string }) {
+export function updateBranch(
+  id: string,
+  body: { name?: string; code?: string; location?: string; phone?: string; hours?: string; map_url?: string },
+) {
   return api<Branch>(`/branches/${id}`, { method: "PATCH", body: JSON.stringify(body) });
 }
 
@@ -929,9 +1470,15 @@ export type StockLocation = {
 export type SaleItem = {
   id?: string;
   variant_id: string;
+  /** Set (with variant_id all-zero) for a quick-sale line not in the catalog. */
+  description?: string;
   quantity: number;
   unit_price: number;
   line_total?: number;
+  /** Internal only — never present on the customer receipt. */
+  unit_cost?: number;
+  supplier_id?: string;
+  margin?: number;
 };
 
 export type Sale = {
@@ -955,11 +1502,28 @@ export type Product = {
   id: string;
   name: string;
   brand?: string;
+  category_id?: string;
   category?: string;
+  category_path?: string;
   description?: string;
   image_url?: string;
+  has_image?: boolean;
+  image_updated_at?: string;
   pos_visible?: boolean;
   online_visible?: boolean;
+  featured?: boolean;
+  new_arrival?: boolean;
+  bestseller?: boolean;
+  storefront_sort_order?: number;
+};
+
+export type InventoryCategory = {
+  id: string;
+  name: string;
+  parent_id?: string;
+  path: string;
+  depth: number;
+  children?: InventoryCategory[];
 };
 
 export type Variant = {
@@ -967,13 +1531,40 @@ export type Variant = {
   product_id: string;
   sku: string;
   sell_price: number;
+  cost_price: number;
 };
 
 export async function listProducts() {
   return api<{ items: Product[] }>("/products");
 }
 
-export async function createProduct(body: { name: string; brand?: string }) {
+export async function listCategories() {
+  return api<{ items: InventoryCategory[] }>("/categories");
+}
+
+export async function createCategory(body: { name: string; parent_id?: string }) {
+  return api<InventoryCategory>("/categories", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateCategory(
+  id: string,
+  body: { name?: string; parent_id?: string; clear_parent?: boolean },
+) {
+  return api<InventoryCategory>(`/categories/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function deleteCategory(id: string) {
+  return api<void>(`/categories/${id}`, { method: "DELETE" });
+}
+
+export async function createProduct(body: {
+  name: string;
+  brand?: string;
+  category_id?: string;
+  category?: string;
+  description?: string;
+  image_url?: string;
+}) {
   return api<Product>("/products", { method: "POST", body: JSON.stringify(body) });
 }
 
@@ -982,13 +1573,39 @@ export async function updateProduct(
   body: {
     name?: string;
     brand?: string;
+    category_id?: string;
+    clear_category?: boolean;
     category?: string;
     description?: string;
     image_url?: string;
     online_visible?: boolean;
+    featured?: boolean;
+    new_arrival?: boolean;
+    bestseller?: boolean;
+    storefront_sort_order?: number;
   },
 ) {
   return api<Product>(`/products/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function uploadProductImage(id: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const headers = new Headers();
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_BASE}/products/${id}/image`, { method: "POST", headers, body: form });
+  if (!res.ok) throw new Error(await parseErrorMessage(res));
+  return (await res.json()) as Product;
+}
+
+export async function deleteProductImage(id: string) {
+  return api<Product>(`/products/${id}/image`, { method: "DELETE" });
+}
+
+export function productImageURL(productId: string, cacheBust?: string) {
+  const base = `${API_BASE}/inventory/public/products/${encodeURIComponent(productId)}/image`;
+  return cacheBust ? `${base}?v=${encodeURIComponent(cacheBust)}` : base;
 }
 
 export async function listVariants(productId?: string) {
@@ -996,11 +1613,16 @@ export async function listVariants(productId?: string) {
   return api<{ items: Variant[] }>(`/variants${q}`);
 }
 
-export async function createVariant(body: { product_id: string; sku: string; sell_price: number }) {
+export async function createVariant(body: {
+  product_id: string;
+  sku: string;
+  sell_price: number;
+  cost_price?: number;
+}) {
   return api<Variant>("/variants", { method: "POST", body: JSON.stringify(body) });
 }
 
-export async function updateVariant(id: string, body: { sku?: string; sell_price?: number }) {
+export async function updateVariant(id: string, body: { sku?: string; sell_price?: number; cost_price?: number }) {
   return api<Variant>(`/variants/${id}`, { method: "PATCH", body: JSON.stringify(body) });
 }
 
@@ -1012,6 +1634,298 @@ export async function unpublishProduct(id: string) {
   return api<{ status: string }>(`/commerce/products/${id}/publish`, {
     method: "POST",
     body: JSON.stringify({ published: false }),
+  });
+}
+
+// --- Storefront CMS -------------------------------------------------------
+
+export type StorefrontSettings = {
+  tenant_id: string;
+  shop_display_name: string;
+  page_title: string;
+  has_logo: boolean;
+  logo_content_type?: string;
+  logo_updated_at?: string;
+  color_primary: string;
+  color_secondary: string;
+  color_accent: string;
+  topbar_help_href: string;
+  topbar_support_href: string;
+  topbar_contact_href: string;
+  topbar_phone_label: string;
+  header_promo_text: string;
+  show_featured: boolean;
+  show_new_arrivals: boolean;
+  show_bestsellers: boolean;
+  show_deals: boolean;
+  show_most_viewed: boolean;
+  hero_headline: string;
+  hero_subtext: string;
+  hero_cta_label: string;
+  hero_cta_href: string;
+  newsletter_headline: string;
+  newsletter_subtext: string;
+  footer_tagline: string;
+  social_facebook: string;
+  social_instagram: string;
+  social_twitter: string;
+  social_tiktok: string;
+  contact_phone: string;
+  contact_email: string;
+  business_hours: string;
+  app_store_url: string;
+  play_store_url: string;
+  enabled_currencies: string;
+  trust_badge_1_title: string;
+  trust_badge_1_subtext: string;
+  trust_badge_2_title: string;
+  trust_badge_2_subtext: string;
+  trust_badge_3_title: string;
+  trust_badge_3_subtext: string;
+  trust_badge_4_title: string;
+  trust_badge_4_subtext: string;
+  pay_label_stk: string;
+  pay_label_paybill: string;
+  pay_label_cash: string;
+  pay_hint_stk: string;
+  pay_hint_paybill: string;
+  pay_hint_cash: string;
+  pay_cta_stk: string;
+  pay_cta_paybill: string;
+  pay_cta_cash: string;
+  updated_at: string;
+};
+
+export async function getStorefrontSettings() {
+  return api<StorefrontSettings>("/storefront/settings");
+}
+
+export async function updateStorefrontSettings(body: Partial<StorefrontSettings>) {
+  return api<StorefrontSettings>("/storefront/settings", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function uploadStorefrontLogo(file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const headers = new Headers();
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_BASE}/storefront/settings/logo`, { method: "POST", headers, body: form });
+  if (!res.ok) throw new Error(await parseErrorMessage(res));
+  return (await res.json()) as StorefrontSettings;
+}
+
+export async function deleteStorefrontLogo() {
+  return api<StorefrontSettings>("/storefront/settings/logo", { method: "DELETE" });
+}
+
+export function storefrontLogoURL(tenantId: string, cacheBust?: string) {
+  const base = `${API_BASE}/storefront/public/logo/${tenantId}`;
+  return cacheBust ? `${base}?v=${encodeURIComponent(cacheBust)}` : base;
+}
+
+export type StorefrontBanner = {
+  id: string;
+  headline: string;
+  subtext: string;
+  cta_label: string;
+  cta_href: string;
+  has_image: boolean;
+  image_content_type?: string;
+  image_updated_at?: string;
+  placement: "hero" | "side" | "mid" | "promo_tile";
+  deal_id?: string;
+  deal_variant_id?: string;
+  deal_price?: number;
+  deal_base_price?: number;
+  sort_order: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listStorefrontBanners() {
+  return api<{ items: StorefrontBanner[] }>("/storefront/banners");
+}
+
+export async function createStorefrontBanner(body: {
+  headline?: string;
+  subtext?: string;
+  cta_label?: string;
+  cta_href?: string;
+  placement?: "hero" | "side" | "mid" | "promo_tile";
+  deal_id?: string;
+  sort_order?: number;
+  active?: boolean;
+}) {
+  return api<StorefrontBanner>("/storefront/banners", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateStorefrontBanner(
+  id: string,
+  body: {
+    headline?: string;
+    subtext?: string;
+    cta_label?: string;
+    cta_href?: string;
+    placement?: "hero" | "side" | "mid" | "promo_tile";
+    deal_id?: string;
+    clear_deal_id?: boolean;
+    sort_order?: number;
+    active?: boolean;
+  },
+) {
+  return api<StorefrontBanner>(`/storefront/banners/${id}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function deleteStorefrontBanner(id: string) {
+  return api<{ status: string }>(`/storefront/banners/${id}`, { method: "DELETE" });
+}
+
+export async function uploadStorefrontBannerImage(id: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const headers = new Headers();
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_BASE}/storefront/banners/${id}/image`, { method: "POST", headers, body: form });
+  if (!res.ok) throw new Error(await parseErrorMessage(res));
+  return (await res.json()) as StorefrontBanner;
+}
+
+export async function deleteStorefrontBannerImage(id: string) {
+  return api<StorefrontBanner>(`/storefront/banners/${id}/image`, { method: "DELETE" });
+}
+
+export function storefrontBannerImageURL(id: string) {
+  return `${API_BASE}/storefront/public/banners/${id}/image`;
+}
+
+export type StorefrontDeal = {
+  id: string;
+  variant_id: string;
+  title: string;
+  deal_price: number;
+  ends_at?: string;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  product_id?: string;
+  product_name?: string;
+  sku?: string;
+  base_price?: number;
+  has_image?: boolean;
+  image_updated_at?: string;
+};
+
+export async function listStorefrontDeals() {
+  return api<{ items: StorefrontDeal[] }>("/storefront/deals");
+}
+
+export async function createStorefrontDeal(body: {
+  variant_id: string;
+  title?: string;
+  deal_price: number;
+  ends_at?: string;
+  active?: boolean;
+  sort_order?: number;
+}) {
+  return api<StorefrontDeal>("/storefront/deals", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateStorefrontDeal(
+  id: string,
+  body: {
+    variant_id?: string;
+    title?: string;
+    deal_price?: number;
+    ends_at?: string;
+    clear_ends_at?: boolean;
+    active?: boolean;
+    sort_order?: number;
+  },
+) {
+  return api<StorefrontDeal>(`/storefront/deals/${id}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function deleteStorefrontDeal(id: string) {
+  return api<{ status: string }>(`/storefront/deals/${id}`, { method: "DELETE" });
+}
+
+export type DeliveryLocation = {
+  id: string;
+  name: string;
+  description?: string;
+  fee: number;
+  active: boolean;
+  sort_order: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export async function listDeliveryLocations() {
+  return api<{ items: DeliveryLocation[] }>("/commerce/delivery-locations");
+}
+
+export async function createDeliveryLocation(body: {
+  name: string;
+  description?: string;
+  fee: number;
+  active?: boolean;
+  sort_order?: number;
+}) {
+  return api<DeliveryLocation>("/commerce/delivery-locations", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateDeliveryLocation(
+  id: string,
+  body: {
+    name?: string;
+    description?: string;
+    fee?: number;
+    active?: boolean;
+    sort_order?: number;
+  },
+) {
+  return api<DeliveryLocation>(`/commerce/delivery-locations/${id}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function deleteDeliveryLocation(id: string) {
+  return api<{ status: string }>(`/commerce/delivery-locations/${id}`, { method: "DELETE" });
+}
+
+export type NewsletterSubscriber = {
+  id: string;
+  email: string;
+  created_at: string;
+};
+
+export async function listNewsletterSubscribers() {
+  return api<{ items: NewsletterSubscriber[] }>("/storefront/subscribers");
+}
+
+export type StorefrontReview = {
+  id: string;
+  product_id: string;
+  rating: number;
+  title?: string;
+  body?: string;
+  status: "published" | "hidden";
+  created_at: string;
+  product_name?: string;
+  customer_name?: string;
+};
+
+export async function listStorefrontReviews(status?: string) {
+  const q = status ? `?status=${encodeURIComponent(status)}` : "";
+  return api<{ items: StorefrontReview[] }>(`/storefront/reviews${q}`);
+}
+
+export async function setStorefrontReviewStatus(id: string, status: "published" | "hidden") {
+  return api<{ status: string }>(`/storefront/reviews/${id}/status`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
   });
 }
 
@@ -1043,12 +1957,88 @@ export async function deleteRepairAttachment(repairId: string, attachmentId: str
   return api<void>(`/repairs/${repairId}/attachments/${attachmentId}`, { method: "DELETE" });
 }
 
-/** Open a printable customer receipt in a new tab. */
-export async function openRepairReceipt(repairId: string) {
+export type ReceiptPaper = "thermal80" | "thermal58" | "a4";
+
+export type ReceiptSettings = {
+  tenant_id: string;
+  header_note: string;
+  phone: string;
+  email: string;
+  website: string;
+  show_logo: boolean;
+  show_address: boolean;
+  show_tin: boolean;
+  thank_you_text: string;
+  footer_text: string;
+  warranty_text: string;
+  show_vat_breakdown: boolean;
+  show_imei: boolean;
+  show_payments: boolean;
+  show_balance: boolean;
+  show_served_by: boolean;
+  default_paper: ReceiptPaper;
+  number_prefix: string;
+  next_number: number;
+  has_logo: boolean;
+  logo_content_type?: string;
+  logo_updated_at?: string;
+  updated_at: string;
+};
+
+export async function getReceiptSettings() {
+  return api<ReceiptSettings>("/receipt-settings");
+}
+
+export async function updateReceiptSettings(body: Partial<ReceiptSettings>) {
+  return api<ReceiptSettings>("/receipt-settings", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function uploadReceiptLogo(file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const headers = new Headers();
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_BASE}/receipt-settings/logo`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  if (!res.ok) throw new Error(await parseErrorMessage(res));
+  return (await res.json()) as ReceiptSettings;
+}
+
+export async function deleteReceiptLogo() {
+  return api<ReceiptSettings>("/receipt-settings/logo", { method: "DELETE" });
+}
+
+/** Render a sample receipt from unsaved settings, for the live preview. */
+export async function previewReceipt(
+  draft: Partial<ReceiptSettings>,
+  kind: string,
+  paper: ReceiptPaper,
+) {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const query = new URLSearchParams({ kind, paper });
+  const res = await fetch(`${API_BASE}/receipt-settings/preview?${query}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(draft),
+  });
+  if (!res.ok) throw new Error(await parseErrorMessage(res));
+  return res.text();
+}
+
+async function openPrintable(path: string) {
   const headers = new Headers({ Accept: "text/html" });
   const token = getAccessToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_BASE}/repairs/${repairId}/receipt.html`, { headers });
+  const res = await fetch(`${API_BASE}${path}`, { headers });
   if (!res.ok) {
     throw new Error(await parseErrorMessage(res));
   }
@@ -1057,6 +2047,26 @@ export async function openRepairReceipt(repairId: string) {
   if (!win) throw new Error("Pop-up blocked — allow pop-ups to print the receipt");
   win.document.write(html);
   win.document.close();
+}
+
+/** Open a printable customer receipt in a new tab. */
+export async function openRepairReceipt(repairId: string, paper?: ReceiptPaper) {
+  const query = paper ? `?paper=${paper}` : "";
+  return openPrintable(`/repairs/${repairId}/receipt.html${query}`);
+}
+
+export async function openIntakeSlip(repairId: string) {
+  return openPrintable(`/repairs/${repairId}/intake-slip.html`);
+}
+
+/** Open a printable POS sale receipt in a new tab. */
+export async function openSaleReceipt(saleId: string, paper?: ReceiptPaper) {
+  const query = paper ? `?paper=${paper}` : "";
+  return openPrintable(`/sales/${saleId}/receipt.html${query}`);
+}
+
+export async function downloadSaleReceiptPDF(saleId: string) {
+  return downloadAuthed(`/sales/${saleId}/receipt.pdf`, `receipt-${saleId}.pdf`);
 }
 
 async function downloadAuthed(path: string, filename: string) {
@@ -1094,7 +2104,8 @@ export type Warranty = {
 };
 
 export async function getRepairWarranty(repairId: string) {
-  return api<Warranty>(`/repairs/${repairId}/warranty`);
+  const warr = await api<Warranty | undefined>(`/repairs/${repairId}/warranty`);
+  return warr ?? null;
 }
 
 export async function createRepairWarranty(repairId: string) {
@@ -1136,6 +2147,8 @@ export type ShopProfile = {
   country: string;
   vat_rate_bps: number;
   vat_inclusive: boolean;
+  currency_code: string;
+  locale: string;
 };
 
 export async function getShopProfile() {
@@ -1144,6 +2157,67 @@ export async function getShopProfile() {
 
 export async function putShopProfile(body: Partial<ShopProfile>) {
   return api<ShopProfile>("/shop/profile", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export type LoyaltySettings = {
+  tenant_id: string;
+  enabled: boolean;
+  points_per_completed_repair: number;
+  points_per_currency_unit: number;
+};
+
+export async function getLoyaltySettings() {
+  return api<LoyaltySettings>("/loyalty/settings");
+}
+
+export async function updateLoyaltySettings(body: {
+  enabled: boolean;
+  points_per_completed_repair: number;
+  points_per_currency_unit: number;
+}) {
+  return api<LoyaltySettings>("/loyalty/settings", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export type LoyaltyLedgerEntry = {
+  id: string;
+  delta: number;
+  reason: string;
+  reference_type?: string;
+  reference_id?: string;
+  created_at: string;
+};
+
+export type LoyaltyAccount = {
+  customer_id: string;
+  points_balance: number;
+  updated_at?: string;
+};
+
+export async function getCustomerLoyalty(customerId: string) {
+  return api<{ account: LoyaltyAccount; ledger: LoyaltyLedgerEntry[] }>(`/loyalty/customers/${customerId}`);
+}
+
+export type WebhookSubscription = {
+  id: string;
+  url: string;
+  event_types: string[];
+  is_active: boolean;
+  created_at: string;
+  last_triggered_at?: string;
+  last_status?: string;
+  secret?: string;
+};
+
+export async function listWebhooks() {
+  return api<{ items: WebhookSubscription[] }>("/loyalty/webhooks");
+}
+
+export async function createWebhook(body: { url: string; event_types: string[] }) {
+  return api<WebhookSubscription>("/loyalty/webhooks", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function deleteWebhook(id: string) {
+  return api<void>(`/loyalty/webhooks/${id}`, { method: "DELETE" });
 }
 
 export type RegisteredDevice = {
@@ -1233,10 +2307,26 @@ export async function listStockLocations(branchId?: string) {
   return api<{ items: StockLocation[] }>(`/stock-locations${q}`);
 }
 
+export async function ensureStockLocations() {
+  return api<{ items: StockLocation[] }>("/stock-locations/ensure", { method: "POST", body: "{}" });
+}
+
+export type POSCheckoutItem =
+  | { variant_id: string; quantity: number }
+  | {
+      // Quick sale: not in the catalog. unit_cost/supplier_id are internal-only —
+      // sourced together or not at all — and never appear on the customer receipt.
+      description: string;
+      quantity: number;
+      unit_price: number;
+      unit_cost?: number;
+      supplier_id?: string;
+    };
+
 export async function posCheckout(body: {
   branch_id: string;
   location_id: string;
-  items: { variant_id: string; quantity: number }[];
+  items: POSCheckoutItem[];
   method: string;
   phone?: string;
 }) {
@@ -1255,9 +2345,19 @@ export type OnlineOrder = {
   status: string;
   collection_code?: string;
   total: number;
+  delivery_fee?: number;
   branch_id?: string;
   fulfilment_type?: string;
   created_at?: string;
+  guest_name?: string;
+  guest_phone?: string;
+  guest_email?: string;
+  customer_notes?: string;
+  delivery_location_id?: string;
+  delivery_location_name?: string;
+  delivery_address_line1?: string;
+  delivery_address_line2?: string;
+  delivery_landmark?: string;
 };
 
 export type OnlineCheckoutResult = {
@@ -1282,6 +2382,10 @@ export async function placeOnlineCheckout(body: {
   method?: string;
   phone?: string;
   fulfilment_type?: string;
+  customer_name?: string;
+  customer_email?: string;
+  customer_notes?: string;
+  delivery_location_id?: string;
 }) {
   return api<OnlineCheckoutResult>("/commerce/checkout", { method: "POST", body: JSON.stringify(body) });
 }
@@ -1307,12 +2411,39 @@ export type StockBalance = {
   product_name: string;
   sku: string;
   sell_price: number;
+  cost_price: number;
   location_id: string;
   location_name: string;
   physical_qty: number;
   available_qty: number;
   reserved_qty: number;
 };
+
+export type JobSaleLine = {
+  id: string;
+  repair_job_id: string;
+  variant_id: string;
+  location_id: string;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+  created_at: string;
+};
+
+export async function addRepairSaleLine(
+  repairId: string,
+  body: { variant_id: string; location_id: string; quantity: number },
+) {
+  return api<JobSaleLine>(`/repairs/${repairId}/sale-lines`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function removeRepairSaleLine(repairId: string, lineId: string) {
+  return api<void>(`/repairs/${repairId}/sale-lines/${lineId}`, { method: "DELETE" });
+}
 
 export type StockMovement = {
   id: string;

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,10 +15,11 @@ import (
 )
 
 const (
-	ChannelSMS   = "sms"
-	StatusPending = "pending"
-	StatusSent    = "sent"
-	StatusFailed  = "failed"
+	ChannelSMS      = "sms"
+	ChannelWhatsApp = "whatsapp"
+	StatusPending   = "pending"
+	StatusSent      = "sent"
+	StatusFailed    = "failed"
 
 	maxAttempts = 5
 	batchSize   = 20
@@ -29,9 +31,17 @@ type SMSSender interface {
 
 type TenantSMSResolver func(ctx context.Context, tenantID uuid.UUID) SMSSender
 
+// WhatsAppRouter decides channel preference and delivers WhatsApp messages.
+type WhatsAppRouter interface {
+	ShouldNotify(ctx context.Context, tenantID uuid.UUID, audience string) (useWA, alsoSMS bool)
+	SendMessage(ctx context.Context, tenantID uuid.UUID, phone, message string) error
+	RememberPending(ctx context.Context, tenantID uuid.UUID, phone, actionType string, refID uuid.UUID, repairJobID *uuid.UUID, jobCode string, ttl time.Duration) error
+}
+
 type Service struct {
 	pool       *pgxpool.Pool
 	resolveSMS TenantSMSResolver
+	whatsapp   WhatsAppRouter
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -40,6 +50,10 @@ func NewService(pool *pgxpool.Pool) *Service {
 
 func (s *Service) SetSMSResolver(resolver TenantSMSResolver) {
 	s.resolveSMS = resolver
+}
+
+func (s *Service) SetWhatsApp(router WhatsAppRouter) {
+	s.whatsapp = router
 }
 
 type EnqueueInput struct {
@@ -250,7 +264,8 @@ func (s *Service) DrainPending(ctx context.Context) (processed, sent, failed int
 func (s *Service) deliver(ctx context.Context, tenantID uuid.UUID, channel, recipient, templateKey string, payload map[string]any) error {
 	switch channel {
 	case ChannelSMS:
-		message, err := RenderTemplate(templateKey, payload)
+		custom, _ := s.loadTemplateBody(ctx, tenantID, templateKey)
+		message, err := RenderTemplateWithOverride(templateKey, custom, payload)
 		if err != nil {
 			return err
 		}
@@ -262,8 +277,73 @@ func (s *Service) deliver(ctx context.Context, tenantID uuid.UUID, channel, reci
 			return fmt.Errorf("SMS provider not configured")
 		}
 		return sender.SendMessage(ctx, recipient, message)
+	case ChannelWhatsApp:
+		custom, _ := s.loadTemplateBody(ctx, tenantID, templateKey)
+		// Interactive WhatsApp copy (YES/NO, QUOTE) — do not reuse SMS portal CTAs.
+		if waBody, ok := DefaultWhatsAppBody(templateKey); ok {
+			custom = waBody
+		}
+		message, err := RenderTemplateWithOverride(templateKey, custom, payload)
+		if err != nil {
+			return err
+		}
+		if s.whatsapp == nil {
+			return fmt.Errorf("WhatsApp not configured")
+		}
+		return s.whatsapp.SendMessage(ctx, tenantID, recipient, message)
 	default:
 		return fmt.Errorf("unsupported channel %q", channel)
+	}
+}
+
+// enqueueCustomerOrSupplier picks WhatsApp and/or SMS based on owner settings.
+func (s *Service) enqueueReachable(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	audience, phone, templateKey string,
+	payload map[string]any,
+) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return
+	}
+	useWA, alsoSMS := false, true
+	if s.whatsapp != nil {
+		useWA, alsoSMS = s.whatsapp.ShouldNotify(ctx, tenantID, audience)
+	}
+	if useWA {
+		_, _ = s.Enqueue(ctx, EnqueueInput{
+			TenantID: tenantID, Channel: ChannelWhatsApp, Recipient: phone,
+			TemplateKey: templateKey, Payload: payload,
+		})
+		s.maybeRememberWhatsAppPending(ctx, tenantID, phone, templateKey, payload)
+	}
+	if alsoSMS || !useWA {
+		_, _ = s.Enqueue(ctx, EnqueueInput{
+			TenantID: tenantID, Channel: ChannelSMS, Recipient: phone,
+			TemplateKey: templateKey, Payload: payload,
+		})
+	}
+}
+
+func (s *Service) maybeRememberWhatsAppPending(ctx context.Context, tenantID uuid.UUID, phone, templateKey string, payload map[string]any) {
+	if s.whatsapp == nil {
+		return
+	}
+	jobCode, _ := payload["job_code"].(string)
+	var repairID *uuid.UUID
+	if rid := parseUUIDPayload(payload, "repair_job_id"); rid != uuid.Nil {
+		repairID = &rid
+	}
+	switch templateKey {
+	case "estimate.pending":
+		if eid := parseUUIDPayload(payload, "estimate_id"); eid != uuid.Nil {
+			_ = s.whatsapp.RememberPending(ctx, tenantID, phone, "estimate_decide", eid, repairID, jobCode, 72*time.Hour)
+		}
+	case "part_request.created":
+		if pid := parseUUIDPayload(payload, "part_request_id"); pid != uuid.Nil {
+			_ = s.whatsapp.RememberPending(ctx, tenantID, phone, "part_quote", pid, repairID, jobCode, 72*time.Hour)
+		}
 	}
 }
 
@@ -292,11 +372,20 @@ func (s *Service) Wire(bus *events.Bus, lookup RepairLookup) {
 	if bus == nil || lookup == nil {
 		return
 	}
+	bus.Subscribe("repair.created", func(e events.Envelope) {
+		s.onRepairCreated(context.Background(), e, lookup)
+	})
+	bus.Subscribe("part_request.created", func(e events.Envelope) {
+		s.onPartRequestCreated(context.Background(), e, lookup)
+	})
 	bus.Subscribe("repair.status_changed", func(e events.Envelope) {
 		s.onRepairStatusChanged(context.Background(), e, lookup)
 	})
 	bus.Subscribe("repair.completed", func(e events.Envelope) {
 		s.onRepairCompleted(context.Background(), e, lookup)
+	})
+	bus.Subscribe("repair.collected", func(e events.Envelope) {
+		s.onRepairCollected(context.Background(), e, lookup)
 	})
 	bus.Subscribe("estimate.pending", func(e events.Envelope) {
 		s.onEstimatePending(context.Background(), e, lookup)
@@ -307,8 +396,164 @@ func (s *Service) Wire(bus *events.Bus, lookup RepairLookup) {
 }
 
 type RepairLookup interface {
+	RepairNotifyInfo(ctx context.Context, tenantID, repairID uuid.UUID) (RepairNotifyInfo, error)
 	RepairNotifyContext(ctx context.Context, tenantID, repairID uuid.UUID) (jobCode, phone, shopName string, err error)
 	PaymentNotifyContext(ctx context.Context, tenantID, paymentID uuid.UUID) (repairID *uuid.UUID, jobCode, phone, amount, currency string, err error)
+}
+
+func payloadFromRepair(info RepairNotifyInfo) map[string]any {
+	return map[string]any{
+		"shop_name":        info.ShopName,
+		"customer_name":    info.CustomerName,
+		"job_code":         info.JobCode,
+		"pickup_code":      info.PickupCode,
+		"device_label":     info.DeviceLabel,
+		"problem_summary":  info.ProblemSummary,
+		"status":           info.Status,
+		"status_label":     PrettyStatus(info.Status),
+		"branch_name":      info.BranchName,
+		"branch_location":  info.BranchLocation,
+		"pickup_place":     info.PickupPlace,
+		"currency":         info.Currency,
+		"labor_amount":     info.LaborAmount,
+		"balance":          info.Balance,
+		"pricing_line":     info.PricingLine,
+		"promised_by":      info.PromisedBy,
+		"wait_minutes":     info.WaitMinutes,
+		"wait_line":        info.WaitLine,
+		"customer_waiting": info.CustomerWaiting,
+	}
+}
+
+func (s *Service) onRepairCreated(ctx context.Context, e events.Envelope, lookup RepairLookup) {
+	repairID := parseUUIDPayload(e.Payload, "repair_job_id")
+	if repairID == uuid.Nil {
+		return
+	}
+	info, err := lookup.RepairNotifyInfo(ctx, e.TenantID, repairID)
+	if err != nil || info.Phone == "" {
+		return
+	}
+	if jc, ok := e.Payload["job_code"].(string); ok && strings.TrimSpace(jc) != "" {
+		info.JobCode = jc
+	}
+	if v, ok := e.Payload["pickup_code"].(string); ok && strings.TrimSpace(v) != "" {
+		info.PickupCode = v
+	}
+	if v, ok := e.Payload["problem_summary"].(string); ok && strings.TrimSpace(v) != "" {
+		info.ProblemSummary = v
+	}
+	if v, ok := e.Payload["labor_amount"]; ok {
+		switch t := v.(type) {
+		case float64:
+			info.LaborAmount = t
+		case int:
+			info.LaborAmount = float64(t)
+		}
+	}
+	if v, ok := e.Payload["customer_waiting"].(bool); ok {
+		info.CustomerWaiting = v
+	}
+	if v, ok := e.Payload["estimated_wait_minutes"]; ok {
+		switch t := v.(type) {
+		case float64:
+			info.WaitMinutes = int(t)
+		case int:
+			info.WaitMinutes = t
+		}
+	}
+	_, _, _ = s.enqueueRepairIntakeSMS(ctx, e.TenantID, e.BranchID, repairID, info)
+}
+
+// ResendRepairIntakeSMS re-queues the intake / wait-bench SMS using the customer's
+// current phone on file. Use after correcting a mistyped number.
+func (s *Service) ResendRepairIntakeSMS(ctx context.Context, tenantID, repairID uuid.UUID, lookup RepairLookup) (templateKey, phone string, err error) {
+	info, err := lookup.RepairNotifyInfo(ctx, tenantID, repairID)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(info.Phone) == "" {
+		return "", "", fmt.Errorf("customer has no phone number on file")
+	}
+	var branchID *uuid.UUID
+	templateKey, phone, err = s.enqueueRepairIntakeSMS(ctx, tenantID, branchID, repairID, info)
+	return templateKey, phone, err
+}
+
+func (s *Service) enqueueRepairIntakeSMS(ctx context.Context, tenantID uuid.UUID, branchID *uuid.UUID, repairID uuid.UUID, info RepairNotifyInfo) (templateKey, phone string, err error) {
+	if info.LaborAmount > 0 {
+		info.PricingLine = fmt.Sprintf("Quoted %s %.0f.", info.Currency, info.LaborAmount)
+	} else if info.PricingLine == "" {
+		info.PricingLine = "We'll send an estimate after diagnosis."
+	}
+	if info.PromisedBy != "" && !info.CustomerWaiting && !strings.Contains(info.PricingLine, "Promised by") {
+		info.PricingLine += " Promised by " + info.PromisedBy + "."
+	}
+	if info.CustomerWaiting && info.WaitMinutes > 0 {
+		info.WaitLine = fmt.Sprintf("Please wait at the wait bench — about %d minutes.", info.WaitMinutes)
+	} else if info.CustomerWaiting && info.WaitLine == "" {
+		info.WaitLine = "Please wait at the wait bench."
+	}
+	payload := payloadFromRepair(info)
+	payload["repair_job_id"] = repairID.String()
+	templateKey = "repair.created"
+	inboxTitle := fmt.Sprintf("Job created · %s", info.JobCode)
+	inboxBody := fmt.Sprintf("Customer notified for new job %s (pickup %s).", info.JobCode, info.PickupCode)
+	if info.CustomerWaiting {
+		templateKey = "repair.wait_bench"
+		inboxTitle = fmt.Sprintf("Wait bench · %s", info.JobCode)
+		if info.WaitMinutes > 0 {
+			inboxBody = fmt.Sprintf("Customer waiting at the bench for %s (~%d min).", info.JobCode, info.WaitMinutes)
+		} else {
+			inboxBody = fmt.Sprintf("Customer waiting at the bench for %s.", info.JobCode)
+		}
+	}
+	phone = strings.TrimSpace(info.Phone)
+	s.enqueueReachable(ctx, tenantID, "customer", phone, templateKey, payload)
+	_ = s.PostStaffInbox(ctx, tenantID, branchID, inboxTitle, inboxBody, templateKey, payload)
+	return templateKey, phone, nil
+}
+
+func (s *Service) onPartRequestCreated(ctx context.Context, e events.Envelope, lookup RepairLookup) {
+	phone, _ := e.Payload["supplier_phone"].(string)
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return
+	}
+	shopName := "TechLane"
+	deviceLabel := "device"
+	branchName := "the shop"
+	if repairID := parseUUIDPayload(e.Payload, "repair_job_id"); repairID != uuid.Nil {
+		if info, err := lookup.RepairNotifyInfo(ctx, e.TenantID, repairID); err == nil {
+			if info.ShopName != "" {
+				shopName = info.ShopName
+			}
+			deviceLabel = info.DeviceLabel
+			branchName = info.BranchName
+		}
+	}
+	jobCode, _ := e.Payload["job_code"].(string)
+	if jobCode == "" {
+		jobCode = "job"
+	}
+	desc, _ := e.Payload["description"].(string)
+	if desc == "" {
+		desc = "part"
+	}
+	payload := map[string]any{
+		"shop_name": shopName, "job_code": jobCode,
+		"description": desc, "quantity": e.Payload["quantity"],
+		"supplier_name":   e.Payload["supplier_name"],
+		"part_request_id": e.Payload["part_request_id"],
+		"repair_job_id":   e.Payload["repair_job_id"],
+		"device_label":    deviceLabel,
+		"branch_name":     branchName,
+	}
+	s.enqueueReachable(ctx, e.TenantID, "supplier", phone, "part_request.created", payload)
+	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
+		fmt.Sprintf("Part request · %s", jobCode),
+		fmt.Sprintf("Supplier notified for %s on job %s.", desc, jobCode),
+		"part_request.created", payload)
 }
 
 func (s *Service) onRepairStatusChanged(ctx context.Context, e events.Envelope, lookup RepairLookup) {
@@ -316,25 +561,31 @@ func (s *Service) onRepairStatusChanged(ctx context.Context, e events.Envelope, 
 	if repairID == uuid.Nil || to == "" {
 		return
 	}
-	if to == "completed" {
-		return // repair.completed handles ready SMS
+	if to == "completed" || to == "collected" {
+		return // dedicated templates handle these
 	}
-	jobCode, phone, shopName, err := lookup.RepairNotifyContext(ctx, e.TenantID, repairID)
-	if err != nil || phone == "" {
+	info, err := lookup.RepairNotifyInfo(ctx, e.TenantID, repairID)
+	if err != nil {
 		return
 	}
-	payload := map[string]any{
-		"shop_name": shopName, "job_code": jobCode, "status": to,
-		"repair_job_id": repairID.String(),
-	}
-	_, _ = s.Enqueue(ctx, EnqueueInput{
-		TenantID: e.TenantID, Channel: ChannelSMS, Recipient: phone,
-		TemplateKey: "repair.status_changed", Payload: payload,
-	})
-	title := fmt.Sprintf("Repair %s → %s", jobCode, to)
+	info.Status = to
+	payload := payloadFromRepair(info)
+	payload["repair_job_id"] = repairID.String()
+	payload["status"] = to
+	payload["status_label"] = PrettyStatus(to)
+
+	// Staff always see the move on the board.
+	title := fmt.Sprintf("Repair %s → %s", info.JobCode, to)
 	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID, title,
-		fmt.Sprintf("Job %s status changed to %s.", jobCode, to),
+		fmt.Sprintf("Job %s status changed to %s.", info.JobCode, PrettyStatus(to)),
 		"repair.status_changed", payload)
+
+	// Customers only get SMS for statuses that matter to them — not every bench hop
+	// (diagnosed / in progress / QC), which was flooding and arriving out of order.
+	if !CustomerSMSOnStatus(to) || info.Phone == "" {
+		return
+	}
+	s.enqueueReachable(ctx, e.TenantID, "customer", info.Phone, "repair.status_changed", payload)
 }
 
 func (s *Service) onRepairCompleted(ctx context.Context, e events.Envelope, lookup RepairLookup) {
@@ -342,21 +593,16 @@ func (s *Service) onRepairCompleted(ctx context.Context, e events.Envelope, look
 	if repairID == uuid.Nil {
 		return
 	}
-	jobCode, phone, shopName, err := lookup.RepairNotifyContext(ctx, e.TenantID, repairID)
-	if err != nil || phone == "" {
+	info, err := lookup.RepairNotifyInfo(ctx, e.TenantID, repairID)
+	if err != nil || info.Phone == "" {
 		return
 	}
-	payload := map[string]any{
-		"shop_name": shopName, "job_code": jobCode,
-		"repair_job_id": repairID.String(),
-	}
-	_, _ = s.Enqueue(ctx, EnqueueInput{
-		TenantID: e.TenantID, Channel: ChannelSMS, Recipient: phone,
-		TemplateKey: "repair.ready", Payload: payload,
-	})
+	payload := payloadFromRepair(info)
+	payload["repair_job_id"] = repairID.String()
+	s.enqueueReachable(ctx, e.TenantID, "customer", info.Phone, "repair.ready", payload)
 	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
-		fmt.Sprintf("Repair %s ready", jobCode),
-		fmt.Sprintf("Job %s is ready for collection.", jobCode),
+		fmt.Sprintf("Repair %s ready", info.JobCode),
+		fmt.Sprintf("Job %s is ready for collection (balance %s %.0f).", info.JobCode, info.Currency, info.Balance),
 		"repair.ready", payload)
 }
 
@@ -365,27 +611,33 @@ func (s *Service) onEstimatePending(ctx context.Context, e events.Envelope, look
 	if repairID == uuid.Nil {
 		return
 	}
-	jobCode, phone, shopName, err := lookup.RepairNotifyContext(ctx, e.TenantID, repairID)
-	if err != nil || phone == "" {
+	info, err := lookup.RepairNotifyInfo(ctx, e.TenantID, repairID)
+	if err != nil || info.Phone == "" {
 		return
 	}
-	payload := map[string]any{
-		"shop_name": shopName, "job_code": jobCode,
-		"repair_job_id": repairID.String(),
+	payload := payloadFromRepair(info)
+	payload["repair_job_id"] = repairID.String()
+	total := 0.0
+	if v, ok := e.Payload["total_amount"].(float64); ok {
+		total = v
+	} else {
+		labor, parts := 0.0, 0.0
+		if v, ok := e.Payload["labor_amount"].(float64); ok {
+			labor = v
+		}
+		if v, ok := e.Payload["parts_amount"].(float64); ok {
+			parts = v
+		}
+		total = labor + parts
 	}
-	if v, ok := e.Payload["labor_amount"]; ok {
-		payload["labor_amount"] = v
+	payload["total_amount"] = total
+	if eid := parseUUIDPayload(e.Payload, "estimate_id"); eid != uuid.Nil {
+		payload["estimate_id"] = eid.String()
 	}
-	if v, ok := e.Payload["parts_amount"]; ok {
-		payload["parts_amount"] = v
-	}
-	_, _ = s.Enqueue(ctx, EnqueueInput{
-		TenantID: e.TenantID, Channel: ChannelSMS, Recipient: phone,
-		TemplateKey: "estimate.pending", Payload: payload,
-	})
+	s.enqueueReachable(ctx, e.TenantID, "customer", info.Phone, "estimate.pending", payload)
 	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
-		fmt.Sprintf("Estimate pending · %s", jobCode),
-		fmt.Sprintf("Customer estimate awaiting approval for job %s.", jobCode),
+		fmt.Sprintf("Estimate pending · %s", info.JobCode),
+		fmt.Sprintf("Customer estimate awaiting approval for job %s (total %s %.0f).", info.JobCode, info.Currency, total),
 		"estimate.pending", payload)
 }
 
@@ -398,25 +650,54 @@ func (s *Service) onPaymentConfirmed(ctx context.Context, e events.Envelope, loo
 	if err != nil || phone == "" {
 		return
 	}
-	shopName := "TechLane"
-	if repairID != nil {
-		_, _, shopName, _ = lookup.RepairNotifyContext(ctx, e.TenantID, *repairID)
-	}
 	payload := map[string]any{
-		"shop_name": shopName, "job_code": jobCode, "amount": amount, "currency": currency,
-		"payment_id": paymentID.String(),
+		"shop_name": "TechLane", "job_code": jobCode, "amount": amount, "currency": currency,
+		"payment_id": paymentID.String(), "balance": "0", "customer_name": "there",
+		"device_label": "device", "method": "payment",
+	}
+	if method, ok := e.Payload["method"].(string); ok && strings.TrimSpace(method) != "" {
+		payload["method"] = method
 	}
 	if repairID != nil {
+		if info, iErr := lookup.RepairNotifyInfo(ctx, e.TenantID, *repairID); iErr == nil {
+			for k, v := range payloadFromRepair(info) {
+				payload[k] = v
+			}
+			payload["amount"] = amount
+			if currency != "" {
+				payload["currency"] = currency
+			}
+		}
 		payload["repair_job_id"] = repairID.String()
 	}
-	_, _ = s.Enqueue(ctx, EnqueueInput{
-		TenantID: e.TenantID, Channel: ChannelSMS, Recipient: phone,
-		TemplateKey: "payment.confirmed", Payload: payload,
-	})
+	s.enqueueReachable(ctx, e.TenantID, "customer", phone, "payment.confirmed", payload)
 	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
 		fmt.Sprintf("Payment confirmed · %s", jobCode),
 		fmt.Sprintf("Payment of %s %s received for job %s.", currency, amount, jobCode),
 		"payment.confirmed", payload)
+}
+
+func (s *Service) onRepairCollected(ctx context.Context, e events.Envelope, lookup RepairLookup) {
+	repairID := parseUUIDPayload(e.Payload, "repair_job_id")
+	if repairID == uuid.Nil {
+		return
+	}
+	info, err := lookup.RepairNotifyInfo(ctx, e.TenantID, repairID)
+	if err != nil || info.Phone == "" {
+		return
+	}
+	payload := payloadFromRepair(info)
+	payload["repair_job_id"] = repairID.String()
+	if who, ok := e.Payload["collected_by"].(string); ok && strings.TrimSpace(who) != "" {
+		payload["collected_by"] = who
+	} else {
+		payload["collected_by"] = "the customer"
+	}
+	s.enqueueReachable(ctx, e.TenantID, "customer", info.Phone, "repair.collected", payload)
+	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
+		fmt.Sprintf("Collected · %s", info.JobCode),
+		fmt.Sprintf("Device for %s handed over.", info.JobCode),
+		"repair.collected", payload)
 }
 
 func parseRepairEvent(e events.Envelope) (repairID uuid.UUID, to string) {

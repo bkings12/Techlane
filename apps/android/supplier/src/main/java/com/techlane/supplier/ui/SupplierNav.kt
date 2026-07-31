@@ -1,7 +1,7 @@
 package com.techlane.supplier.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,11 +9,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -27,28 +30,25 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Inbox
-import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.outlined.LocalShipping
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -60,18 +60,30 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.techlane.supplier.SupplierApp
-import com.techlane.supplier.network.SupplierApi
 import com.techlane.core.PrintSupport
 import com.techlane.core.qr.QrBitmap
+import com.techlane.core.theme.Brand
+import com.techlane.core.ui.BrandAuthHeader
+import com.techlane.core.ui.BrandCard
+import com.techlane.core.ui.BrandDetailHeader
+import com.techlane.core.ui.BrandHero
+import com.techlane.core.ui.BrandSectionTitle
+import com.techlane.core.ui.GoldButton
+import com.techlane.core.ui.PillBadge
+import com.techlane.core.ui.SafeBottomBar
+import com.techlane.core.ui.brandGradient
+import com.techlane.supplier.SupplierApp
+import com.techlane.supplier.network.SupplierApi
 import androidx.compose.foundation.Image
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -85,80 +97,91 @@ fun SupplierNav(
     onSignedOut: () -> Unit,
     rootModifier: Modifier = Modifier,
 ) {
+    var sessionExpired by remember { mutableStateOf(false) }
     DisposableEffect(onSignedOut) {
         SupplierApi.setSessionExpiredListener {
-            android.os.Handler(android.os.Looper.getMainLooper()).post { onSignedOut() }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                sessionExpired = true
+                onSignedOut()
+            }
         }
         onDispose { SupplierApi.setSessionExpiredListener(null) }
     }
     if (!signedIn) {
-        SupplierAuthScreen(onSignedIn = onSignedIn, rootModifier = rootModifier)
+        SupplierAuthScreen(
+            onSignedIn = {
+                sessionExpired = false
+                onSignedIn()
+            },
+            sessionExpired = sessionExpired,
+            rootModifier = rootModifier,
+        )
     } else {
         SupplierShell(onSignedOut = onSignedOut, rootModifier = rootModifier)
     }
 }
 
 @Composable
-fun SupplierAuthScreen(onSignedIn: () -> Unit, rootModifier: Modifier = Modifier) {
+fun SupplierAuthScreen(onSignedIn: () -> Unit, sessionExpired: Boolean = false, rootModifier: Modifier = Modifier) {
     var mode by remember { mutableStateOf("login") }
-    var email by remember { mutableStateOf("supplier@techlane.local") }
-    var password by remember { mutableStateOf("password") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var inviteToken by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(if (sessionExpired) "Your session expired. Please sign in again." else null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     Box(
         rootModifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(brandGradient()),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(240.dp)
-                .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)),
-        )
         Column(
-            modifier = Modifier
+            Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(28.dp),
-            verticalArrangement = Arrangement.Center,
+                .statusBarsPadding()
+                .navigationBarsPadding(),
         ) {
-            Icon(
-                Icons.Outlined.LocalShipping,
-                null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(40.dp),
+            BrandAuthHeader(
+                appLabel = "Supplier",
+                tagline = "Quote. Supply. Get paid.",
+                modifier = Modifier
+                    .padding(horizontal = 28.dp)
+                    .padding(top = 36.dp, bottom = 24.dp),
             )
-            Spacer(Modifier.height(12.dp))
-            Text("Supplier portal", style = MaterialTheme.typography.displayMedium)
-            Text(
-                "Quote requests, issue parts, and track credit.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.weight(1f))
             Surface(
-                shape = RoundedCornerShape(20.dp),
-                tonalElevation = 3.dp,
-                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                color = Brand.Surface,
             ) {
                 Column(
-                    Modifier.padding(22.dp),
+                    Modifier.padding(horizontal = 24.dp, vertical = 28.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
+                    notice?.let {
+                        Text(it, color = Brand.Warning, style = MaterialTheme.typography.bodySmall)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
                             selected = mode == "login",
                             onClick = { mode = "login" },
                             label = { Text("Sign in") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Brand.NavyTint,
+                                selectedLabelColor = Brand.Navy,
+                            ),
                         )
                         FilterChip(
                             selected = mode == "invite",
                             onClick = { mode = "invite" },
                             label = { Text("Accept invite") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Brand.NavyTint,
+                                selectedLabelColor = Brand.Navy,
+                            ),
                         )
                     }
                     if (mode == "login") {
@@ -182,17 +205,27 @@ fun SupplierAuthScreen(onSignedIn: () -> Unit, rootModifier: Modifier = Modifier
                         value = password,
                         onValueChange = { password = it },
                         label = { Text(if (mode == "invite") "Set password" else "Password") },
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                )
+                            }
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     error?.let {
-                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        Text(it, color = Brand.Danger, style = MaterialTheme.typography.bodySmall)
                     }
-                    Button(
+                    GoldButton(
+                        text = if (mode == "login") "Sign in" else "Activate account",
                         onClick = {
                             busy = true
                             error = null
+                            notice = null
                             scope.launch {
                                 try {
                                     val res = withContext(Dispatchers.IO) {
@@ -216,12 +249,9 @@ fun SupplierAuthScreen(onSignedIn: () -> Unit, rootModifier: Modifier = Modifier
                         },
                         enabled = !busy && password.length >= 6 &&
                             (mode == "login" && email.isNotBlank() || mode == "invite" && inviteToken.isNotBlank()),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp),
-                    ) {
-                        Text(if (busy) "Please wait…" else if (mode == "login") "Sign in" else "Activate account")
-                    }
+                        loading = busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         }
@@ -254,80 +284,114 @@ fun SupplierShell(onSignedOut: () -> Unit, rootModifier: Modifier = Modifier) {
 
     Scaffold(
         modifier = rootModifier,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        when (tab) {
-                            "issues" -> "Issued parts"
-                            "credit" -> "Credit"
-                            "profile" -> "Profile"
-                            else -> "Request queue"
-                        },
-                    )
-                },
-                actions = {
-                    if (tab == "profile") {
-                        IconButton(onClick = {
-                            kotlinx.coroutines.MainScope().launch(Dispatchers.IO) { SupplierApi.logout() }
-                            onSignedOut()
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.Logout, "Sign out")
-                        }
-                    }
-                },
-            )
-        },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == "queue",
-                    onClick = { tab = "queue" },
-                    icon = { Icon(Icons.Default.Home, null) },
-                    label = { Text("Queue") },
-                )
-                NavigationBarItem(
-                    selected = tab == "issues",
-                    onClick = { tab = "issues" },
-                    icon = { Icon(Icons.Default.History, null) },
-                    label = { Text("Issued") },
-                )
-                NavigationBarItem(
-                    selected = tab == "credit",
-                    onClick = { tab = "credit" },
-                    icon = { Icon(Icons.Default.AccountBalance, null) },
-                    label = { Text("Credit") },
-                )
-                NavigationBarItem(
-                    selected = tab == "profile",
-                    onClick = { tab = "profile" },
-                    icon = { Icon(Icons.Default.Person, null) },
-                    label = { Text("Profile") },
-                )
+            SafeBottomBar(containerColor = Color.White) {
+                NavigationBar(
+                    containerColor = Color.White,
+                    windowInsets = WindowInsets(0, 0, 0, 0),
+                ) {
+                    val itemColors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Brand.Navy,
+                        selectedTextColor = Brand.Navy,
+                        indicatorColor = Brand.NavyTint,
+                        unselectedIconColor = Brand.TextMuted,
+                        unselectedTextColor = Brand.TextMuted,
+                    )
+                    NavigationBarItem(
+                        selected = tab == "queue",
+                        onClick = { tab = "queue" },
+                        icon = { Icon(Icons.Default.Home, null) },
+                        label = { Text("Queue") },
+                        colors = itemColors,
+                    )
+                    NavigationBarItem(
+                        selected = tab == "issues",
+                        onClick = { tab = "issues" },
+                        icon = { Icon(Icons.Default.History, null) },
+                        label = { Text("Issued") },
+                        colors = itemColors,
+                    )
+                    NavigationBarItem(
+                        selected = tab == "credit",
+                        onClick = { tab = "credit" },
+                        icon = { Icon(Icons.Default.AccountBalance, null) },
+                        label = { Text("Credit") },
+                        colors = itemColors,
+                    )
+                    NavigationBarItem(
+                        selected = tab == "profile",
+                        onClick = { tab = "profile" },
+                        icon = { Icon(Icons.Default.Person, null) },
+                        label = { Text("Profile") },
+                        colors = itemColors,
+                    )
+                }
             }
         },
     ) { padding ->
         when (tab) {
             "issues" -> IssuesScreen(onShowQr = { issuedQr = it }, rootModifier = Modifier.padding(padding))
             "credit" -> CreditScreen(rootModifier = Modifier.padding(padding))
-            "profile" -> SupplierProfileScreen(rootModifier = Modifier.padding(padding))
+            "profile" -> SupplierProfileScreen(
+                onSignedOut = onSignedOut,
+                rootModifier = Modifier.padding(padding),
+            )
             else -> RequestQueueScreen(
                 onOpen = { selectedRequestId = it },
+                onSignedOut = onSignedOut,
                 rootModifier = Modifier.padding(padding),
             )
         }
     }
 }
 
+@Composable
+private fun HeroFilterChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(999.dp),
+        color = if (selected) Brand.Gold else Color.White.copy(alpha = 0.12f),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) Brand.NavyDark else Color.White,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        )
+    }
+}
+
+private fun requestStatusBadge(status: String): Pair<String, Color> {
+    val s = status.lowercase()
+    return when {
+        s in listOf("awaiting", "assigned", "open", "pending", "invited") -> "New" to Brand.Info
+        s in listOf("accepted", "quoted") -> "Quoted" to Brand.GoldDark
+        s == "ready" -> "Ready" to Brand.Success
+        s == "declined" -> "Declined" to Brand.Danger
+        else -> status.replace('_', ' ').replaceFirstChar { it.uppercase() } to Brand.TextMuted
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RequestQueueScreen(onOpen: (String) -> Unit, rootModifier: Modifier = Modifier) {
+fun RequestQueueScreen(
+    onOpen: (String) -> Unit,
+    onSignedOut: () -> Unit = {},
+    rootModifier: Modifier = Modifier,
+) {
     var filter by remember { mutableStateOf<String?>(null) }
     var items by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val chipScroll = rememberScrollState()
+    val displayName = SupplierApp.instance.tokenStore.displayName
 
     fun refresh() {
         scope.launch {
@@ -346,28 +410,42 @@ fun RequestQueueScreen(onOpen: (String) -> Unit, rootModifier: Modifier = Modifi
 
     LaunchedEffect(filter) { refresh() }
 
-    Column(rootModifier.fillMaxSize()) {
-        Row(
-            Modifier
-                .horizontalScroll(chipScroll)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            listOf(null to "All", "assigned" to "New", "quoted" to "Quoted", "ready" to "Ready").forEach { (value, label) ->
-                FilterChip(
-                    selected = filter == value,
-                    onClick = { filter = value },
-                    label = { Text(label) },
-                )
-            }
-            IconButton(onClick = { refresh() }) {
-                Icon(Icons.Default.Refresh, "Refresh")
-            }
-        }
+    Column(rootModifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        BrandHero(
+            title = "Part requests",
+            subtitle = displayName?.takeIf { it.isNotBlank() },
+            appLabel = "Supplier",
+            trailing = {
+                IconButton(onClick = { refresh() }) {
+                    Icon(Icons.Default.Refresh, "Refresh", tint = Color.White)
+                }
+                IconButton(onClick = {
+                    kotlinx.coroutines.MainScope().launch(Dispatchers.IO) { SupplierApi.logout() }
+                    onSignedOut()
+                }) {
+                    Icon(Icons.AutoMirrored.Filled.Logout, "Sign out", tint = Color.White)
+                }
+            },
+            bottomContent = {
+                Row(
+                    Modifier.horizontalScroll(chipScroll),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    listOf(null to "All", "assigned" to "New", "quoted" to "Quoted", "ready" to "Ready")
+                        .forEach { (value, label) ->
+                            HeroFilterChip(
+                                label = label,
+                                selected = filter == value,
+                                onClick = { filter = value },
+                            )
+                        }
+                }
+            },
+        )
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+                CircularProgressIndicator(color = Brand.Navy)
             }
             error != null -> ErrorState(error!!, onRetry = { refresh() })
             items.isEmpty() -> EmptyState("Queue is clear", "New part requests assigned to you will show up here.")
@@ -376,46 +454,37 @@ fun RequestQueueScreen(onOpen: (String) -> Unit, rootModifier: Modifier = Modifi
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(items, key = { it.optString("id") }) { req ->
-                    Card(
-                        onClick = { onOpen(req.getString("id")) },
-                        shape = RoundedCornerShape(16.dp),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp, pressedElevation = 4.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    req.optString("part_name").ifBlank {
-                                        req.optString("description").ifBlank { req.optString("sku") }
-                                    },
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Surface(
-                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
-                                    shape = RoundedCornerShape(999.dp),
-                                ) {
-                                    Text(
-                                        req.optString("status").replace('_', ' '),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    )
-                                }
-                            }
+                    val (badgeLabel, badgeColor) = requestStatusBadge(req.optString("status"))
+                    BrandCard(onClick = { onOpen(req.getString("id")) }) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Text(
-                                "Qty ${req.optInt("quantity", 1)} · ${req.optString("branch_name").ifBlank { "Branch" }}",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                req.optString("part_name").ifBlank {
+                                    req.optString("description").ifBlank { req.optString("sku") }
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Brand.TextPrimary,
+                                modifier = Modifier.weight(1f),
                             )
-                            req.optString("job_code").takeIf { it.isNotBlank() }?.let {
-                                Text("Job $it", style = MaterialTheme.typography.bodySmall)
-                            }
+                            PillBadge(text = badgeLabel, color = badgeColor)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Qty ${req.optInt("quantity", 1)} · ${req.optString("branch_name").ifBlank { "Branch" }}",
+                            color = Brand.TextMuted,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        req.optString("job_code").takeIf { it.isNotBlank() }?.let {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Job $it",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Brand.TextSecondary,
+                            )
                         }
                     }
                 }
@@ -452,124 +521,196 @@ fun RequestDetailScreen(
 
     LaunchedEffect(requestId) { refresh() }
 
-    Scaffold(
-        modifier = rootModifier,
-        topBar = {
-            TopAppBar(
-                title = { Text("Request") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
-                },
-            )
-        },
-    ) { padding ->
-        val req = detail
+    val req = detail
+    val headerTitle = req?.optString("part_name")?.takeIf { it.isNotBlank() } ?: "Request"
+
+    Column(
+        rootModifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        BrandDetailHeader(
+            title = headerTitle,
+            navigation = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
+                }
+            },
+        )
         if (req == null) {
             Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(padding),
+                Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
-                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
-                else CircularProgressIndicator()
+                if (error != null) Text(error!!, color = Brand.Danger)
+                else CircularProgressIndicator(color = Brand.Navy)
             }
-            return@Scaffold
+            return
         }
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(
-                req.optString("part_name").ifBlank { "Part request" },
-                style = MaterialTheme.typography.headlineSmall,
-            )
-            Text("Status: ${req.optString("status")}")
-            Text("Quantity: ${req.optInt("quantity", 1)}")
-            req.optString("notes").takeIf { it.isNotBlank() }?.let {
-                Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            BrandCard {
+                Text(
+                    req.optString("part_name").ifBlank { "Part request" },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Brand.TextPrimary,
+                )
+                Spacer(Modifier.height(8.dp))
+                val (badgeLabel, badgeColor) = requestStatusBadge(req.optString("status"))
+                PillBadge(text = badgeLabel, color = badgeColor)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Quantity: ${req.optInt("quantity", 1)}",
+                    color = Brand.TextSecondary,
+                )
+                req.optString("notes").takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = Brand.TextMuted)
+                }
             }
 
             if (req.optString("status") in listOf("assigned", "open", "pending", "invited")) {
-                OutlinedTextField(
-                    value = unitCost,
-                    onValueChange = { unitCost = it.filter { ch -> ch.isDigit() || ch == '.' } },
-                    label = { Text("Unit cost (KES)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("Notes (optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Button(
-                    onClick = {
-                        busy = true
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    SupplierApi.quote(requestId, unitCost.toDouble(), notes)
+                BrandCard {
+                    BrandSectionTitle("Your quote")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = unitCost,
+                        onValueChange = { unitCost = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                        label = { Text("Unit cost (KES)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = notes,
+                        onValueChange = { notes = it },
+                        label = { Text("Notes (optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    error?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = Brand.Danger)
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    GoldButton(
+                        text = "Submit quote",
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        SupplierApi.quote(requestId, unitCost.toDouble(), notes)
+                                    }
+                                    refresh()
+                                } catch (e: Exception) {
+                                    error = e.message
+                                } finally {
+                                    busy = false
                                 }
-                                refresh()
-                            } catch (e: Exception) {
-                                error = e.message
-                            } finally {
-                                busy = false
                             }
-                        }
-                    },
-                    enabled = !busy && unitCost.toDoubleOrNull() != null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                ) { Text("Submit quote") }
-                OutlinedButton(
-                    onClick = {
-                        busy = true
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) { SupplierApi.decline(requestId, notes) }
-                                onBack()
-                            } catch (e: Exception) {
-                                error = e.message
-                            } finally {
-                                busy = false
+                        },
+                        enabled = !busy && unitCost.toDoubleOrNull() != null,
+                        loading = busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) { SupplierApi.decline(requestId, notes) }
+                                    onBack()
+                                } catch (e: Exception) {
+                                    error = e.message
+                                } finally {
+                                    busy = false
+                                }
                             }
-                        }
-                    },
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Decline request") }
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(1.dp, Brand.Danger.copy(alpha = 0.45f)),
+                    ) {
+                        Text("Decline request", color = Brand.Danger)
+                    }
+                }
             }
 
-            if (req.optString("status") in listOf("quote_accepted", "accepted", "quoted", "ready")) {
-                OutlinedButton(
-                    onClick = {
-                        busy = true
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) { SupplierApi.markReady(requestId) }
-                                refresh()
-                            } catch (e: Exception) {
-                                error = e.message
-                            } finally {
-                                busy = false
+            val issueObj = req.optJSONObject("issue")
+            val quoteStatus = req.optString("quote_status")
+
+            if (issueObj != null || quoteStatus in listOf("accepted", "quoted")) {
+                if (quoteStatus != "ready") {
+                    OutlinedButton(
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) { SupplierApi.markReady(requestId) }
+                                    refresh()
+                                } catch (e: Exception) {
+                                    error = e.message
+                                } finally {
+                                    busy = false
+                                }
                             }
-                        }
-                    },
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Mark ready for collection") }
-                Button(
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Mark ready for collection") }
+                } else {
+                    Text("Marked ready for collection", color = Brand.Success, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            if (issueObj != null) {
+                BrandCard {
+                    if (issueObj.optString("status") == "collected") {
+                        Text(
+                            "Part collected",
+                            color = Brand.Success,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    } else {
+                        Text(
+                            "AUTH CODE",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Brand.TextMuted,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            issueObj.optString("auth_code"),
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 3.sp,
+                            color = Brand.Navy,
+                        )
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    GoldButton(
+                        text = "Show collection QR",
+                        onClick = { onIssued(issueObj) },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    error?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = Brand.Danger)
+                    }
+                }
+            } else if (quoteStatus in listOf("accepted", "quoted", "ready")) {
+                GoldButton(
+                    text = "Issue part + show QR",
                     onClick = {
                         busy = true
                         scope.launch {
@@ -584,10 +725,9 @@ fun RequestDetailScreen(
                         }
                     },
                     enabled = !busy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                ) { Text("Issue part + show QR") }
+                    loading = busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }
@@ -595,49 +735,54 @@ fun RequestDetailScreen(
 
 @Composable
 fun IssueQrScreen(issue: JSONObject, onBack: () -> Unit, rootModifier: Modifier = Modifier) {
+    val nested = issue.optJSONObject("issue")
+    val issueId = issue.optString("id")
+        .ifBlank { issue.optString("issue_id") }
+        .ifBlank { nested?.optString("id").orEmpty() }
+    val authCode = issue.optString("auth_code")
+        .ifBlank { nested?.optString("auth_code").orEmpty() }
     val payload = issue.optString("qr_payload")
-        .ifBlank {
-            val id = issue.optString("id").ifBlank { issue.optString("issue_id") }
-            val code = issue.optString("auth_code")
-            "techlane://auth/$id/$code"
-        }
-    val issueId = issue.optString("id").ifBlank { issue.optString("issue_id") }
+        .ifBlank { "techlane://auth/$issueId/$authCode" }
     val qrBitmap = remember(payload) { QrBitmap.encode(payload, 640) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var busy by remember { mutableStateOf(false) }
+    var collectMessage by remember { mutableStateOf<String?>(null) }
+    var collectError by remember { mutableStateOf<String?>(null) }
+
     Column(
         rootModifier
             .fillMaxSize()
+            .background(brandGradient())
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         IconButton(onClick = onBack, modifier = Modifier.align(Alignment.Start)) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
         }
-        Icon(Icons.Default.QrCode2, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
-        Text("Collection QR", style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "Collection QR",
+            style = MaterialTheme.typography.headlineSmall,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+        )
         Text(
             "Show this to shop staff to collect the part.",
             textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = Color.White.copy(alpha = 0.72f),
         )
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            tonalElevation = 1.dp,
-            shadowElevation = 2.dp,
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            shadowElevation = 4.dp,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .border(
-                        2.dp,
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-                        RoundedCornerShape(16.dp),
-                    )
-                    .background(MaterialTheme.colorScheme.surface)
                     .padding(22.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -649,25 +794,46 @@ fun IssueQrScreen(issue: JSONObject, onBack: () -> Unit, rootModifier: Modifier 
             }
         }
         Text(
-            payload,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
             "AUTH CODE",
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = Color.White.copy(alpha = 0.68f),
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            issue.optString("auth_code").ifBlank { "—" },
-            style = MaterialTheme.typography.headlineSmall,
+            authCode.ifBlank { "—" },
+            style = MaterialTheme.typography.headlineMedium,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 2.sp,
+            letterSpacing = 3.sp,
+            color = Color.White,
         )
+        collectMessage?.let { Text(it, color = Brand.Gold) }
+        collectError?.let { Text(it, color = Color(0xFFFCA5A5)) }
+        if (issueId.isNotBlank()) {
+            GoldButton(
+                text = "Confirm handover",
+                onClick = {
+                    collectError = null
+                    collectMessage = null
+                    busy = true
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                SupplierApi.collect(issueId, authCode)
+                            }
+                            collectMessage = "Marked as collected"
+                        } catch (e: Exception) {
+                            collectError = e.message
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+                enabled = !busy,
+                loading = busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         if (issueId.isNotBlank()) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
@@ -689,6 +855,10 @@ fun IssueQrScreen(issue: JSONObject, onBack: () -> Unit, rootModifier: Modifier 
                     },
                     enabled = !busy,
                     modifier = Modifier.weight(1f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
+                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.White,
+                    ),
                 ) { Text("Print voucher") }
                 OutlinedButton(
                     onClick = {
@@ -709,10 +879,21 @@ fun IssueQrScreen(issue: JSONObject, onBack: () -> Unit, rootModifier: Modifier 
                     },
                     enabled = !busy,
                     modifier = Modifier.weight(1f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
+                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.White,
+                    ),
                 ) { Text("Share") }
             }
         }
-        Button(onClick = onBack, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Done") }
+        OutlinedButton(
+            onClick = onBack,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
+            colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                contentColor = Color.White,
+            ),
+        ) { Text("Done") }
     }
 }
 
@@ -729,35 +910,36 @@ fun IssuesScreen(onShowQr: (JSONObject) -> Unit, rootModifier: Modifier = Modifi
             error = e.message
         }
     }
-    when {
-        error != null -> ErrorState(error!!) {}
-        items.isEmpty() -> EmptyState("No issued parts yet", "After you issue a part, the collection code appears here.")
-        else -> LazyColumn(
-            modifier = rootModifier,
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            items(items, key = { it.optString("id") }) { issue ->
-                Card(
-                    onClick = { onShowQr(issue) },
-                    shape = RoundedCornerShape(16.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(rootModifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        BrandHero(
+            title = "Issued parts",
+            appLabel = "Supplier",
+        )
+        when {
+            error != null -> ErrorState(error!!) {}
+            items.isEmpty() -> EmptyState("No issued parts yet", "After you issue a part, the collection code appears here.")
+            else -> LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(items, key = { it.optString("id") }) { issue ->
+                    val (badgeLabel, badgeColor) = requestStatusBadge(issue.optString("status"))
+                    BrandCard(onClick = { onShowQr(issue) }) {
                         Text(
                             issue.optString("part_name").ifBlank {
                                 issue.optString("description").ifBlank { "Issue" }
                             },
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
+                            fontWeight = FontWeight.Bold,
+                            color = Brand.TextPrimary,
                         )
+                        Spacer(Modifier.height(8.dp))
+                        PillBadge(text = badgeLabel, color = badgeColor)
+                        Spacer(Modifier.height(6.dp))
                         Text(
-                            issue.optString("status").replace('_', ' '),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
+                            "KES ${"%.0f".format(issue.optDouble("unit_cost", 0.0))}",
+                            color = Brand.TextSecondary,
                         )
-                        Text("KES ${"%.0f".format(issue.optDouble("unit_cost", 0.0))}")
                     }
                 }
             }
@@ -779,79 +961,89 @@ fun CreditScreen(rootModifier: Modifier = Modifier) {
     Column(
         rootModifier
             .fillMaxSize()
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .background(MaterialTheme.colorScheme.background),
     ) {
-        Card(
-            Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-            ),
+        BrandHero(
+            title = "Credit",
+            appLabel = "Supplier",
+        )
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    "Outstanding credit",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "KES ${"%.0f".format(credit?.optDouble("outstanding", credit?.optDouble("balance", 0.0) ?: 0.0) ?: 0.0)}",
-                    style = MaterialTheme.typography.displaySmall,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Text("Ledger", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        val ledger = credit?.optJSONArray("entries") ?: credit?.optJSONArray("ledger")
-        if (ledger == null || ledger.length() == 0) {
             Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = Brand.Navy,
+                shadowElevation = 2.dp,
             ) {
-                Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("No ledger entries", fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        "Credit movements appear as parts are issued and reconciled.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
+                        "Available credit",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White.copy(alpha = 0.72f),
+                    )
+                    Text(
+                        "KES ${"%.0f".format(credit?.optDouble("outstanding", credit?.optDouble("balance", 0.0) ?: 0.0) ?: 0.0)}",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                    )
+                    Box(
+                        Modifier
+                            .size(width = 36.dp, height = 3.dp)
+                            .background(Brand.Gold, CircleShape),
                     )
                 }
             }
-        } else {
-            for (i in 0 until ledger.length()) {
-                val e = ledger.getJSONObject(i)
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
+            error?.let { Text(it, color = Brand.Danger) }
+            BrandSectionTitle("Ledger")
+            val ledger = credit?.optJSONArray("entries") ?: credit?.optJSONArray("ledger")
+            if (ledger == null || ledger.length() == 0) {
+                Surface(
                     shape = RoundedCornerShape(14.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                    color = Brand.Subtle,
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Column {
+                    Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("No ledger entries", fontWeight = FontWeight.SemiBold, color = Brand.TextPrimary)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Credit movements appear as parts are issued and reconciled.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Brand.TextMuted,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            } else {
+                for (i in 0 until ledger.length()) {
+                    val e = ledger.getJSONObject(i)
+                    BrandCard(contentPadding = 14.dp) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column {
+                                Text(
+                                    e.optString("type").ifBlank { e.optString("entry_type") },
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Brand.TextPrimary,
+                                )
+                                Text(
+                                    e.optString("created_at").take(10),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Brand.TextMuted,
+                                )
+                            }
                             Text(
-                                e.optString("type").ifBlank { e.optString("entry_type") },
+                                "KES ${"%.0f".format(e.optDouble("amount", 0.0))}",
                                 fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                e.optString("created_at").take(10),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = Brand.Navy,
                             )
                         }
-                        Text(
-                            "KES ${"%.0f".format(e.optDouble("amount", 0.0))}",
-                            fontWeight = FontWeight.SemiBold,
-                        )
                     }
                 }
             }
@@ -860,7 +1052,10 @@ fun CreditScreen(rootModifier: Modifier = Modifier) {
 }
 
 @Composable
-fun SupplierProfileScreen(rootModifier: Modifier = Modifier) {
+fun SupplierProfileScreen(
+    onSignedOut: () -> Unit = {},
+    rootModifier: Modifier = Modifier,
+) {
     var me by remember { mutableStateOf<JSONObject?>(null) }
     LaunchedEffect(Unit) {
         me = runCatching { withContext(Dispatchers.IO) { SupplierApi.me() } }.getOrNull()
@@ -870,37 +1065,56 @@ fun SupplierProfileScreen(rootModifier: Modifier = Modifier) {
         ?: "Supplier"
     val avatar = name.split(Regex("\\s+")).take(2).mapNotNull { it.firstOrNull()?.uppercaseChar() }.joinToString("")
         .ifBlank { "S" }
-    Column(rootModifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Card(
-            Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    Column(
+        rootModifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        BrandHero(
+            title = "Profile",
+            appLabel = "Supplier",
+            trailing = {
+                IconButton(onClick = {
+                    kotlinx.coroutines.MainScope().launch(Dispatchers.IO) { SupplierApi.logout() }
+                    onSignedOut()
+                }) {
+                    Icon(Icons.AutoMirrored.Filled.Logout, "Sign out", tint = Color.White)
+                }
+            },
+        )
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            BrandCard {
                 Box(
                     Modifier
                         .size(56.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
+                        .background(Brand.Navy),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         avatar,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = Color.White,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                     )
                 }
-                Text(name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, color = Brand.TextPrimary)
                 Text(
                     me?.optString("email") ?: "—",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = Brand.TextMuted,
                 )
-                Text(me?.optJSONObject("supplier")?.optString("name") ?: me?.optString("supplier_name") ?: "")
+                Text(
+                    me?.optJSONObject("supplier")?.optString("name") ?: me?.optString("supplier_name") ?: "",
+                    color = Brand.TextSecondary,
+                )
                 Text(
                     "This account can only access assigned part requests for your supplier.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = Brand.TextMuted,
                 )
             }
         }
@@ -914,10 +1128,10 @@ private fun ErrorState(message: String, onRetry: (() -> Unit)? = null) {
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.padding(24.dp),
         ) {
-            Text(message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+            Text(message, color = Brand.Danger, textAlign = TextAlign.Center)
             if (onRetry != null) {
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = onRetry) { Text("Retry") }
+                GoldButton(text = "Retry", onClick = onRetry)
             }
         }
     }
@@ -928,7 +1142,7 @@ private fun EmptyState(title: String, body: String = "") {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Surface(
             shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            color = Brand.Subtle,
             modifier = Modifier.padding(24.dp).fillMaxWidth(),
         ) {
             Column(
@@ -937,7 +1151,7 @@ private fun EmptyState(title: String, body: String = "") {
             ) {
                 Surface(
                     shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                    color = Brand.NavyTint,
                     modifier = Modifier.size(56.dp),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -945,18 +1159,18 @@ private fun EmptyState(title: String, body: String = "") {
                             Icons.Default.Inbox,
                             null,
                             modifier = Modifier.size(28.dp),
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = Brand.Navy,
                         )
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Brand.TextPrimary)
                 if (body.isNotBlank()) {
                     Spacer(Modifier.height(6.dp))
                     Text(
                         body,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = Brand.TextMuted,
                         textAlign = TextAlign.Center,
                     )
                 }

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { Badge, Button, ICONS, Input, PageHeader, Stat, StatStrip } from "../../components/ui";
+import { Button, Input, PageHeader, PasswordInput } from "../../components/ui";
 import {
   getPaymentSettings,
   updatePaymentSettings,
@@ -72,7 +72,7 @@ export function PaymentSettingsPage() {
   if (!cfg && !error) return <div className="boot">Loading…</div>;
 
   return (
-    <div>
+    <div className="settings-page">
       <PageHeader
         title="Payment service"
         subtitle="M-Pesa Daraja credentials — bank paybill reuses the same API keys"
@@ -85,21 +85,22 @@ export function PaymentSettingsPage() {
       {error ? <p className="form-error">{error}</p> : null}
       {saved ? <p className="hint">{saved}</p> : null}
 
-      <StatStrip>
-        <Stat
-          icon={ICONS.stk}
-          label="M-Pesa"
-          value={<Badge tone={cfg?.configured ? "success" : "warning"}>{cfg?.configured ? "ready" : "not configured"}</Badge>}
-        />
-        <Stat
-          icon={ICONS.cash}
-          label="Bank paybill"
-          value={<Badge tone={cfg?.bank_configured ? "success" : "pending"}>{cfg?.bank_configured ? "ready" : "off"}</Badge>}
-        />
-        <Stat icon={ICONS.settings} label="Environment" value={cfg?.environment ?? environment} />
-      </StatStrip>
+      <section className="board-pulse" aria-label="Payment pulse">
+        <div className={cfg?.configured ? "" : "warn"}>
+          <strong>{cfg?.configured ? "Ready" : "Not set"}</strong>
+          <span>M-Pesa</span>
+        </div>
+        <div className={cfg?.bank_configured ? "" : "warn"}>
+          <strong>{cfg?.bank_configured ? "Ready" : "Off"}</strong>
+          <span>Bank paybill</span>
+        </div>
+        <div>
+          <strong>{cfg?.environment ?? environment}</strong>
+          <span>Environment</span>
+        </div>
+      </section>
 
-      <form className="panel form-grid" onSubmit={submit}>
+      <form className="settings-form-card form-grid" onSubmit={submit}>
         <h2>M-Pesa (Daraja)</h2>
         <p className="hint">
           Consumer key, secret, and passkey power both Lipa Na M-Pesa and bank paybill collection. Secrets are never
@@ -131,8 +132,7 @@ export function PaymentSettingsPage() {
 
         <label>
           Consumer secret {cfg?.consumer_secret_set ? <span className="muted">(saved)</span> : null}
-          <Input
-            type="password"
+          <PasswordInput
             value={consumerSecret}
             onChange={(e) => setConsumerSecret(e.target.value)}
             placeholder={cfg?.consumer_secret_set ? "••••••••" : ""}
@@ -142,8 +142,7 @@ export function PaymentSettingsPage() {
 
         <label>
           Passkey {cfg?.passkey_set ? <span className="muted">(saved)</span> : null}
-          <Input
-            type="password"
+          <PasswordInput
             value={passkey}
             onChange={(e) => setPasskey(e.target.value)}
             placeholder={cfg?.passkey_set ? "••••••••" : ""}

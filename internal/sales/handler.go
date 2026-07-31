@@ -2,31 +2,97 @@ package sales
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/techlane/techlane/internal/receipts"
 	"github.com/techlane/techlane/packages/pkg/apierrors"
 	"github.com/techlane/techlane/packages/pkg/authz"
 	"github.com/techlane/techlane/packages/pkg/httpx"
 )
 
 type Handler struct {
-	svc *Service
+	svc      *Service
+	receipts *receipts.Service
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// SetReceiptRenderer enables printable POS sale receipts.
+func (h *Handler) SetReceiptRenderer(r *receipts.Service) { h.receipts = r }
+
 func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
 	mux.Handle("POST /pos/checkout", auth(http.HandlerFunc(h.checkout)))
 	mux.Handle("POST /sales", auth(http.HandlerFunc(h.createSale)))
 	mux.Handle("GET /sales", auth(http.HandlerFunc(h.listSales)))
 	mux.Handle("GET /sales/{id}", auth(http.HandlerFunc(h.getSale)))
+	mux.Handle("GET /sales/{id}/receipt.html", auth(http.HandlerFunc(h.saleReceiptHTML)))
+	mux.Handle("GET /sales/{id}/receipt.pdf", auth(http.HandlerFunc(h.saleReceiptPDF)))
 	mux.Handle("POST /sales/{id}/complete", auth(http.HandlerFunc(h.completeSale)))
 	mux.Handle("POST /sales/{id}/reverse", auth(http.HandlerFunc(h.reverseSale)))
+}
+
+func (h *Handler) loadSaleReceipt(w http.ResponseWriter, r *http.Request) (receipts.Document, uuid.UUID, uuid.UUID, bool) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return receipts.Document{}, uuid.Nil, uuid.Nil, false
+	}
+	if h.receipts == nil {
+		apierrors.Write(w, http.StatusServiceUnavailable, "UNAVAILABLE", "receipt rendering is not configured", httpx.CorrelationID(r.Context()))
+		return receipts.Document{}, uuid.Nil, uuid.Nil, false
+	}
+	saleID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return receipts.Document{}, uuid.Nil, uuid.Nil, false
+	}
+	doc, err := h.svc.BuildSaleReceipt(r.Context(), claims.TenantID, saleID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		apierrors.Write(w, status, "RECEIPT_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return receipts.Document{}, uuid.Nil, uuid.Nil, false
+	}
+	return doc, claims.TenantID, saleID, true
+}
+
+func (h *Handler) saleReceiptHTML(w http.ResponseWriter, r *http.Request) {
+	doc, tenantID, saleID, ok := h.loadSaleReceipt(w, r)
+	if !ok {
+		return
+	}
+	body, err := h.receipts.Render(r.Context(), tenantID, doc, saleID, r.URL.Query().Get("paper"))
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(body))
+}
+
+func (h *Handler) saleReceiptPDF(w http.ResponseWriter, r *http.Request) {
+	doc, tenantID, saleID, ok := h.loadSaleReceipt(w, r)
+	if !ok {
+		return
+	}
+	pdf, err := h.receipts.RenderPDF(r.Context(), tenantID, doc, saleID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, doc.Reference+"-receipt.pdf"))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdf)
 }
 
 func (h *Handler) listSales(w http.ResponseWriter, r *http.Request) {

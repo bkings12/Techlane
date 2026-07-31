@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	otpTTL           = 10 * time.Minute
-	otpMaxAttempts   = 5
-	otpMinInterval   = 60 * time.Second
-	otpMaxPerHour    = 5
-	sessionTTL       = 30 * 24 * time.Hour
+	otpTTL         = 10 * time.Minute
+	otpMaxAttempts = 5
+	otpMinInterval = 60 * time.Second
+	otpMaxPerHour  = 5
+	sessionTTL     = 30 * 24 * time.Hour
 )
 
 type OTPChallengeMeta struct {
@@ -97,7 +97,7 @@ func (s *Service) RequestOTP(ctx context.Context, tenantID uuid.UUID, phone stri
 	rows, err := s.pool.Query(ctx, `
 		SELECT created_at, expires_at, consumed_at, attempts
 		FROM repair.customer_otp_challenges
-		WHERE tenant_id = $1 AND phone_e164 = $2 AND created_at > $3
+		WHERE tenant_id = $1 AND phone_e164 = $2 AND purpose = 'login' AND created_at > $3
 		ORDER BY created_at DESC LIMIT 10`,
 		tenantID, phoneE164, now.Add(-time.Hour))
 	if err != nil {
@@ -126,8 +126,8 @@ func (s *Service) RequestOTP(ctx context.Context, tenantID uuid.UUID, phone stri
 	id := uuid.New()
 	expiresAt := now.Add(otpTTL)
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO repair.customer_otp_challenges (id, tenant_id, phone_e164, code_hash, attempts, expires_at, created_at)
-		VALUES ($1, $2, $3, $4, 0, $5, $6)`,
+		INSERT INTO repair.customer_otp_challenges (id, tenant_id, phone_e164, code_hash, attempts, expires_at, created_at, purpose)
+		VALUES ($1, $2, $3, $4, 0, $5, $6, 'login')`,
 		id, tenantID, phoneE164, hashSecret(code), expiresAt, now)
 	if err != nil {
 		return err
@@ -155,7 +155,7 @@ func (s *Service) VerifyOTP(ctx context.Context, tenantID uuid.UUID, phone, code
 	err = s.pool.QueryRow(ctx, `
 		SELECT id, code_hash, attempts, expires_at, consumed_at, created_at
 		FROM repair.customer_otp_challenges
-		WHERE tenant_id = $1 AND phone_e164 = $2
+		WHERE tenant_id = $1 AND phone_e164 = $2 AND purpose = 'login'
 		ORDER BY created_at DESC LIMIT 1`, tenantID, phoneE164).
 		Scan(&challengeID, &codeHash, &meta.Attempts, &meta.ExpiresAt, &meta.ConsumedAt, &meta.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -210,15 +210,22 @@ func (s *Service) VerifyOTP(ctx context.Context, tenantID uuid.UUID, phone, code
 }
 
 func (s *Service) findOrCreateCustomerByPhone(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, phoneE164 string) (*Customer, error) {
+	variants := PhoneMatchVariants(phoneE164)
 	var c Customer
 	err := tx.QueryRow(ctx, `
 		SELECT id, full_name, phone, email FROM repair.customers
 		WHERE tenant_id = $1
-		  AND regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') = $2
-		ORDER BY created_at ASC LIMIT 1`, tenantID, phoneE164).
+		  AND regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($2::text[])
+		ORDER BY
+		  (SELECT COUNT(*) FROM repair.repair_jobs j WHERE j.customer_id = repair.customers.id) DESC,
+		  created_at ASC
+		LIMIT 1`, tenantID, variants).
 		Scan(&c.ID, &c.FullName, &c.Phone, &c.Email)
 	if err == nil {
-		// Prefer storing normalized form for future lookups.
+		// Fold any 07… / 254… duplicates into this keeper so jobs appear in the customer app.
+		if mErr := s.mergeCustomerPhoneDuplicates(ctx, tx, tenantID, c.ID, phoneE164, variants); mErr != nil {
+			return nil, mErr
+		}
 		if c.Phone == nil || *c.Phone != phoneE164 {
 			_, _ = tx.Exec(ctx, `UPDATE repair.customers SET phone = $1, updated_at = now() WHERE id = $2`, phoneE164, c.ID)
 			c.Phone = &phoneE164
@@ -234,9 +241,78 @@ func (s *Service) findOrCreateCustomerByPhone(ctx context.Context, tx pgx.Tx, te
 		INSERT INTO repair.customers (id, tenant_id, full_name, phone)
 		VALUES ($1, $2, $3, $4)`, id, tenantID, name, phoneE164)
 	if err != nil {
+		// Unique race against an equivalent format — re-resolve.
+		if existing, qErr := s.findCustomerByPhoneVariantsTx(ctx, tx, tenantID, variants); qErr == nil {
+			if mErr := s.mergeCustomerPhoneDuplicates(ctx, tx, tenantID, existing.ID, phoneE164, variants); mErr != nil {
+				return nil, mErr
+			}
+			return existing, nil
+		}
 		return nil, err
 	}
 	return &Customer{ID: id, FullName: name, Phone: &phoneE164}, nil
+}
+
+func (s *Service) findCustomerByPhoneVariantsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, variants []string) (*Customer, error) {
+	var c Customer
+	err := tx.QueryRow(ctx, `
+		SELECT id, full_name, phone, email FROM repair.customers
+		WHERE tenant_id = $1
+		  AND regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($2::text[])
+		ORDER BY
+		  (SELECT COUNT(*) FROM repair.repair_jobs j WHERE j.customer_id = repair.customers.id) DESC,
+		  created_at ASC
+		LIMIT 1`, tenantID, variants).
+		Scan(&c.ID, &c.FullName, &c.Phone, &c.Email)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// mergeCustomerPhoneDuplicates reassigns jobs/devices/sessions from equivalent phone rows (07 vs 254) onto keeper.
+func (s *Service) mergeCustomerPhoneDuplicates(ctx context.Context, tx pgx.Tx, tenantID, keeperID uuid.UUID, phoneE164 string, variants []string) error {
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM repair.customers
+		WHERE tenant_id = $1
+		  AND id <> $2
+		  AND regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($3::text[])`,
+		tenantID, keeperID, variants)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var dupes []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		dupes = append(dupes, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, dupe := range dupes {
+		if _, err := tx.Exec(ctx, `UPDATE repair.repair_jobs SET customer_id = $1 WHERE customer_id = $2`, keeperID, dupe); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE repair.devices SET customer_id = $1 WHERE customer_id = $2`, keeperID, dupe); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE repair.customer_sessions SET customer_id = $1 WHERE customer_id = $2`, keeperID, dupe); err != nil {
+			return err
+		}
+		// Clear phone first so unique digit index does not block delete when formats collide mid-merge.
+		if _, err := tx.Exec(ctx, `UPDATE repair.customers SET phone = NULL WHERE id = $1`, dupe); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM repair.customers WHERE id = $1`, dupe); err != nil {
+			return err
+		}
+	}
+	_, _ = tx.Exec(ctx, `UPDATE repair.customers SET phone = $1, updated_at = now() WHERE id = $2`, phoneE164, keeperID)
+	return nil
 }
 
 func (s *Service) AuthenticateCustomer(ctx context.Context, tenantID uuid.UUID, token string) (*Customer, error) {
@@ -353,6 +429,21 @@ func (s *Service) GetCustomerRepair(ctx context.Context, tenantID, customerID, r
 
 // RepairPaymentContext returns balance due and branch for customer STK payments.
 func (s *Service) RepairPaymentContext(ctx context.Context, tenantID, repairID uuid.UUID) (branchID uuid.UUID, balance float64, defaultPhone string, accountRef string, err error) {
+	branchID, balance, _, defaultPhone, accountRef, err = s.repairPaymentAmounts(ctx, tenantID, repairID)
+	return branchID, balance, defaultPhone, accountRef, err
+}
+
+// RepairOutstanding returns remaining balance. enforceable is false when the job
+// has no priced total yet (deposits may still be recorded).
+func (s *Service) RepairOutstanding(ctx context.Context, tenantID, repairID uuid.UUID) (outstanding float64, enforceable bool, err error) {
+	_, balance, total, _, _, err := s.repairPaymentAmounts(ctx, tenantID, repairID)
+	if err != nil {
+		return 0, false, err
+	}
+	return balance, total > 0.009, nil
+}
+
+func (s *Service) repairPaymentAmounts(ctx context.Context, tenantID, repairID uuid.UUID) (branchID uuid.UUID, balance, total float64, defaultPhone, accountRef string, err error) {
 	var labor float64
 	var customerID *uuid.UUID
 	err = s.pool.QueryRow(ctx, `
@@ -360,13 +451,13 @@ func (s *Service) RepairPaymentContext(ctx context.Context, tenantID, repairID u
 		FROM repair.repair_jobs WHERE tenant_id = $1 AND id = $2`, tenantID, repairID).
 		Scan(&branchID, &labor, &customerID, &accountRef)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, 0, "", "", fmt.Errorf("repair not found")
+		return uuid.Nil, 0, 0, "", "", fmt.Errorf("repair not found")
 	}
 	if err != nil {
-		return uuid.Nil, 0, "", "", err
+		return uuid.Nil, 0, 0, "", "", err
 	}
 
-	total := labor
+	total = labor
 	var estLabor, estParts float64
 	estErr := s.pool.QueryRow(ctx, `
 		SELECT labor_amount::float8, parts_amount::float8
@@ -377,8 +468,14 @@ func (s *Service) RepairPaymentContext(ctx context.Context, tenantID, repairID u
 	if estErr == nil {
 		total = estLabor + estParts
 	} else if !errors.Is(estErr, pgx.ErrNoRows) {
-		return uuid.Nil, 0, "", "", estErr
+		return uuid.Nil, 0, 0, "", "", estErr
 	}
+
+	saleExtra, err := s.saleLinesTotal(ctx, tenantID, repairID)
+	if err != nil {
+		return uuid.Nil, 0, 0, "", "", err
+	}
+	total += saleExtra
 
 	var paid float64
 	err = s.pool.QueryRow(ctx, `
@@ -386,9 +483,9 @@ func (s *Service) RepairPaymentContext(ctx context.Context, tenantID, repairID u
 		FROM payments.payments p
 		JOIN payments.payment_allocations a ON a.payment_id = p.id
 		WHERE p.tenant_id = $1 AND a.payable_type = 'repair' AND a.payable_id = $2
-		  AND p.status IN ('allocated', 'confirmed')`, tenantID, repairID).Scan(&paid)
+		  AND p.status IN ('allocated', 'confirmed', 'pending_handover', 'provisional')`, tenantID, repairID).Scan(&paid)
 	if err != nil {
-		return uuid.Nil, 0, "", "", err
+		return uuid.Nil, 0, 0, "", "", err
 	}
 	balance = total - paid
 	if balance < 0 {
@@ -405,5 +502,5 @@ func (s *Service) RepairPaymentContext(ctx context.Context, tenantID, repairID u
 			}
 		}
 	}
-	return branchID, balance, defaultPhone, accountRef, nil
+	return branchID, balance, total, defaultPhone, accountRef, nil
 }

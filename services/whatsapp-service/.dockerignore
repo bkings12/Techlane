@@ -1,0 +1,6 @@
+node_modules
+auth_sessions
+chat_data
+.env
+.env.*
+npm-debug.log

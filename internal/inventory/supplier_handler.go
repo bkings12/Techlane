@@ -286,6 +286,35 @@ func (h *Handler) supplierIssue(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, result)
 }
 
+func (h *Handler) supplierCollectIssue(w http.ResponseWriter, r *http.Request) {
+	tenantID, contact, ok := h.authenticatedSupplier(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		AuthCode string `json:"auth_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AuthCode) == "" {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "auth_code required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	si, err := h.svc.CollectIssueAsSupplier(r.Context(), tenantID, contact.SupplierID, id, strings.TrimSpace(req.AuthCode), contact.ID)
+	if err != nil {
+		status := http.StatusConflict
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		apierrors.Write(w, status, "COLLECT_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, si)
+}
+
 func (h *Handler) supplierListIssues(w http.ResponseWriter, r *http.Request) {
 	tenantID, contact, ok := h.authenticatedSupplier(w, r)
 	if !ok {
@@ -310,7 +339,7 @@ func (h *Handler) supplierListIssues(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) supplierIssueVoucher(w http.ResponseWriter, r *http.Request) {
-	v, ok := h.loadSupplierVoucher(w, r)
+	v, _, ok := h.loadSupplierVoucher(w, r)
 	if !ok {
 		return
 	}
@@ -318,21 +347,37 @@ func (h *Handler) supplierIssueVoucher(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) supplierIssueVoucherHTML(w http.ResponseWriter, r *http.Request) {
-	v, ok := h.loadSupplierVoucher(w, r)
+	v, tenantID, ok := h.loadSupplierVoucher(w, r)
 	if !ok {
 		return
+	}
+	body := ""
+	if h.receipts != nil {
+		if rendered, err := h.receipts.Render(r.Context(), tenantID, v.ToReceiptDocument(), v.IssueID, r.URL.Query().Get("paper")); err == nil {
+			body = rendered
+		}
+	}
+	if body == "" {
+		body = v.HTML()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(v.HTML()))
+	_, _ = w.Write([]byte(body))
 }
 
 func (h *Handler) supplierIssueVoucherPDF(w http.ResponseWriter, r *http.Request) {
-	v, ok := h.loadSupplierVoucher(w, r)
+	v, tenantID, ok := h.loadSupplierVoucher(w, r)
 	if !ok {
 		return
 	}
-	pdf, err := v.VoucherPDF()
+	var pdf []byte
+	var err error
+	if h.receipts != nil {
+		pdf, err = h.receipts.RenderPDF(r.Context(), tenantID, v.ToReceiptDocument(), v.IssueID)
+	}
+	if len(pdf) == 0 {
+		pdf, err = v.VoucherPDF()
+	}
 	if err != nil {
 		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
 		return
@@ -343,15 +388,15 @@ func (h *Handler) supplierIssueVoucherPDF(w http.ResponseWriter, r *http.Request
 	_, _ = w.Write(pdf)
 }
 
-func (h *Handler) loadSupplierVoucher(w http.ResponseWriter, r *http.Request) (*SupplierCreditVoucher, bool) {
+func (h *Handler) loadSupplierVoucher(w http.ResponseWriter, r *http.Request) (*SupplierCreditVoucher, uuid.UUID, bool) {
 	tenantID, contact, ok := h.authenticatedSupplier(w, r)
 	if !ok {
-		return nil, false
+		return nil, uuid.Nil, false
 	}
 	issueID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
-		return nil, false
+		return nil, uuid.Nil, false
 	}
 	v, err := h.svc.BuildSupplierCreditVoucher(r.Context(), tenantID, contact.SupplierID, issueID)
 	if err != nil {
@@ -360,9 +405,9 @@ func (h *Handler) loadSupplierVoucher(w http.ResponseWriter, r *http.Request) (*
 			status = http.StatusNotFound
 		}
 		apierrors.Write(w, status, "VOUCHER_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
-		return nil, false
+		return nil, uuid.Nil, false
 	}
-	return v, true
+	return v, tenantID, true
 }
 
 func (h *Handler) supplierCredit(w http.ResponseWriter, r *http.Request) {

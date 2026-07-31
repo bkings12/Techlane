@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/techlane/techlane/internal/repair"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -122,12 +123,26 @@ func (s *Service) AuthenticateCustomer(ctx context.Context, tenantID uuid.UUID, 
 }
 
 func (s *Service) ListCustomerOrders(ctx context.Context, tenantID, customerID uuid.UUID) ([]Order, error) {
+	var phone *string
+	_ = s.pool.QueryRow(ctx, `SELECT phone FROM repair.customers WHERE tenant_id = $1 AND id = $2`, tenantID, customerID).Scan(&phone)
+	variants := []string{}
+	if phone != nil && strings.TrimSpace(*phone) != "" {
+		variants = phoneMatchVariants(*phone)
+	}
+
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, status, total::float8, branch_id, fulfilment_type, created_at,
-		       CASE WHEN status IN ('ready_for_pickup', 'collected') THEN collection_code ELSE NULL END
-		FROM sales.orders
-		WHERE tenant_id = $1 AND customer_id = $2
-		ORDER BY created_at DESC LIMIT 100`, tenantID, customerID)
+		SELECT o.id, o.status, o.total::float8, o.branch_id, o.fulfilment_type, o.created_at,
+		       CASE WHEN o.status IN ('ready_for_pickup', 'collected', 'confirmed', 'delivered') THEN o.collection_code ELSE NULL END
+		FROM sales.orders o
+		WHERE o.tenant_id = $1 AND o.channel = 'online'
+		  AND (
+		    o.customer_id = $2
+		    OR (
+		      cardinality($3::text[]) > 0
+		      AND regexp_replace(COALESCE(o.guest_phone, ''), '[^0-9]', '', 'g') = ANY($3::text[])
+		    )
+		  )
+		ORDER BY o.created_at DESC LIMIT 100`, tenantID, customerID, variants)
 	if err != nil {
 		return nil, err
 	}
@@ -148,4 +163,50 @@ func (s *Service) ListCustomerOrders(ctx context.Context, tenantID, customerID u
 		items = append(items, order)
 	}
 	return items, rows.Err()
+}
+
+// AccountRepair is a slim repair row for the customer dashboard.
+type AccountRepair struct {
+	ID             uuid.UUID `json:"id"`
+	JobCode        string    `json:"job_code"`
+	JobNumber      int       `json:"job_number"`
+	Status         string    `json:"status"`
+	ProblemSummary string    `json:"problem_summary,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (s *Service) ListAccountRepairs(ctx context.Context, tenantID, customerID uuid.UUID, phone string) ([]AccountRepair, error) {
+	variants := phoneMatchVariants(phone)
+	rows, err := s.pool.Query(ctx, `
+		SELECT j.id, j.job_code, j.job_number, j.status, j.problem_summary, j.created_at
+		FROM repair.repair_jobs j
+		LEFT JOIN repair.customers c ON c.id = j.customer_id
+		WHERE j.tenant_id = $1
+		  AND j.deleted_at IS NULL
+		  AND (
+		    j.customer_id = $2
+		    OR (
+		      cardinality($3::text[]) > 0
+		      AND regexp_replace(COALESCE(c.phone, ''), '[^0-9]', '', 'g') = ANY($3::text[])
+		    )
+		  )
+		ORDER BY j.created_at DESC
+		LIMIT 100`, tenantID, customerID, variants)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]AccountRepair, 0)
+	for rows.Next() {
+		var item AccountRepair
+		if err := rows.Scan(&item.ID, &item.JobCode, &item.JobNumber, &item.Status, &item.ProblemSummary, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func phoneMatchVariants(raw string) []string {
+	return repair.PhoneMatchVariants(raw)
 }

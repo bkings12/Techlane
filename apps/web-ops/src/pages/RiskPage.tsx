@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Badge, Button, EmptyState, ICONS, PageHeader, Stat, StatStrip } from "../components/ui";
+import { Badge, Button, EmptyState, PageHeader } from "../components/ui";
 import {
   ackRiskAlert,
   listRiskAlerts,
@@ -60,10 +60,10 @@ export function RiskPage() {
   }, {});
 
   return (
-    <div>
+    <div className="risk-board">
       <PageHeader
         title="Risk & leakage"
-        subtitle="Orphan parts, shortages, unverified payments, stuck jobs"
+        subtitle="Exceptions first — orphan parts, shortages, unverified payments, stuck jobs."
         actions={
           <label className="period-picker">
             Status
@@ -77,81 +77,75 @@ export function RiskPage() {
         }
       />
       {error ? <p className="form-error">{error}</p> : null}
-      <StatStrip>
-        <Stat icon={ICONS.risk} label="Showing" value={items.length} />
-        <Stat
-          icon={ICONS.cash}
-          label="Unverified pay"
-          value={byKind.unverified_payment || 0}
-          tone={byKind.unverified_payment ? "danger" : undefined}
-        />
-        <Stat
-          icon={ICONS.clock}
-          label="Stuck jobs"
-          value={(byKind.stuck_job || 0) + (byKind.uncollected_ready || 0)}
-          tone={byKind.stuck_job || byKind.uncollected_ready ? "warn" : undefined}
-        />
-        <Stat
-          icon={ICONS.shortage}
-          label="Cash / orphans"
-          value={(byKind.cash_shortage || 0) + (byKind.orphan_part || 0)}
-          tone={byKind.cash_shortage || byKind.orphan_part ? "warn" : undefined}
-        />
-      </StatStrip>
-      <section className="panel">
+
+      <section className="board-pulse" aria-label="Risk pulse">
+        <button type="button" className={filter === "open" ? "active" : ""} onClick={() => setFilter("open")}>
+          <strong>{filter === "open" ? items.length : "—"}</strong>
+          <span>Open view</span>
+        </button>
+        <div className={byKind.unverified_payment ? "warn" : ""}>
+          <strong>{byKind.unverified_payment || 0}</strong>
+          <span>Unverified pay</span>
+        </div>
+        <div className={(byKind.stuck_job || byKind.uncollected_ready) ? "warn" : ""}>
+          <strong>{(byKind.stuck_job || 0) + (byKind.uncollected_ready || 0)}</strong>
+          <span>Stuck jobs</span>
+        </div>
+        <div className={(byKind.cash_shortage || byKind.orphan_part) ? "warn" : ""}>
+          <strong>{(byKind.cash_shortage || 0) + (byKind.orphan_part || 0)}</strong>
+          <span>Cash / orphans</span>
+        </div>
+        <div>
+          <strong>{items.length}</strong>
+          <span>Showing</span>
+        </div>
+      </section>
+
+      <section className="panel" style={{ padding: "0.85rem" }}>
+        <div className="panel-head">
+          <h2>Alert board</h2>
+        </div>
         {items.length === 0 ? (
           <EmptyState
             title={filter === "open" ? "No open alerts" : "Nothing here"}
             body="Orphan parts, short cash counts, stuck STK, and aging jobs appear when open."
-            icon={ICONS.ready}
           />
         ) : (
-          <ul className="part-list">
+          <ul className="alert-board">
             {items.map((a) => {
               const href = alertLink(a);
               const open = a.status === "open";
+              const high = a.severity === "high" || a.kind === "cash_shortage" || a.kind === "unverified_payment";
               return (
-                <li key={a.id} className="part-card">
-                  <div className="part-head">
-                    <div>
-                      <Badge tone={toneFor(a.kind, a.severity)}>{a.kind.replaceAll("_", " ")}</Badge>
-                      <div style={{ marginTop: "0.5rem" }}>
-                        {href ? (
-                          <Link to={href}>
-                            <strong>{a.title}</strong>
-                          </Link>
-                        ) : (
+                <li key={a.id} className={`alert-row-card ${high ? "is-high" : ""}`}>
+                  <div>
+                    <Badge tone={toneFor(a.kind, a.severity)}>{a.kind.replaceAll("_", " ")}</Badge>
+                    <div style={{ marginTop: "0.45rem" }}>
+                      {href ? (
+                        <Link to={href}>
                           <strong>{a.title}</strong>
-                        )}
-                      </div>
-                      <p className="muted">
-                        {a.status}
-                        {typeof a.details?.job_code === "string" ? ` · ${a.details.job_code}` : ""}
-                        {typeof a.details?.age_hours === "number" ? ` · ${a.details.age_hours}h` : ""}
-                        {typeof a.details?.age_minutes === "number" ? ` · ${a.details.age_minutes}m` : ""}
-                      </p>
+                        </Link>
+                      ) : (
+                        <strong>{a.title}</strong>
+                      )}
                     </div>
-                    {open ? (
-                      <div className="btn-row">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          disabled={busy === a.id}
-                          onClick={() => void act(a.id, "ack")}
-                        >
-                          Ack
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          disabled={busy === a.id}
-                          onClick={() => void act(a.id, "resolve")}
-                        >
-                          Resolve
-                        </Button>
-                      </div>
-                    ) : null}
+                    <p className="muted">
+                      {a.status}
+                      {typeof a.details?.job_code === "string" ? ` · ${a.details.job_code}` : ""}
+                      {typeof a.details?.age_hours === "number" ? ` · ${a.details.age_hours}h` : ""}
+                      {typeof a.details?.age_minutes === "number" ? ` · ${a.details.age_minutes}m` : ""}
+                    </p>
                   </div>
+                  {open ? (
+                    <div className="btn-row">
+                      <Button type="button" variant="ghost" disabled={busy === a.id} onClick={() => void act(a.id, "ack")}>
+                        Ack
+                      </Button>
+                      <Button type="button" variant="secondary" disabled={busy === a.id} onClick={() => void act(a.id, "resolve")}>
+                        Resolve
+                      </Button>
+                    </div>
+                  ) : null}
                 </li>
               );
             })}

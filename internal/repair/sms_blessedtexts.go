@@ -36,7 +36,10 @@ func NewBlessedTextsSMSSender(apiKey, senderID, baseURL string) *BlessedTextsSMS
 }
 
 func (b *BlessedTextsSMSSender) SendOTP(ctx context.Context, phoneE164, code string) error {
-	message := fmt.Sprintf("Your TechLane verification code is %s. It expires in 10 minutes.", code)
+	message := fmt.Sprintf(
+		"Your verification code is %s. It expires in 10 minutes. Do not share this code with anyone.",
+		code,
+	)
 	return b.SendMessage(ctx, phoneE164, message)
 }
 

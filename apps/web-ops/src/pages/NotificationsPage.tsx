@@ -34,58 +34,71 @@ export function NotificationsPage() {
     }
   }
 
+  const unacked = items.filter((n) => !n.acked_at).length;
+
   return (
-    <div>
-      <PageHeader title="Notifications" subtitle="Staff inbox from repair and payment events" />
+    <div className="notify-inbox">
+      <PageHeader
+        title="Notifications"
+        subtitle="Staff inbox — unacked first, then acknowledge and clear."
+        actions={
+          <Button type="button" onClick={() => void load()} disabled={busy}>
+            Refresh
+          </Button>
+        }
+      />
       {error ? <p className="form-error">{error}</p> : null}
-      <div className="pos-toolbar">
-        <label>
-          <input
-            type="checkbox"
-            checked={unackedOnly}
-            onChange={(e) => setUnackedOnly(e.target.checked)}
-          />{" "}
-          Unacked only
-        </label>
-        <Button type="button" onClick={() => void load()} disabled={busy}>
-          Refresh
-        </Button>
-      </div>
-      {items.length === 0 ? (
-        <EmptyState title="Inbox clear" body="No notifications to show." icon={ICONS.risk} />
-      ) : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>Title</th>
-              <th>Body</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
+
+      <section className="board-pulse" aria-label="Inbox pulse">
+        <button type="button" className={unackedOnly ? "active" : ""} onClick={() => setUnackedOnly(true)}>
+          <strong>{unackedOnly ? items.length : unacked}</strong>
+          <span>Unacked</span>
+        </button>
+        <button type="button" className={!unackedOnly ? "active" : ""} onClick={() => setUnackedOnly(false)}>
+          <strong>{!unackedOnly ? items.length : "All"}</strong>
+          <span>Full inbox</span>
+        </button>
+        <div>
+          <strong>{items.length}</strong>
+          <span>Showing</span>
+        </div>
+      </section>
+
+      <section className="panel" style={{ padding: "0.85rem" }}>
+        <div className="panel-head">
+          <h2>Inbox</h2>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={unackedOnly} onChange={(e) => setUnackedOnly(e.target.checked)} />
+            Unacked only
+          </label>
+        </div>
+        {items.length === 0 ? (
+          <EmptyState title="Inbox clear" body="No notifications to show." icon={ICONS.risk} />
+        ) : (
+          <ul className="inbox-board">
             {items.map((n) => (
-              <tr key={n.id}>
-                <td>{new Date(n.created_at).toLocaleString()}</td>
-                <td>
-                  {n.title}{" "}
-                  {!n.acked_at ? <Badge tone="warning">new</Badge> : null}
-                </td>
-                <td>{n.body}</td>
-                <td>
-                  {!n.acked_at ? (
-                    <Button type="button" onClick={() => void onAck(n.id)}>
-                      Ack
-                    </Button>
-                  ) : (
-                    "—"
-                  )}
-                </td>
-              </tr>
+              <li key={n.id} className={`inbox-row ${!n.acked_at ? "is-new" : ""}`}>
+                <div>
+                  <div className="muted">{new Date(n.created_at).toLocaleString()}</div>
+                  <strong>
+                    {n.title} {!n.acked_at ? <Badge tone="warning">new</Badge> : null}
+                  </strong>
+                  <p className="muted" style={{ margin: "0.25rem 0 0" }}>
+                    {n.body}
+                  </p>
+                </div>
+                {!n.acked_at ? (
+                  <Button type="button" onClick={() => void onAck(n.id)}>
+                    Ack
+                  </Button>
+                ) : (
+                  <span className="muted">acked</span>
+                )}
+              </li>
             ))}
-          </tbody>
-        </table>
-      )}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

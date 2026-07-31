@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { Avatar, Badge, Button, EmptyState, ICONS, Input, PageHeader } from "../../components/ui";
+import { Avatar, Badge, Button, EmptyState, ICONS, Input, PageHeader, PasswordInput } from "../../components/ui";
 import {
   createUser,
   listBranches,
@@ -33,8 +33,11 @@ export function StaffListPage() {
     void refresh();
   }, []);
 
+  const activeCount = items.filter((u) => u.status === "active").length;
+  const commissionCount = items.filter((u) => u.profile?.commission_enabled).length;
+
   return (
-    <div>
+    <div className="settings-page">
       <PageHeader
         title="Staff"
         subtitle="Technicians, cashiers, and branch access"
@@ -45,6 +48,22 @@ export function StaffListPage() {
         }
       />
       {error ? <p className="form-error">{error}</p> : null}
+
+      <section className="board-pulse" aria-label="Staff pulse">
+        <div>
+          <strong>{items.length}</strong>
+          <span>Total staff</span>
+        </div>
+        <div>
+          <strong>{activeCount}</strong>
+          <span>Active</span>
+        </div>
+        <div>
+          <strong>{commissionCount}</strong>
+          <span>Commission on</span>
+        </div>
+      </section>
+
       {showCreate ? (
         <CreateStaffForm
           branches={branches}
@@ -55,56 +74,41 @@ export function StaffListPage() {
           }}
         />
       ) : null}
-      <section className="panel">
-        {items.length === 0 ? (
-          <EmptyState title="No staff yet" body="Add a technician to start assigning repairs." icon={ICONS.customers} />
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Roles</th>
-                <th>Status</th>
-                <th>Commission</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((u) => (
-                <tr key={u.id}>
-                  <td>
-                    <Link to={`/settings/staff/${u.id}`} className="name-cell">
-                      <Avatar name={u.display_name} size={30} />
-                      <span className="name-cell-text">
-                        <strong>{u.display_name}</strong>
-                        <span className="muted">{u.email}</span>
-                      </span>
-                    </Link>
-                  </td>
-                  <td>
-                    <div className="chip-row">
-                      {u.roles.map((r) => (
-                        <Badge key={r} tone="info">
-                          {r}
-                        </Badge>
-                      ))}
-                    </div>
-                  </td>
-                  <td>
-                    <Badge tone={u.status === "active" ? "success" : "warning"}>{u.status}</Badge>
-                  </td>
-                  <td>
-                    {u.profile?.commission_enabled ? (
-                      <Badge tone="pending">on</Badge>
-                    ) : (
-                      <span className="muted">off</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+
+      {items.length === 0 ? (
+        <EmptyState title="No staff yet" body="Add a technician to start assigning repairs." icon={ICONS.customers} />
+      ) : (
+        <ul className="settings-roster">
+          {items.map((u) => (
+            <li key={u.id}>
+              <Link to={`/settings/staff/${u.id}`} className="settings-roster-row">
+                <span className="name-cell">
+                  <Avatar name={u.display_name} size={30} />
+                  <span className="name-cell-text">
+                    <strong>{u.display_name}</strong>
+                    <span className="muted">{u.email}</span>
+                  </span>
+                </span>
+                <span className="chip-row">
+                  {u.roles.map((r) => (
+                    <Badge key={r} tone="info">
+                      {r}
+                    </Badge>
+                  ))}
+                </span>
+                <Badge tone={u.status === "active" ? "success" : "warning"}>{u.status}</Badge>
+                <span>
+                  {u.profile?.commission_enabled ? (
+                    <Badge tone="pending">on</Badge>
+                  ) : (
+                    <span className="muted">off</span>
+                  )}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -167,7 +171,7 @@ function CreateStaffForm({
   }
 
   return (
-    <form className="panel form-grid" onSubmit={submit}>
+    <form className="settings-form-card form-grid" onSubmit={submit}>
       <h2>New staff member</h2>
       <label>
         Display name
@@ -179,7 +183,7 @@ function CreateStaffForm({
       </label>
       <label>
         Temporary password
-        <Input type="text" value={password} onChange={(e) => setPassword(e.target.value)} required />
+        <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="new-password" />
       </label>
       <fieldset className="fieldset">
         <legend>Roles</legend>

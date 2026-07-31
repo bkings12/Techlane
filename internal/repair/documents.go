@@ -10,16 +10,25 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/techlane/techlane/internal/receipts"
 )
 
 // CustomerReceiptDocument is everything needed to print a customer receipt.
 type CustomerReceiptDocument struct {
+	RepairID       uuid.UUID       `json:"repair_id"`
+	BranchName     string          `json:"branch_name,omitempty"`
+	TechnicianName string          `json:"technician_name,omitempty"`
 	ShopName       string          `json:"shop_name"`
+	ShopSlogan     string          `json:"shop_slogan,omitempty"`
+	ShopPhone      string          `json:"shop_phone,omitempty"`
+	ShopEmail      string          `json:"shop_email,omitempty"`
+	ShopWebsite    string          `json:"shop_website,omitempty"`
 	ShopTIN        string          `json:"shop_tin,omitempty"`
 	ShopAddress1   string          `json:"shop_address_line1,omitempty"`
 	ShopAddress2   string          `json:"shop_address_line2,omitempty"`
 	ShopCity       string          `json:"shop_city,omitempty"`
 	JobCode        string          `json:"job_code"`
+	PickupCode     string          `json:"pickup_code,omitempty"`
 	Status         string          `json:"status"`
 	ProblemSummary string          `json:"problem_summary"`
 	CustomerName   string          `json:"customer_name"`
@@ -28,6 +37,7 @@ type CustomerReceiptDocument struct {
 	IMEI           string          `json:"imei,omitempty"`
 	LaborAmount    float64         `json:"labor_amount"`
 	PartsAmount    float64         `json:"parts_amount"`
+	SaleLinesTotal float64         `json:"sale_lines_total"`
 	NetSubtotal    float64         `json:"net_subtotal"`
 	VATAmount      float64         `json:"vat_amount"`
 	VATRateBPS     int             `json:"vat_rate_bps"`
@@ -106,19 +116,27 @@ func (s *Service) BuildCustomerReceipt(ctx context.Context, tenantID, repairID u
 		return nil, estErr
 	}
 
+	saleExtra, err := s.saleLinesTotal(ctx, tenantID, repairID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Same paid recognition as Money / handover (includes counter cash still in till).
+	_, balanceDue, total, _, _, err := s.repairPaymentAmounts(ctx, tenantID, repairID)
+	if err != nil {
+		return nil, err
+	}
+	paid := total - balanceDue
+	if paid < 0 {
+		paid = 0
+	}
+
 	receipts, err := s.PublicRepairReceipts(ctx, tenantID, repairID)
 	if err != nil {
 		return nil, err
 	}
-	var paid float64
-	for _, r := range receipts {
-		if r.Status == "allocated" || r.Status == "confirmed" {
-			paid += r.Amount
-		}
-	}
-	total := labor + partsAmt
 	netSubtotal, vatAmount := splitVAT(total, tax.VATRateBPS, tax.VATInclusive)
-	balance := total - paid
+	balance := balanceDue
 	if balance < 0 {
 		balance = 0
 	}
@@ -126,16 +144,30 @@ func (s *Service) BuildCustomerReceipt(ctx context.Context, tenantID, repairID u
 	if jobCode == "" {
 		jobCode = job.ID.String()[:8]
 	}
+	pickupCode := strings.TrimSpace(job.PickupCode)
+	if pickupCode == "" && job.Status != StatusCollected {
+		if code, err := s.EnsurePickupCode(ctx, tenantID, repairID); err == nil {
+			pickupCode = code
+		}
+	}
+
+	var branchName string
+	_ = s.pool.QueryRow(ctx, `SELECT name FROM identity.branches WHERE tenant_id = $1 AND id = $2`, tenantID, job.BranchID).Scan(&branchName)
+	var technicianName string
+	if job.TechnicianID != nil {
+		_ = s.pool.QueryRow(ctx, `SELECT display_name FROM identity.users WHERE id = $1`, *job.TechnicianID).Scan(&technicianName)
+	}
 
 	return &CustomerReceiptDocument{
+		RepairID: job.ID, BranchName: branchName, TechnicianName: technicianName,
 		ShopName: shopName, ShopTIN: tax.TIN, ShopAddress1: tax.AddressLine1, ShopAddress2: tax.AddressLine2, ShopCity: tax.City,
-		JobCode: jobCode, Status: job.Status,
+		JobCode: jobCode, PickupCode: pickupCode, Status: job.Status,
 		ProblemSummary: job.ProblemSummary, CustomerName: customerName, CustomerPhone: customerPhone,
 		DeviceLabel: deviceLabel, IMEI: imei,
-		LaborAmount: labor, PartsAmount: partsAmt,
+		LaborAmount: labor, PartsAmount: partsAmt, SaleLinesTotal: saleExtra,
 		NetSubtotal: netSubtotal, VATAmount: vatAmount, VATRateBPS: tax.VATRateBPS, VATInclusive: tax.VATInclusive,
 		TotalDue: total, Paid: paid, Balance: balance,
-		Currency: "KES", Payments: receipts, IssuedAt: time.Now().UTC(),
+		Currency: tax.CurrencyCode, Payments: receipts, IssuedAt: time.Now().UTC(),
 	}, nil
 }
 
@@ -147,7 +179,7 @@ func (d *CustomerReceiptDocument) HTML() string {
 		for _, p := range d.Payments {
 			ref := ""
 			if p.ProviderRef != nil {
-				ref = *p.ProviderRef
+				ref = receipts.CustomerPaymentRef(*p.ProviderRef)
 			}
 			payRows.WriteString(fmt.Sprintf(
 				`<tr><td>%s</td><td>%s %.0f</td><td>%s %s</td></tr>`,
@@ -175,6 +207,11 @@ func (d *CustomerReceiptDocument) HTML() string {
 	} else {
 		vatNote = fmt.Sprintf(`<div class="meta">VAT %.2f%% added</div>`, float64(d.VATRateBPS)/100)
 	}
+	saleRow := ""
+	if d.SaleLinesTotal > 0.009 {
+		saleRow = fmt.Sprintf(`<tr><td>Accessories / extras</td><td></td><td>%s %.0f</td></tr>`,
+			html.EscapeString(d.Currency), d.SaleLinesTotal)
+	}
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Receipt %s</title>
 <style>
@@ -200,6 +237,7 @@ func (d *CustomerReceiptDocument) HTML() string {
     <tbody>
       <tr><td>Labor</td><td></td><td>%s %.0f</td></tr>
       <tr><td>Parts</td><td></td><td>%s %.0f</td></tr>
+      %s
     </tbody>
   </table>
   <table>
@@ -227,11 +265,144 @@ func (d *CustomerReceiptDocument) HTML() string {
 		html.EscapeString(d.ProblemSummary),
 		html.EscapeString(d.Currency), d.LaborAmount,
 		html.EscapeString(d.Currency), d.PartsAmount,
+		saleRow,
 		payRows.String(),
 		html.EscapeString(d.Currency), d.NetSubtotal,
 		html.EscapeString(d.Currency), d.VATAmount,
 		html.EscapeString(d.Currency), d.TotalDue,
 		html.EscapeString(d.Currency), d.Paid,
 		html.EscapeString(d.Currency), d.Balance,
+	)
+}
+
+// IntakeSlipHTML is the short check-in ticket: identity + pickup QR only.
+// No prices — the final receipt covers money when the job is done.
+func (d *CustomerReceiptDocument) IntakeSlipHTML() string {
+	phone := ""
+	if strings.TrimSpace(d.CustomerPhone) != "" {
+		phone = " · " + html.EscapeString(d.CustomerPhone)
+	}
+	imei := ""
+	if strings.TrimSpace(d.IMEI) != "" {
+		imei = fmt.Sprintf(`<div class="row"><span class="k">IMEI</span><span class="v">%s</span></div>`, html.EscapeString(d.IMEI))
+	}
+	problem := strings.TrimSpace(d.ProblemSummary)
+	if problem == "" {
+		problem = "—"
+	}
+	branch := ""
+	if strings.TrimSpace(d.BranchName) != "" {
+		branch = fmt.Sprintf(`<div class="muted tiny">%s</div>`, html.EscapeString(d.BranchName))
+	}
+	slogan := ""
+	if strings.TrimSpace(d.ShopSlogan) != "" {
+		slogan = fmt.Sprintf(`<div class="center tiny muted">%s</div>`, html.EscapeString(d.ShopSlogan))
+	}
+	contactParts := make([]string, 0, 3)
+	if v := strings.TrimSpace(d.ShopPhone); v != "" {
+		contactParts = append(contactParts, html.EscapeString(v))
+	}
+	if v := strings.TrimSpace(d.ShopEmail); v != "" {
+		contactParts = append(contactParts, receipts.EmailOff(html.EscapeString(v)))
+	}
+	if v := strings.TrimSpace(d.ShopWebsite); v != "" {
+		contactParts = append(contactParts, html.EscapeString(v))
+	}
+	contact := ""
+	if len(contactParts) > 0 {
+		contact = fmt.Sprintf(`<div class="center tiny muted">%s</div>`, strings.Join(contactParts, " · "))
+	}
+
+	qrBlock := ""
+	code := strings.TrimSpace(d.PickupCode)
+	if code != "" {
+		payload := PickupQRPayload(code)
+		img := ""
+		if uri, err := receipts.QRDataURIPNG(payload); err == nil {
+			img = fmt.Sprintf(`<img class="qr" src="%s" width="140" height="140" alt="Pickup QR">`, html.EscapeString(uri))
+		}
+		qrBlock = fmt.Sprintf(`
+  <div class="callout">
+    %s
+    <div class="callout-note">Scan this QR when collecting. Your code was sent by SMS.</div>
+  </div>`, img)
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intake %s</title>
+<style>
+  @page { size: 80mm auto; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: #02012e; -webkit-font-smoothing: antialiased;
+  }
+  .sheet {
+    width: 72mm; margin: 0 auto; padding: 4mm 3mm 6mm;
+    font-size: 12px; line-height: 1.35;
+  }
+  .shop {
+    text-align: center; font-weight: 700; font-size: 15px;
+    letter-spacing: .04em; text-transform: uppercase; margin: 0 0 2px;
+  }
+  .title {
+    text-align: center; font-weight: 700; letter-spacing: .16em;
+    text-transform: uppercase; font-size: 11px; margin: 6px 0 8px;
+  }
+  .muted { color: #5b5b70; }
+  .tiny { font-size: 10px; }
+  .center { text-align: center; }
+  .rule { border: none; border-top: 1px dashed #c8c8d6; margin: 8px 0; }
+  .row { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; }
+  .row .k { color: #5b5b70; flex: 0 0 auto; }
+  .row .v { text-align: right; word-break: break-word; }
+  .problem { margin-top: 6px; }
+  .callout {
+    margin-top: 10px; text-align: center;
+    border: 1.5px dashed #060386; border-radius: 6px; padding: 8px 6px;
+  }
+  .qr { display: block; margin: 0 auto 6px; width: 140px; height: 140px; }
+  .callout-note { font-size: 10px; color: #5b5b70; margin-top: 4px; }
+  .footer { margin-top: 10px; text-align: center; font-size: 10px; color: #5b5b70; }
+  .footer p { margin: 0 0 3px; }
+  @media print {
+    .sheet { width: 80mm; margin: 0; box-shadow: none; }
+  }
+</style></head><body>
+<div class="sheet">
+  <div class="shop">%s</div>
+  %s
+  %s
+  %s
+  <div class="title">Intake slip</div>
+  <div class="center"><strong>%s</strong></div>
+  <div class="center muted tiny">%s</div>
+  <hr class="rule">
+  <div class="row"><span class="k">Customer</span><span class="v">%s%s</span></div>
+  <div class="row"><span class="k">Device</span><span class="v">%s</span></div>
+  %s
+  <div class="problem"><span class="muted">Issue</span><br>%s</div>
+  %s
+  <div class="footer">
+    <p>Keep this slip for collection.</p>
+    <p>Final charges appear on your repair receipt.</p>
+  </div>
+</div>
+</body></html>`,
+		html.EscapeString(d.JobCode),
+		html.EscapeString(d.ShopName),
+		slogan,
+		contact,
+		branch,
+		html.EscapeString(d.JobCode),
+		html.EscapeString(d.IssuedAt.Format("2 Jan 2006 · 15:04")),
+		html.EscapeString(d.CustomerName), phone,
+		html.EscapeString(d.DeviceLabel),
+		imei,
+		html.EscapeString(problem),
+		qrBlock,
 	)
 }

@@ -398,7 +398,11 @@ func (s *Service) dispatchPartRequest(ctx context.Context, in CommandInput) (map
 	if id := uuidFromPayload(in.Payload, "part_request_id"); id != uuid.Nil {
 		clientID = &id
 	}
-	pr, err := s.inventory.CreatePartRequest(ctx, in.TenantID, branchID, repairID, variantID, desc, qty, in.UserID, in.ActionID, clientID)
+	var supplierID *uuid.UUID
+	if sid := uuidFromPayload(in.Payload, "supplier_id"); sid != uuid.Nil {
+		supplierID = &sid
+	}
+	pr, err := s.inventory.CreatePartRequest(ctx, in.TenantID, branchID, repairID, variantID, desc, qty, supplierID, in.UserID, in.ActionID, clientID)
 	if err != nil {
 		return nil, err
 	}

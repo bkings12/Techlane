@@ -1,0 +1,5 @@
+auth_sessions/
+chat_data/
+.env
+.env.local
+node_modules/

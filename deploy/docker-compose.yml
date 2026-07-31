@@ -48,6 +48,8 @@ services:
       OBJECT_STORAGE_BUCKET: techlane-attachments
       OBJECT_STORAGE_ACCESS_KEY: techlane
       OBJECT_STORAGE_SECRET_KEY: techlanesecret
+      WHATSAPP_SERVICE_URL: http://whatsapp:3001
+      WHATSAPP_SERVICE_SECRET: dev-whatsapp-service-secret
     ports:
       - "8080:8080"
     depends_on:
@@ -55,7 +57,25 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      whatsapp:
+        condition: service_started
+
+  whatsapp:
+    build:
+      context: ../services/whatsapp-service
+      dockerfile: Dockerfile
+    environment:
+      WHATSAPP_PORT: "3001"
+      WHATSAPP_SERVICE_SECRET: dev-whatsapp-service-secret
+      WHATSAPP_INBOUND_URL: http://platform:8080/api/v1/whatsapp/inbound
+    volumes:
+      - wa_auth:/app/auth_sessions
+      - wa_chats:/app/chat_data
+    expose:
+      - "3001"
 
 volumes:
   pgdata:
   miniodata:
+  wa_auth:
+  wa_chats:

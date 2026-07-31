@@ -20,6 +20,10 @@ const (
 	defaultTenantName = "TechLane"
 	refreshTokenTTL   = 7 * 24 * time.Hour
 	accessTokenTTL    = 15 * time.Minute
+
+	maxFailedLoginAttempts = 5
+	baseLockoutDuration    = 5 * time.Minute
+	maxLockoutDuration     = 60 * time.Minute
 )
 
 var (
@@ -27,13 +31,70 @@ var (
 	ErrInvalidRefresh     = errors.New("invalid refresh token")
 )
 
+// ErrAccountLocked is returned when a user has exceeded the failed-login
+// threshold. Callers should surface Until so the client can show a retry time.
+type ErrAccountLocked struct {
+	Until time.Time
+}
+
+func (e *ErrAccountLocked) Error() string {
+	return fmt.Sprintf("account locked until %s", e.Until.Format(time.RFC3339))
+}
+
+// dummyPasswordHash is compared against on unknown-email login attempts so the
+// response time doesn't leak whether an account exists (timing side channel).
+var dummyPasswordHash = mustBcryptHash("dummy-password-for-timing-normalization")
+
+func mustBcryptHash(pw string) string {
+	h, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return string(h)
+}
+
+// lockoutDuration returns how long to lock the account given the number of
+// consecutive failures, escalating (5m, 10m, 20m, ... capped at 60m).
+func lockoutDuration(failedCount int) time.Duration {
+	if failedCount < maxFailedLoginAttempts {
+		return 0
+	}
+	over := failedCount - maxFailedLoginAttempts
+	if over > 4 {
+		over = 4
+	}
+	d := baseLockoutDuration * time.Duration(1<<uint(over))
+	if d > maxLockoutDuration {
+		d = maxLockoutDuration
+	}
+	return d
+}
+
+// AuditSink records security-relevant events. Implemented by audit.Service.
+type AuditSink interface {
+	Record(ctx context.Context, tenantID uuid.UUID, actorID *uuid.UUID, action, entityType string, entityID *uuid.UUID, payload map[string]any, corrID uuid.UUID) error
+}
+
 type Service struct {
 	pool      *pgxpool.Pool
 	jwtSecret string
+	auditSink AuditSink
 }
 
 func NewService(pool *pgxpool.Pool, jwtSecret string) *Service {
 	return &Service{pool: pool, jwtSecret: jwtSecret}
+}
+
+// SetAuditSink wires an audit trail for login/MFA/password-reset events.
+func (s *Service) SetAuditSink(sink AuditSink) {
+	s.auditSink = sink
+}
+
+func (s *Service) audit(ctx context.Context, tenantID uuid.UUID, actorID *uuid.UUID, action string, payload map[string]any) {
+	if s.auditSink == nil {
+		return
+	}
+	_ = s.auditSink.Record(ctx, tenantID, actorID, action, "auth", nil, payload, uuid.New())
 }
 
 type TokenPair struct {
@@ -159,23 +220,87 @@ func (s *Service) seed(ctx context.Context) error {
 	return tx.Commit(ctx)
 }
 
-func (s *Service) Login(ctx context.Context, email, password string) (*TokenPair, error) {
+// LoginOutcome is either a fully issued token pair, or a signal that the
+// caller must complete an MFA challenge before tokens are issued.
+type LoginOutcome struct {
+	Tokens         *TokenPair `json:"tokens,omitempty"`
+	MFARequired    bool       `json:"mfa_required,omitempty"`
+	ChallengeToken string     `json:"mfa_challenge,omitempty"`
+}
+
+func (s *Service) Login(ctx context.Context, email, password, ip string) (*LoginOutcome, error) {
 	var userID, tenantID uuid.UUID
 	var hash, displayName string
+	var failedCount int
+	var lockedUntil *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, password_hash, display_name
+		SELECT id, tenant_id, password_hash, display_name, failed_login_count, locked_until
 		FROM identity.users WHERE email = $1 AND status = 'active'`, email).
-		Scan(&userID, &tenantID, &hash, &displayName)
+		Scan(&userID, &tenantID, &hash, &displayName, &failedCount, &lockedUntil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Burn roughly the same CPU time as a real bcrypt compare so
+			// unknown-email vs wrong-password responses aren't distinguishable by timing.
+			_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
 			return nil, ErrInvalidCredentials
 		}
 		return nil, err
 	}
+
+	now := time.Now().UTC()
+	if lockedUntil != nil && lockedUntil.After(now) {
+		s.audit(ctx, tenantID, &userID, "auth.login.blocked", map[string]any{"ip": ip})
+		return nil, &ErrAccountLocked{Until: *lockedUntil}
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		failedCount++
+		var newLock *time.Time
+		if d := lockoutDuration(failedCount); d > 0 {
+			t := now.Add(d)
+			newLock = &t
+		}
+		if _, execErr := s.pool.Exec(ctx, `
+			UPDATE identity.users SET failed_login_count = $1, locked_until = $2 WHERE id = $3`,
+			failedCount, newLock, userID); execErr != nil {
+			return nil, execErr
+		}
+		action := "auth.login.failed"
+		if newLock != nil {
+			action = "auth.login.locked"
+		}
+		s.audit(ctx, tenantID, &userID, action, map[string]any{"ip": ip, "failed_count": failedCount})
+		if newLock != nil {
+			return nil, &ErrAccountLocked{Until: *newLock}
+		}
 		return nil, ErrInvalidCredentials
 	}
-	return s.issueTokens(ctx, userID, tenantID, email, displayName)
+
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE identity.users SET failed_login_count = 0, locked_until = NULL, last_login_at = now() WHERE id = $1`, userID); err != nil {
+		return nil, err
+	}
+	s.audit(ctx, tenantID, &userID, "auth.login.success", map[string]any{"ip": ip})
+
+	mfaEnabled, err := s.isMFAEnabled(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if mfaEnabled {
+		challengeID := uuid.New()
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO identity.mfa_challenges (id, user_id, expires_at) VALUES ($1, $2, $3)`,
+			challengeID, userID, now.Add(5*time.Minute)); err != nil {
+			return nil, err
+		}
+		return &LoginOutcome{MFARequired: true, ChallengeToken: challengeID.String()}, nil
+	}
+
+	pair, err := s.issueTokens(ctx, userID, tenantID, email, displayName)
+	if err != nil {
+		return nil, err
+	}
+	return &LoginOutcome{Tokens: pair}, nil
 }
 
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair, error) {

@@ -48,6 +48,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.HandleFunc("POST /webhooks/mpesa/c2b/confirmation", h.mpesaC2BWebhook)
 	mux.Handle("GET /payments/c2b", auth(http.HandlerFunc(h.listC2B)))
 	mux.Handle("POST /payments/c2b/{id}/match", auth(http.HandlerFunc(h.matchC2B)))
+	mux.Handle("POST /payments/c2b/{id}/match-sale", auth(http.HandlerFunc(h.matchC2BToNewSale)))
 	mux.HandleFunc("POST /customer/repairs/{id}/pay", h.customerRepairPay)
 	mux.HandleFunc("GET /customer/repairs/{id}/payments/{payment_id}", h.customerRepairPaymentStatus)
 }
@@ -189,7 +190,7 @@ func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
 		return
 	}
-	items, err := h.svc.ListPayments(r.Context(), claims.TenantID, 50)
+	items, err := h.svc.ListPayments(r.Context(), claims.TenantID, 100)
 	if err != nil {
 		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
 		return
@@ -290,7 +291,10 @@ func canManualConfirm(claims *authz.Claims) bool {
 func webhookTokenOK(r *http.Request) bool {
 	want := strings.TrimSpace(os.Getenv("MPESA_WEBHOOK_TOKEN"))
 	if want == "" {
-		return true
+		// Unconfigured token is only acceptable outside production/staging;
+		// otherwise anyone could post fake payment confirmations.
+		env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+		return env != "production" && env != "staging"
 	}
 	return r.URL.Query().Get("token") == want
 }
@@ -342,18 +346,24 @@ func (h *Handler) mpesaSTKWebhook(w http.ResponseWriter, r *http.Request) {
 		UPDATE payments.mpesa_stk_transactions SET raw_callback = $1::jsonb, updated_at = now()
 		WHERE payment_id = $2`, string(raw), paymentID)
 	if cb.ResultCode == 0 {
-		// Treat callback as a hint — confirm via STK Query when possible.
-		if _, err := h.svc.ReconcileSTKPayment(r.Context(), tenantID, paymentID); err != nil {
-			ref := cb.CheckoutRequestID
-			if cb.CallbackMetadata != nil {
-				for _, it := range cb.CallbackMetadata.Item {
-					if it.Name == "MpesaReceiptNumber" {
-						ref = fmt.Sprint(it.Value)
-						break
-					}
+		mpesaReceipt := ""
+		if cb.CallbackMetadata != nil {
+			for _, it := range cb.CallbackMetadata.Item {
+				if it.Name == "MpesaReceiptNumber" {
+					mpesaReceipt = strings.TrimSpace(fmt.Sprint(it.Value))
+					break
 				}
 			}
+		}
+		// Prefer STK Query confirmation; still stamp the real M-Pesa receipt from the callback.
+		if _, err := h.svc.ReconcileSTKPayment(r.Context(), tenantID, paymentID); err != nil {
+			ref := mpesaReceipt
+			if ref == "" {
+				ref = cb.CheckoutRequestID
+			}
 			_, _ = h.svc.ConfirmMpesaWebhook(r.Context(), tenantID, paymentID, ref)
+		} else if mpesaReceipt != "" {
+			_, _ = h.svc.ConfirmMpesaWebhook(r.Context(), tenantID, paymentID, mpesaReceipt)
 		}
 	} else {
 		_, _ = h.svc.pool.Exec(r.Context(), `
@@ -468,6 +478,39 @@ func (h *Handler) matchC2B(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pay, err := h.svc.MatchC2BToPayment(r.Context(), claims.TenantID, c2bID, req.PaymentID, claims.UserID)
+	if err != nil {
+		apierrors.Write(w, http.StatusConflict, "CONFLICT", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pay)
+}
+
+func (h *Handler) matchC2BToNewSale(w http.ResponseWriter, r *http.Request) {
+	claims, _ := authz.FromContext(r.Context())
+	if !claims.HasPermission("refunds.approve") && !claims.HasPermission("payments.initiate") && !claims.HasPermission("*") {
+		if !claims.HasPermission("cash.handover.confirm") {
+			apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "insufficient permission to match C2B", httpx.CorrelationID(r.Context()))
+			return
+		}
+	}
+	c2bID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		BranchID   uuid.UUID `json:"branch_id"`
+		LocationID uuid.UUID `json:"location_id"`
+		VariantID  uuid.UUID `json:"variant_id"`
+		Quantity   int       `json:"quantity"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
+		return
+	}
+	pay, err := h.svc.MatchC2BToNewSale(r.Context(), claims.TenantID, c2bID, MatchC2BToNewSaleInput{
+		BranchID: req.BranchID, LocationID: req.LocationID, VariantID: req.VariantID, Quantity: req.Quantity,
+	}, claims.UserID)
 	if err != nil {
 		apierrors.Write(w, http.StatusConflict, "CONFLICT", err.Error(), httpx.CorrelationID(r.Context()))
 		return

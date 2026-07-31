@@ -15,11 +15,13 @@ import (
 )
 
 type Service struct {
-	pool           *pgxpool.Pool
-	bus            *events.Bus
-	riskHook       RiskHook
-	orderPaidHook  OrderPaidHook
-	repairPaidHook RepairPaidHook
+	pool             *pgxpool.Pool
+	bus              *events.Bus
+	riskHook         RiskHook
+	orderPaidHook    OrderPaidHook
+	repairPaidHook   RepairPaidHook
+	outstanding      OutstandingResolver
+	quickSaleCreator QuickSaleCreator
 }
 
 // RiskHook raises and clears leakage alerts.
@@ -38,6 +40,14 @@ func (s *Service) SetOrderPaidHook(h OrderPaidHook) {
 
 func (s *Service) SetRepairPaidHook(h RepairPaidHook) {
 	s.repairPaidHook = h
+}
+
+func (s *Service) SetOutstandingResolver(fn OutstandingResolver) {
+	s.outstanding = fn
+}
+
+func (s *Service) SetQuickSaleCreator(c QuickSaleCreator) {
+	s.quickSaleCreator = c
 }
 
 // RepairPaidHook advances a completed repair to collected when balance is settled.
@@ -72,6 +82,11 @@ func (s *Service) publishPaymentConfirmed(ctx context.Context, tenantID, payment
 	env := events.New("payment.confirmed", tenantID, corrID, map[string]any{
 		"payment_id": paymentID.String(),
 	})
+	var method string
+	if qErr := s.pool.QueryRow(ctx, `
+		SELECT method FROM payments.payments WHERE tenant_id = $1 AND id = $2`, tenantID, paymentID).Scan(&method); qErr == nil && method != "" {
+		env.Payload["method"] = method
+	}
 	if actorID != uuid.Nil {
 		env.ActorID = &actorID
 	}
@@ -101,13 +116,20 @@ func (s *Service) notifyPayableHooks(ctx context.Context, tenantID, paymentID, a
 }
 
 type Payment struct {
-	ID                uuid.UUID `json:"id"`
-	Method            string    `json:"method"`
-	Amount            float64   `json:"amount"`
-	Status            string    `json:"status"`
-	CheckoutRequestID string    `json:"checkout_request_id,omitempty"`
-	Phone             string    `json:"phone,omitempty"`
-	AccountRef        string    `json:"account_reference,omitempty"`
+	ID                uuid.UUID  `json:"id"`
+	Method            string     `json:"method"`
+	Amount            float64    `json:"amount"`
+	Status            string     `json:"status"`
+	CreatedAt         time.Time  `json:"created_at,omitempty"`
+	CheckoutRequestID string     `json:"checkout_request_id,omitempty"`
+	Phone             string     `json:"phone,omitempty"`
+	AccountRef        string     `json:"account_reference,omitempty"`
+	PayableType       string     `json:"payable_type,omitempty"`
+	PayableID         *uuid.UUID `json:"payable_id,omitempty"`
+	JobCode           string     `json:"job_code,omitempty"`
+	CustomerID        *uuid.UUID `json:"customer_id,omitempty"`
+	CustomerName      string     `json:"customer_name,omitempty"`
+	SaleLabel         string     `json:"sale_label,omitempty"`
 }
 
 type CashHandover struct {
@@ -362,9 +384,10 @@ func nullIfEmpty(s string) *string {
 func (s *Service) ConfirmMpesaWebhook(ctx context.Context, tenantID, paymentID uuid.UUID, providerRef string) (*Payment, error) {
 	var method, status string
 	var amount float64
+	var currentRef *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT method, amount, status FROM payments.payments WHERE tenant_id = $1 AND id = $2`, tenantID, paymentID).
-		Scan(&method, &amount, &status)
+		SELECT method, amount, status, provider_ref FROM payments.payments WHERE tenant_id = $1 AND id = $2`, tenantID, paymentID).
+		Scan(&method, &amount, &status, &currentRef)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("payment not found")
@@ -374,8 +397,34 @@ func (s *Service) ConfirmMpesaWebhook(ctx context.Context, tenantID, paymentID u
 	if !IsDigitalMethod(method) {
 		return nil, fmt.Errorf("not a digital payment")
 	}
+
+	// Upgrade stored refs when the STK callback later supplies the real M-Pesa receipt.
+	betterRef := CustomerFacingPaymentRef(providerRef)
+	if betterRef != "" && (status == "allocated" || status == "confirmed") {
+		cur := ""
+		if currentRef != nil {
+			cur = *currentRef
+		}
+		if IsDarajaCheckoutRef(cur) || strings.TrimSpace(cur) == "" {
+			_, _ = s.pool.Exec(ctx, `
+				UPDATE payments.payments SET provider_ref = $1, updated_at = now() WHERE id = $2`, betterRef, paymentID)
+			if method == "mpesa_stk" {
+				_, _ = s.pool.Exec(ctx, `
+					UPDATE payments.mpesa_stk_transactions
+					SET mpesa_receipt = $1, status = 'confirmed', updated_at = now()
+					WHERE payment_id = $2`, betterRef, paymentID)
+			}
+		}
+		return &Payment{ID: paymentID, Method: method, Amount: amount, Status: status}, nil
+	}
+
 	if status == "allocated" || status == "confirmed" {
 		return &Payment{ID: paymentID, Method: method, Amount: amount, Status: status}, nil
+	}
+
+	storeRef := betterRef
+	if storeRef == "" {
+		storeRef = strings.TrimSpace(providerRef)
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -386,7 +435,7 @@ func (s *Service) ConfirmMpesaWebhook(ctx context.Context, tenantID, paymentID u
 
 	_, err = tx.Exec(ctx, `
 		UPDATE payments.payments SET status = 'confirmed', provider_ref = $1, updated_at = now(), version = version + 1
-		WHERE id = $2`, providerRef, paymentID)
+		WHERE id = $2`, storeRef, paymentID)
 	if err != nil {
 		return nil, err
 	}
@@ -401,17 +450,17 @@ func (s *Service) ConfirmMpesaWebhook(ctx context.Context, tenantID, paymentID u
 		_, err = tx.Exec(ctx, `
 			UPDATE payments.mpesa_stk_transactions
 			SET status = 'confirmed', mpesa_receipt = $1, updated_at = now()
-			WHERE payment_id = $2`, providerRef, paymentID)
+			WHERE payment_id = $2`, storeRef, paymentID)
 	case "mpesa_c2b":
 		_, err = tx.Exec(ctx, `
 			UPDATE payments.mpesa_c2b_transactions
 			SET status = 'confirmed', trans_id = COALESCE(NULLIF(trans_id, ''), $1), updated_at = now()
-			WHERE payment_id = $2 AND status IS DISTINCT FROM 'superseded'`, providerRef, paymentID)
+			WHERE payment_id = $2 AND status IS DISTINCT FROM 'superseded'`, storeRef, paymentID)
 	case "bank_paybill", "bank_transfer":
 		_, err = tx.Exec(ctx, `
 			UPDATE payments.bank_transactions
 			SET status = 'confirmed', provider_ref = $1, updated_at = now()
-			WHERE payment_id = $2`, providerRef, paymentID)
+			WHERE payment_id = $2`, storeRef, paymentID)
 	}
 	if err != nil {
 		return nil, err
@@ -717,12 +766,49 @@ func ValidateRefundApprove(creatorID, approverID string) error {
 }
 
 func (s *Service) ListPayments(ctx context.Context, tenantID uuid.UUID, limit int) ([]Payment, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+	if limit <= 0 || limit > 200 {
+		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, method, amount, status FROM payments.payments
-		WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2`, tenantID, limit)
+		SELECT p.id, p.method, p.amount::float8, p.status, p.created_at,
+		       COALESCE(stk.account_reference, c2b.bill_ref_number, bank.account_number, ''),
+		       COALESCE(stk.phone, c2b.msisdn, ''),
+		       COALESCE(a.payable_type, ''),
+		       a.payable_id,
+		       COALESCE(j.job_code, ''),
+		       COALESCE(j.customer_id, sc.customer_id),
+		       COALESCE(cust.full_name, scust.full_name, ''),
+		       CASE WHEN a.payable_type = 'sale' THEN COALESCE('Sale ' || LEFT(a.payable_id::text, 8), '') ELSE '' END
+		FROM payments.payments p
+		LEFT JOIN LATERAL (
+			SELECT payable_type, payable_id
+			FROM payments.payment_allocations
+			WHERE payment_id = p.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) a ON true
+		LEFT JOIN LATERAL (
+			SELECT account_reference, phone FROM payments.mpesa_stk_transactions
+			WHERE payment_id = p.id
+			ORDER BY created_at DESC LIMIT 1
+		) stk ON true
+		LEFT JOIN LATERAL (
+			SELECT bill_ref_number, msisdn FROM payments.mpesa_c2b_transactions
+			WHERE payment_id = p.id AND status IS DISTINCT FROM 'superseded'
+			ORDER BY created_at DESC LIMIT 1
+		) c2b ON true
+		LEFT JOIN LATERAL (
+			SELECT account_number FROM payments.bank_transactions
+			WHERE payment_id = p.id
+			ORDER BY created_at DESC LIMIT 1
+		) bank ON true
+		LEFT JOIN repair.repair_jobs j ON a.payable_type = 'repair' AND j.id = a.payable_id AND j.tenant_id = p.tenant_id
+		LEFT JOIN repair.customers cust ON cust.id = j.customer_id
+		LEFT JOIN payments.store_credits sc ON a.payable_type = 'store_credit' AND sc.id = a.payable_id
+		LEFT JOIN repair.customers scust ON scust.id = sc.customer_id
+		WHERE p.tenant_id = $1
+		ORDER BY p.created_at DESC
+		LIMIT $2`, tenantID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -730,9 +816,16 @@ func (s *Service) ListPayments(ctx context.Context, tenantID uuid.UUID, limit in
 	var items []Payment
 	for rows.Next() {
 		var p Payment
-		if err := rows.Scan(&p.ID, &p.Method, &p.Amount, &p.Status); err != nil {
+		var payableID, customerID *uuid.UUID
+		if err := rows.Scan(
+			&p.ID, &p.Method, &p.Amount, &p.Status, &p.CreatedAt,
+			&p.AccountRef, &p.Phone, &p.PayableType, &payableID,
+			&p.JobCode, &customerID, &p.CustomerName, &p.SaleLabel,
+		); err != nil {
 			return nil, err
 		}
+		p.PayableID = payableID
+		p.CustomerID = customerID
 		items = append(items, p)
 	}
 	return items, nil

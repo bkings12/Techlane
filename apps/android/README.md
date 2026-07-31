@@ -38,7 +38,7 @@ cd ~/TechLane/apps/android
 
 ### Release builds & API base
 
-Release APKs read `BuildConfig.API_BASE` from the release build type (default `https://api.example.com/api/v1`). Override at build time with Gradle property `apiBase`:
+Release APKs read `BuildConfig.API_BASE` from the release build type (default `https://api.techlane.co.ke/api/v1`). Override at build time with Gradle property `apiBase`:
 
 ```bash
 ./gradlew :app:assembleRelease -PapiBase=https://your-host.example/api/v1

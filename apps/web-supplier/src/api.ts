@@ -1,5 +1,13 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080/api/v1";
 const TOKEN_KEY = "supplier_session_token";
+const SESSION_EXPIRED_EVENT = "techlane:supplier-session-expired";
+
+export function onSessionExpired(handler: () => void) {
+  if (typeof window === "undefined") return () => undefined;
+  const listener = () => handler();
+  window.addEventListener(SESSION_EXPIRED_EVENT, listener);
+  return () => window.removeEventListener(SESSION_EXPIRED_EVENT, listener);
+}
 
 export type SupplierContact = {
   id: string;
@@ -77,7 +85,13 @@ async function request<T>(path: string, init: RequestInit = {}, authed = false):
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
-  if (!res.ok) await parseError(res);
+  if (!res.ok) {
+    if (res.status === 401 && authed) {
+      clearToken();
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
+    await parseError(res);
+  }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -173,6 +187,10 @@ export async function openIssueVoucher(issueId: string) {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`${API_BASE}/supplier/issues/${issueId}/voucher.html`, { headers });
   if (!res.ok) {
+    if (res.status === 401) {
+      clearToken();
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error?.message ?? data?.message ?? `HTTP ${res.status}`);
   }
@@ -189,6 +207,10 @@ export async function downloadIssueVoucherPDF(issueId: string) {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`${API_BASE}/supplier/issues/${issueId}/voucher.pdf`, { headers });
   if (!res.ok) {
+    if (res.status === 401) {
+      clearToken();
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error?.message ?? data?.message ?? `HTTP ${res.status}`);
   }

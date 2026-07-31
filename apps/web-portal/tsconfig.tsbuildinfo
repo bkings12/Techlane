@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx"],"version":"6.0.3"}
+{"root":["./src/App.tsx","./src/api.ts","./src/format.ts","./src/main.tsx","./src/session.tsx","./src/components/EmptyState.tsx","./src/components/PortalTabs.tsx","./src/pages/AuthPage.tsx","./src/pages/GuestPage.tsx","./src/pages/ProfilePage.tsx","./src/pages/RepairDetailPage.tsx","./src/pages/RepairsPage.tsx"],"version":"6.0.3"}

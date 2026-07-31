@@ -21,6 +21,12 @@ func IsCashMethod(method string) bool {
 	return method == "cash"
 }
 
+// IsCashOnPickup is storefront branch pickup paid in cash at the counter
+// (not cash-on-delivery and not till cash that needs dual-control handover).
+func IsCashOnPickup(method string) bool {
+	return method == "cash_on_pickup"
+}
+
 func IsDigitalMethod(method string) bool {
 	switch method {
 	case "mpesa_stk", "mpesa_c2b", "bank_paybill", "bank_transfer", "card", "store_credit":
@@ -31,6 +37,9 @@ func IsDigitalMethod(method string) bool {
 }
 
 func InitialPaymentStatus(method string) string {
+	if IsCashOnPickup(method) {
+		return "pending"
+	}
 	if IsCashMethod(method) {
 		return "pending_handover"
 	}

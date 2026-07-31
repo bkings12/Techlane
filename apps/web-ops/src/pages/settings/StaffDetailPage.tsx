@@ -99,7 +99,7 @@ export function StaffDetailPage() {
   if (!user && !error) return <div className="boot">Loading…</div>;
 
   return (
-    <div>
+    <div className="settings-page">
       <PageHeader
         title={user?.display_name ?? "Staff"}
         subtitle={user?.email}
@@ -111,109 +111,111 @@ export function StaffDetailPage() {
       />
       {error ? <p className="form-error">{error}</p> : null}
 
-      <form className="panel form-grid" onSubmit={saveAccess}>
-        <h2>Roles & branches</h2>
-        <label>
-          Status
-          <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="active">active</option>
-            <option value="inactive">inactive</option>
-          </select>
-        </label>
-        <fieldset className="fieldset">
-          <legend>Roles</legend>
-          <div className="chip-row">
-            {roleOptions.map((role) => (
-              <label key={role.key} className="check-chip">
-                <input
-                  type="checkbox"
-                  checked={roles.includes(role.key)}
-                  onChange={() => {
-                    setRoles((prev) => {
-                      const next = prev.includes(role.key)
-                        ? prev.filter((r) => r !== role.key)
-                        : [...prev, role.key];
-                      if (next.includes("technician")) {
-                        setBranchIds((ids) => ids.slice(0, 1));
-                      }
-                      return next;
-                    });
-                  }}
-                />
-                {role.name}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <fieldset className="fieldset">
-          <legend>Branches</legend>
-          {roles.includes("technician") ? <p className="hint">Technicians must belong to exactly one shop.</p> : null}
-          <div className="chip-row">
-            {branches.map((b) => (
-              <label key={b.id} className="check-chip">
-                <input
-                  type="checkbox"
-                  checked={branchIds.includes(b.id)}
-                  onChange={() =>
-                    setBranchIds((prev) => {
-                      if (roles.includes("technician")) {
-                        return prev.includes(b.id) ? [] : [b.id];
-                      }
-                      return prev.includes(b.id) ? prev.filter((x) => x !== b.id) : [...prev, b.id];
-                    })
-                  }
-                />
-                {b.name}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <Button
-          type="submit"
-          disabled={busy || (roles.includes("technician") && branchIds.length !== 1)}
-        >
-          Save access
-        </Button>
-      </form>
+      <div className="settings-split">
+        <form className="settings-form-card form-grid" onSubmit={saveAccess}>
+          <h2>Roles & branches</h2>
+          <label>
+            Status
+            <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="active">active</option>
+              <option value="inactive">inactive</option>
+            </select>
+          </label>
+          <fieldset className="fieldset">
+            <legend>Roles</legend>
+            <div className="chip-row">
+              {roleOptions.map((role) => (
+                <label key={role.key} className="check-chip">
+                  <input
+                    type="checkbox"
+                    checked={roles.includes(role.key)}
+                    onChange={() => {
+                      setRoles((prev) => {
+                        const next = prev.includes(role.key)
+                          ? prev.filter((r) => r !== role.key)
+                          : [...prev, role.key];
+                        if (next.includes("technician")) {
+                          setBranchIds((ids) => ids.slice(0, 1));
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                  {role.name}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="fieldset">
+            <legend>Branches</legend>
+            {roles.includes("technician") ? <p className="hint">Technicians must belong to exactly one shop.</p> : null}
+            <div className="chip-row">
+              {branches.map((b) => (
+                <label key={b.id} className="check-chip">
+                  <input
+                    type="checkbox"
+                    checked={branchIds.includes(b.id)}
+                    onChange={() =>
+                      setBranchIds((prev) => {
+                        if (roles.includes("technician")) {
+                          return prev.includes(b.id) ? [] : [b.id];
+                        }
+                        return prev.includes(b.id) ? prev.filter((x) => x !== b.id) : [...prev, b.id];
+                      })
+                    }
+                  />
+                  {b.name}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <Button
+            type="submit"
+            disabled={busy || (roles.includes("technician") && branchIds.length !== 1)}
+          >
+            Save access
+          </Button>
+        </form>
 
-      <form className="panel form-grid" onSubmit={saveCommission}>
-        <h2>Optional commission</h2>
-        <label className="check-chip">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          Pay commissions for this technician
-        </label>
-        {enabled ? (
-          <>
-            <label>
-              Type
-              <select
-                className="input"
-                value={ctype}
-                onChange={(e) => setCtype(e.target.value)}
-              >
-                <option value="percent_of_job">Percent of job labor</option>
-                <option value="fixed_per_job">Fixed amount per job</option>
-              </select>
-            </label>
-            {ctype === "percent_of_job" ? (
+        <form className="settings-form-card form-grid" onSubmit={saveCommission}>
+          <h2>Optional commission</h2>
+          <label className="check-chip">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            Pay commissions for this technician
+          </label>
+          {enabled ? (
+            <>
               <label>
-                Percent
-                <Input type="number" min={0} max={100} step={0.1} value={percent} onChange={(e) => setPercent(e.target.value)} />
+                Type
+                <select
+                  className="input"
+                  value={ctype}
+                  onChange={(e) => setCtype(e.target.value)}
+                >
+                  <option value="percent_of_job">Percent of job labor</option>
+                  <option value="fixed_per_job">Fixed amount per job</option>
+                </select>
               </label>
-            ) : (
-              <label>
-                Fixed amount (KES)
-                <Input type="number" min={0} step={1} value={fixed} onChange={(e) => setFixed(e.target.value)} />
-              </label>
-            )}
-          </>
-        ) : null}
-        <p className="hint">{preview}</p>
-        {user?.profile?.commission_enabled ? <Badge tone="pending">Commission active</Badge> : null}
-        <Button type="submit" disabled={busy}>
-          Save commission
-        </Button>
-      </form>
+              {ctype === "percent_of_job" ? (
+                <label>
+                  Percent
+                  <Input type="number" min={0} max={100} step={0.1} value={percent} onChange={(e) => setPercent(e.target.value)} />
+                </label>
+              ) : (
+                <label>
+                  Fixed amount (KES)
+                  <Input type="number" min={0} step={1} value={fixed} onChange={(e) => setFixed(e.target.value)} />
+                </label>
+              )}
+            </>
+          ) : null}
+          <p className="hint">{preview}</p>
+          {user?.profile?.commission_enabled ? <Badge tone="pending">Commission active</Badge> : null}
+          <Button type="submit" disabled={busy}>
+            Save commission
+          </Button>
+        </form>
+      </div>
     </div>
   );
 }

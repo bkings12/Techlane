@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Avatar, Badge, Button, EmptyState, ICONS, PageHeader, SearchInput } from "../components/ui";
 import { getCustomer, listCustomers, type Customer, type Device, type RepairJob } from "../lib/api";
+import { statusTone } from "../lib/repairStatus";
 
 export function CustomersPage() {
   const [q, setQ] = useState("");
@@ -52,8 +53,11 @@ export function CustomersPage() {
   }
 
   return (
-    <div>
-      <PageHeader title="Customers" subtitle="Search by name or phone" />
+    <div className="customer-directory">
+      <PageHeader
+        title="Customers"
+        subtitle="Directory on the left — devices and jobs preview on the right."
+      />
       {error ? <p className="form-error">{error}</p> : null}
 
       <form className="pos-toolbar" onSubmit={onSubmit}>
@@ -64,10 +68,14 @@ export function CustomersPage() {
         <Button type="submit" disabled={busy}>
           {busy ? "Searching…" : "Search"}
         </Button>
+        <div className="trash-count">{items.length} on file</div>
       </form>
 
-      <div className="repair-grid">
-        <section className="panel">
+      <div className="directory-layout">
+        <section className="panel" style={{ padding: "0.85rem" }}>
+          <div className="panel-head">
+            <h2>Directory</h2>
+          </div>
           {items.length === 0 ? (
             <EmptyState
               title="No customers"
@@ -75,94 +83,92 @@ export function CustomersPage() {
               icon={ICONS.customers}
             />
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Phone</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((c) => (
-                  <tr key={c.id}>
-                    <td>
-                      <span className="name-cell">
-                        <Avatar name={c.full_name} size={30} />
+            <ul className="customer-board">
+              {items.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    className={`customer-row ${selectedId === c.id ? "active" : ""}`}
+                    disabled={busy}
+                    onClick={() => void loadDetail(c.id)}
+                  >
+                    <span className="name-cell">
+                      <Avatar name={c.full_name} size={34} />
+                      <span>
                         <strong>{c.full_name}</strong>
+                        <div className="muted">{c.phone ?? "No phone"}</div>
                       </span>
-                    </td>
-                    <td>{c.phone ?? "—"}</td>
-                    <td>
-                      <Link className="button secondary" to={`/customers/${c.id}`}>
-                        Open
-                      </Link>
-                      <Button
-                        type="button"
-                        variant={selectedId === c.id ? "primary" : "secondary"}
-                        disabled={busy}
-                        onClick={() => void loadDetail(c.id)}
-                      >
-                        Preview
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </span>
+                    <Link
+                      className="btn btn-ghost"
+                      to={`/customers/${c.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Open
+                    </Link>
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
         </section>
 
-        <section className="panel">
+        <aside className="preview-rail" aria-label="Customer preview">
           {!detail ? (
-            <EmptyState title="Customer detail" body="Select a customer to view devices and repairs." icon={ICONS.search} />
+            <EmptyState title="Select a customer" body="Preview devices and repairs without leaving the directory." icon={ICONS.search} />
           ) : (
             <>
-              <h2>{detail.customer.full_name}</h2>
-              <dl className="meta-dl">
-                <dt>Phone</dt>
-                <dd>{detail.customer.phone ?? "—"}</dd>
-                <dt>Email</dt>
-                <dd>{detail.customer.email ?? "—"}</dd>
-              </dl>
+              <div>
+                <h2 style={{ margin: 0 }}>{detail.customer.full_name}</h2>
+                <p className="muted" style={{ margin: "0.35rem 0 0" }}>
+                  {[detail.customer.phone, detail.customer.email].filter(Boolean).join(" · ") || "No contact"}
+                </p>
+                <div className="btn-row" style={{ marginTop: "0.75rem" }}>
+                  <Link className="btn btn-primary" to={`/customers/${detail.customer.id}`}>
+                    Full dossier
+                  </Link>
+                </div>
+              </div>
 
-              <h3>Devices</h3>
-              {detail.devices.length === 0 ? (
-                <p className="muted">No devices on file.</p>
-              ) : (
-                <ul className="part-list">
-                  {detail.devices.map((d) => (
-                    <li key={d.id} className="part-card">
-                      <strong>{[d.brand, d.model].filter(Boolean).join(" ") || d.kind}</strong>
-                      <div className="muted">{d.kind}</div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <div>
+                <h3>Devices · {detail.devices.length}</h3>
+                {detail.devices.length === 0 ? (
+                  <p className="muted">No devices on file.</p>
+                ) : (
+                  <ul className="device-board">
+                    {detail.devices.slice(0, 6).map((d) => (
+                      <li key={d.id} className="device-tile">
+                        <strong>{[d.brand, d.model].filter(Boolean).join(" ") || d.kind}</strong>
+                        <span className="muted">{d.kind}{d.imei ? ` · IMEI ${d.imei}` : ""}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
 
-              <h3>Repairs</h3>
-              {detail.repairs.length === 0 ? (
-                <p className="muted">No repair jobs.</p>
-              ) : (
-                <ul className="part-list">
-                  {detail.repairs.map((r) => (
-                    <li key={r.id} className="part-card">
-                      <div className="part-head">
-                        <div>
-                          <Link to={`/repairs/${r.id}`}>
-                            {r.job_code ?? r.id.slice(0, 8)}
-                          </Link>
-                          <div className="muted">{r.problem_summary}</div>
-                        </div>
-                        <Badge tone="info">{r.status}</Badge>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <div>
+                <h3>Repairs · {detail.repairs.length}</h3>
+                {detail.repairs.length === 0 ? (
+                  <p className="muted">No repair jobs.</p>
+                ) : (
+                  <ul className="repair-history">
+                    {detail.repairs.slice(0, 8).map((r) => (
+                      <li key={r.id}>
+                        <Link className="repair-history-row" to={`/repairs/${r.id}`}>
+                          <span>
+                            <strong className="mono">{r.job_code ?? r.id.slice(0, 8)}</strong>
+                            <div className="muted">{r.problem_summary}</div>
+                          </span>
+                          <Badge tone={statusTone(r.status)}>{r.status.replaceAll("_", " ")}</Badge>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </>
           )}
-        </section>
+        </aside>
       </div>
     </div>
   );

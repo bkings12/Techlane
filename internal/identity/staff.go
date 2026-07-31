@@ -21,9 +21,13 @@ var (
 )
 
 type Branch struct {
-	ID   uuid.UUID `json:"id"`
-	Name string    `json:"name"`
-	Code string    `json:"code"`
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	Code     string    `json:"code"`
+	Location string    `json:"location,omitempty"`
+	Phone    string    `json:"phone,omitempty"`
+	Hours    string    `json:"hours,omitempty"`
+	MapURL   string    `json:"map_url,omitempty"`
 }
 
 type EmployeeProfile struct {
@@ -88,7 +92,8 @@ func validateTechnicianBranchAccess(isTechnician bool, branchIDs []uuid.UUID) er
 
 func (s *Service) ListBranches(ctx context.Context, tenantID uuid.UUID) ([]Branch, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, code FROM identity.branches WHERE tenant_id = $1 ORDER BY name`, tenantID)
+		SELECT id, name, code, COALESCE(location, ''), COALESCE(phone, ''), COALESCE(hours, ''), COALESCE(map_url, '')
+		FROM identity.branches WHERE tenant_id = $1 ORDER BY name`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +101,7 @@ func (s *Service) ListBranches(ctx context.Context, tenantID uuid.UUID) ([]Branc
 	var items []Branch
 	for rows.Next() {
 		var b Branch
-		if err := rows.Scan(&b.ID, &b.Name, &b.Code); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.Code, &b.Location, &b.Phone, &b.Hours, &b.MapURL); err != nil {
 			return nil, err
 		}
 		items = append(items, b)
@@ -104,16 +109,30 @@ func (s *Service) ListBranches(ctx context.Context, tenantID uuid.UUID) ([]Branc
 	return items, nil
 }
 
-func (s *Service) CreateBranch(ctx context.Context, tenantID uuid.UUID, name, code string) (*Branch, error) {
+// BranchContactInput carries the optional store-locator fields — nil means
+// "leave unchanged" on update, or "blank" on create.
+type BranchContactInput struct {
+	Phone  *string
+	Hours  *string
+	MapURL *string
+}
+
+func (s *Service) CreateBranch(ctx context.Context, tenantID uuid.UUID, name, code, location string, contact BranchContactInput) (*Branch, error) {
 	name = strings.TrimSpace(name)
 	code = strings.ToUpper(strings.TrimSpace(code))
+	location = strings.TrimSpace(location)
 	if name == "" || code == "" {
 		return nil, fmt.Errorf("%w: branch name and code required", ErrInvalidInput)
 	}
-	branch := &Branch{ID: uuid.New(), Name: name, Code: code}
+	branch := &Branch{
+		ID: uuid.New(), Name: name, Code: code, Location: location,
+		Phone: trimmedOrEmpty(contact.Phone), Hours: trimmedOrEmpty(contact.Hours), MapURL: trimmedOrEmpty(contact.MapURL),
+	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO identity.branches (id, tenant_id, name, code)
-		VALUES ($1, $2, $3, $4)`, branch.ID, tenantID, branch.Name, branch.Code)
+		INSERT INTO identity.branches (id, tenant_id, name, code, location, phone, hours, map_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		branch.ID, tenantID, branch.Name, branch.Code, branch.Location,
+		nullIfEmpty(branch.Phone), nullIfEmpty(branch.Hours), nullIfEmpty(branch.MapURL))
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return nil, fmt.Errorf("%w: branch code already exists", ErrInvalidInput)
@@ -123,11 +142,12 @@ func (s *Service) CreateBranch(ctx context.Context, tenantID uuid.UUID, name, co
 	return branch, nil
 }
 
-func (s *Service) UpdateBranch(ctx context.Context, tenantID, branchID uuid.UUID, name, code *string) (*Branch, error) {
+func (s *Service) UpdateBranch(ctx context.Context, tenantID, branchID uuid.UUID, name, code, location *string, contact BranchContactInput) (*Branch, error) {
 	var branch Branch
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, code FROM identity.branches WHERE tenant_id = $1 AND id = $2`,
-		tenantID, branchID).Scan(&branch.ID, &branch.Name, &branch.Code)
+		SELECT id, name, code, COALESCE(location, ''), COALESCE(phone, ''), COALESCE(hours, ''), COALESCE(map_url, '')
+		FROM identity.branches WHERE tenant_id = $1 AND id = $2`,
+		tenantID, branchID).Scan(&branch.ID, &branch.Name, &branch.Code, &branch.Location, &branch.Phone, &branch.Hours, &branch.MapURL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -140,12 +160,26 @@ func (s *Service) UpdateBranch(ctx context.Context, tenantID, branchID uuid.UUID
 	if code != nil {
 		branch.Code = strings.ToUpper(strings.TrimSpace(*code))
 	}
+	if location != nil {
+		branch.Location = strings.TrimSpace(*location)
+	}
+	if contact.Phone != nil {
+		branch.Phone = strings.TrimSpace(*contact.Phone)
+	}
+	if contact.Hours != nil {
+		branch.Hours = strings.TrimSpace(*contact.Hours)
+	}
+	if contact.MapURL != nil {
+		branch.MapURL = strings.TrimSpace(*contact.MapURL)
+	}
 	if branch.Name == "" || branch.Code == "" {
 		return nil, fmt.Errorf("%w: branch name and code required", ErrInvalidInput)
 	}
 	_, err = s.pool.Exec(ctx, `
-		UPDATE identity.branches SET name = $1, code = $2 WHERE tenant_id = $3 AND id = $4`,
-		branch.Name, branch.Code, tenantID, branchID)
+		UPDATE identity.branches SET name = $1, code = $2, location = $3, phone = $4, hours = $5, map_url = $6
+		WHERE tenant_id = $7 AND id = $8`,
+		branch.Name, branch.Code, branch.Location, nullIfEmpty(branch.Phone), nullIfEmpty(branch.Hours), nullIfEmpty(branch.MapURL),
+		tenantID, branchID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return nil, fmt.Errorf("%w: branch code already exists", ErrInvalidInput)
@@ -155,14 +189,21 @@ func (s *Service) UpdateBranch(ctx context.Context, tenantID, branchID uuid.UUID
 	return &branch, nil
 }
 
+func trimmedOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(*s)
+}
+
 func (s *Service) DeleteBranch(ctx context.Context, tenantID, branchID uuid.UUID) error {
 	var assigned int
 	if err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM identity.user_branches WHERE branch_id = $1`, branchID).Scan(&assigned); err != nil {
+		SELECT COUNT(*) FROM identity.branch_memberships WHERE branch_id = $1`, branchID).Scan(&assigned); err != nil {
 		return err
 	}
 	if assigned > 0 {
-		return fmt.Errorf("%w: branch still has assigned users", ErrInvalidInput)
+		return fmt.Errorf("%w: branch still has assigned users — reassign staff first", ErrInvalidInput)
 	}
 	tag, err := s.pool.Exec(ctx, `DELETE FROM identity.branches WHERE tenant_id = $1 AND id = $2`, tenantID, branchID)
 	if err != nil {

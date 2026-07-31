@@ -5,7 +5,7 @@ import type {
   ReactNode,
   TextareaHTMLAttributes,
 } from "react";
-import { useRef } from "react";
+import { forwardRef, useRef, useState } from "react";
 
 function combineClasses(base: string, extra?: string) {
   return extra ? `${base} ${extra}`.trim() : base;
@@ -16,7 +16,9 @@ export function Button({
   className,
   children,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "ghost" }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "ghost" | "gold" | "danger";
+}) {
   return (
     <button className={combineClasses(`btn btn-${variant}`, className)} {...props}>
       {children}
@@ -24,20 +26,70 @@ export function Button({
   );
 }
 
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={combineClasses("input", className)} {...props} />;
-}
+export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input(
+  { className, ...props },
+  ref,
+) {
+  return <input ref={ref} className={combineClasses("input", className)} {...props} />;
+});
 
 export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <textarea className={combineClasses("input", className)} {...props} />;
 }
 
 /** Text input with a leading search icon — use for free-text filters. */
-export function SearchInput({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+export const SearchInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
+  function SearchInput({ className, ...props }, ref) {
+    return (
+      <span className="search-input">
+        <Icon d="m21 21-4.34-4.34" extra={<circle cx="11" cy="11" r="7" />} size={16} />
+        <input ref={ref} className={combineClasses("input", className)} {...props} />
+      </span>
+    );
+  },
+);
+
+/** Password field with a show/hide toggle. */
+export function PasswordInput({
+  className,
+  ...props
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "type">) {
+  const [visible, setVisible] = useState(false);
   return (
-    <span className="search-input">
-      <Icon d="m21 21-4.34-4.34" extra={<circle cx="11" cy="11" r="7" />} size={16} />
-      <input className={combineClasses("input", className)} {...props} />
+    <span className="password-input">
+      <input
+        className={combineClasses("input", className)}
+        {...props}
+        type={visible ? "text" : "password"}
+      />
+      <button
+        type="button"
+        className="password-input-toggle"
+        onClick={() => setVisible((v) => !v)}
+        aria-label={visible ? "Hide password" : "Show password"}
+        aria-pressed={visible}
+        tabIndex={-1}
+      >
+        {visible ? (
+          <Icon
+            d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"
+            extra={
+              <>
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+                <path d="m1 1 22 22" />
+              </>
+            }
+            size={16}
+          />
+        ) : (
+          <Icon
+            d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"
+            extra={<circle cx="12" cy="12" r="3" />}
+            size={16}
+          />
+        )}
+      </button>
     </span>
   );
 }
@@ -164,11 +216,13 @@ export function Stat({
   label,
   value,
   tone,
+  hint,
 }: {
   icon?: ReactNode;
   label: string;
   value: ReactNode;
   tone?: "danger" | "warn" | "success";
+  hint?: string;
 }) {
   return (
     <div className={`stat-card ${tone ? `stat-card-${tone}` : ""}`}>
@@ -176,17 +230,29 @@ export function Stat({
       <span className="stat-card-body">
         <span className="stat-card-label">{label}</span>
         <span className="stat-card-value">{value}</span>
+        {hint ? <span className="stat-card-hint">{hint}</span> : null}
       </span>
     </div>
   );
 }
 
-export function EmptyState({ title, body, icon }: { title: string; body: string; icon?: ReactNode }) {
+export function EmptyState({
+  title,
+  body,
+  icon,
+  action,
+}: {
+  title: string;
+  body: string;
+  icon?: ReactNode;
+  action?: ReactNode;
+}) {
   return (
     <div className="empty">
       <span className="empty-icon">{icon ?? ICONS.inbox}</span>
       <h3>{title}</h3>
       <p>{body}</p>
+      {action ? <div style={{ marginTop: "0.75rem" }}>{action}</div> : null}
     </div>
   );
 }
@@ -194,11 +260,12 @@ export function EmptyState({ title, body, icon }: { title: string; body: string;
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
   return (
     <header className="page-header">
-      <div>
+      <div className="page-header-text">
+        <span className="page-header-kicker">Operations workspace</span>
         <h1>{title}</h1>
         {subtitle ? <p>{subtitle}</p> : null}
       </div>
-      {actions}
+      {actions ? <div className="page-header-actions">{actions}</div> : null}
     </header>
   );
 }
@@ -259,4 +326,48 @@ export function PhotoCaptureField({
       ) : null}
     </div>
   );
+}
+
+/** Non-dismissible wait dialog while STK PIN entry / Daraja Query settles. */
+export function StkWaitOverlay({
+  visible,
+  message = "Waiting for M-Pesa",
+  detail = "Ask the customer to enter their PIN on the phone. This closes when payment succeeds.",
+  success,
+}: {
+  visible: boolean;
+  message?: string;
+  detail?: string;
+  success?: string;
+}) {
+  if (!visible && !success) return null;
+  return (
+    <div className="stk-wait-overlay" role="alertdialog" aria-modal="true" aria-live="polite">
+      <div className="stk-wait-card">
+        {success ? (
+          <>
+            <div className="stk-wait-success" aria-hidden>
+              ✓
+            </div>
+            <strong>{success}</strong>
+          </>
+        ) : (
+          <>
+            <div className="stk-wait-spinner" aria-hidden />
+            <strong>{message}</strong>
+            {detail ? <p className="muted">{detail}</p> : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function isTerminalStkError(message: string): boolean {
+  const m = message.toLowerCase();
+  return ["1032", "1037", "cancelled", "canceled", "ds timeout", "request cancelled"].some((t) => m.includes(t));
+}
+
+export function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

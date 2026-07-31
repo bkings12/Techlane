@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { Badge, Button, EmptyState, ICONS, Input, PageHeader, Stat, StatStrip } from "../components/ui";
+import { useBranch } from "../branch/BranchContext";
+import { useRealtimeEvents } from "../lib/realtime";
+import { Badge, Button, EmptyState, Input, PageHeader } from "../components/ui";
 import {
   approveRefund,
   confirmCashHandover,
@@ -10,31 +12,87 @@ import {
   listAllPayments,
   listC2BTransactions,
   listCashHandovers,
+  listPOSCatalog,
   listRefunds,
+  listStockLocations,
   listUsers,
+  matchC2BToNewSale,
   matchC2BTransaction,
   pendingCashTotal,
   requestCashHandover,
   type C2BTransaction,
   type CashHandover,
+  type CatalogItem,
   type Payment,
   type PaymentProviderSettings,
   type Refund,
   type StaffUser,
+  type StockLocation,
 } from "../lib/api";
 
 function can(perms: string[] | undefined, code: string) {
   return !!perms?.includes("*") || !!perms?.includes(code);
 }
 
+function isSuccessStatus(status: string) {
+  return status === "allocated" || status === "confirmed" || status === "pending_handover";
+}
+
+function startOfToday() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function formatWhen(iso?: string) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-KE", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function methodLabel(method: string) {
+  switch (method) {
+    case "mpesa_stk":
+      return "M-Pesa STK";
+    case "mpesa_c2b":
+      return "M-Pesa Paybill";
+    case "cash":
+      return "Cash";
+    case "bank_paybill":
+      return "Bank paybill";
+    case "store_credit":
+      return "Store credit";
+    default:
+      return method.replaceAll("_", " ");
+  }
+}
+
+function statusTone(status: string): "success" | "pending" | "warning" | "danger" {
+  if (isSuccessStatus(status)) return "success";
+  if (status === "failed" || status === "cancelled") return "danger";
+  if (status.includes("pending") || status === "initiated") return "pending";
+  return "warning";
+}
+
 export function PaymentsPage() {
   const { user } = useAuth();
+  const { branchId } = useBranch();
   const [cfg, setCfg] = useState<PaymentProviderSettings | null>(null);
   const [items, setItems] = useState<Payment[]>([]);
   const [handovers, setHandovers] = useState<CashHandover[]>([]);
   const [refunds, setRefunds] = useState<Refund[]>([]);
   const [c2bOpen, setC2bOpen] = useState<C2BTransaction[]>([]);
   const [matchByC2b, setMatchByC2b] = useState<Record<string, string>>({});
+  const [locations, setLocations] = useState<StockLocation[]>([]);
+  const [locationId, setLocationId] = useState("");
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [saleMatch, setSaleMatch] = useState<Record<string, { variantId: string; qty: string }>>({});
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [pendingCash, setPendingCash] = useState(0);
   const [toUser, setToUser] = useState("");
@@ -45,6 +103,9 @@ export function PaymentsPage() {
   const [refundReason, setRefundReason] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const [methodFilter, setMethodFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const canCreateRefund = can(user?.permissions, "refunds.create") || can(user?.permissions, "payments.initiate");
   const canApproveRefund = can(user?.permissions, "refunds.approve");
@@ -86,6 +147,63 @@ export function PaymentsPage() {
   useEffect(() => {
     refresh().catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
   }, [refresh]);
+
+  useEffect(() => {
+    listStockLocations(branchId || undefined)
+      .then((r) => {
+        const locs = r.items ?? [];
+        setLocations(locs);
+        setLocationId((prev) => (prev && locs.some((l) => l.id === prev) ? prev : locs[0]?.id ?? ""));
+      })
+      .catch(() => setLocations([]));
+  }, [branchId]);
+
+  useEffect(() => {
+    if (!locationId) return;
+    listPOSCatalog(locationId)
+      .then((r) => setCatalog(r.items ?? []))
+      .catch(() => setCatalog([]));
+  }, [locationId]);
+
+  useRealtimeEvents(["payment.*"], () => {
+    refresh().catch(() => undefined);
+  });
+
+  const todayStart = startOfToday().getTime();
+  const todayItems = useMemo(
+    () => items.filter((p) => p.created_at && new Date(p.created_at).getTime() >= todayStart),
+    [items, todayStart],
+  );
+  const todayReceived = todayItems.filter((p) => isSuccessStatus(p.status)).reduce((s, p) => s + p.amount, 0);
+  const todaySuccessCount = todayItems.filter((p) => isSuccessStatus(p.status)).length;
+  const todayPending = todayItems.filter((p) => !isSuccessStatus(p.status) && p.status !== "failed" && p.status !== "cancelled");
+  const todayFailed = todayItems.filter((p) => p.status === "failed" || p.status === "cancelled").length;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((p) => {
+      if (methodFilter !== "all" && p.method !== methodFilter) return false;
+      if (statusFilter === "success" && !isSuccessStatus(p.status)) return false;
+      if (statusFilter === "pending" && (isSuccessStatus(p.status) || p.status === "failed" || p.status === "cancelled")) return false;
+      if (statusFilter === "failed" && p.status !== "failed" && p.status !== "cancelled") return false;
+      if (!q) return true;
+      const hay = [
+        p.customer_name,
+        p.job_code,
+        p.sale_label,
+        p.account_reference,
+        p.phone,
+        p.method,
+        p.status,
+        p.id,
+        p.payable_type,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [items, query, methodFilter, statusFilter]);
 
   async function submitHandover(e: FormEvent) {
     e.preventDefault();
@@ -180,6 +298,40 @@ export function PaymentsPage() {
     }
   }
 
+  async function matchToNewSale(id: string) {
+    const draft = saleMatch[id];
+    const qty = Number(draft?.qty);
+    if (!draft?.variantId) {
+      setError("Select a product to match this deposit to");
+      return;
+    }
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setError("Enter a positive quantity");
+      return;
+    }
+    if (!branchId || !locationId) {
+      setError("Select a branch and stock location first");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await matchC2BToNewSale(id, { branch_id: branchId, location_id: locationId, variant_id: draft.variantId, quantity: qty });
+      setSaleMatch((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      await refresh();
+      const cat = await listPOSCatalog(locationId).catch(() => null);
+      if (cat) setCatalog(cat.items ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Match failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const openHandovers = handovers.filter((h) => h.status === "requested");
   const shortageTotal = handovers.reduce((s, h) => s + (h.shortage_amount || 0), 0);
   const pendingRefunds = refunds.filter((r) => r.status === "pending");
@@ -187,47 +339,165 @@ export function PaymentsPage() {
   const matchablePayments = items.filter((p) => p.method === "mpesa_c2b" && (p.status === "initiated" || p.status === "pending"));
 
   return (
-    <div>
+    <div className="money-desk tx-desk">
       <PageHeader
-        title="Payments & cash"
-        subtitle="STK readiness, provisional cash, handovers, and refunds"
+        title="Transactions"
+        subtitle="Every payment tied to a job or client — live ledger with today’s collections."
         actions={
-          <Link to="/settings/payments" className="muted">
-            Configure credentials
-          </Link>
+          <div className="btn-row">
+            <Link to="/pos" className="btn btn-secondary">
+              Sell
+            </Link>
+            <Link to="/settings/payments" className="muted">
+              Payment settings
+            </Link>
+          </div>
         }
       />
       {error ? <p className="form-error">{error}</p> : null}
 
-      <StatStrip>
-        <Stat
-          icon={ICONS.stk}
-          label="M-Pesa"
-          value={<Badge tone={cfg?.configured ? "success" : "warning"}>{cfg?.configured ? "ready" : "needs setup"}</Badge>}
-        />
-        <Stat icon={ICONS.cash} label="Your provisional cash" value={`KES ${pendingCash.toLocaleString()}`} />
-        <Stat icon={ICONS.clock} label="Open handovers" value={openHandovers.length} tone={openHandovers.length ? "warn" : undefined} />
-        <Stat icon={ICONS.reports} label="Pending refunds" value={pendingRefunds.length} tone={pendingRefunds.length ? "warn" : undefined} />
-        <Stat icon={ICONS.risk} label="Unmatched C2B" value={c2bOpen.length} tone={c2bOpen.length ? "danger" : undefined} />
-        <Stat icon={ICONS.shortage} label="Recorded shortages" value={`KES ${shortageTotal.toLocaleString()}`} tone={shortageTotal ? "warn" : undefined} />
-      </StatStrip>
+      <section className="tx-stats" aria-label="Today's collections">
+        <article className="tx-stat tx-stat-primary">
+          <span>Received today</span>
+          <strong>KES {todayReceived.toLocaleString()}</strong>
+          <em>{todaySuccessCount} successful payment{todaySuccessCount === 1 ? "" : "s"}</em>
+        </article>
+        <article className="tx-stat">
+          <span>Pending today</span>
+          <strong>{todayPending.length}</strong>
+          <em>Awaiting PIN / allocation</em>
+        </article>
+        <article className="tx-stat">
+          <span>Failed / cancelled</span>
+          <strong>{todayFailed}</strong>
+          <em>Today</em>
+        </article>
+        <article className={`tx-stat ${c2bOpen.length ? "warn" : ""}`}>
+          <span>Unmatched C2B</span>
+          <strong>{c2bOpen.length}</strong>
+          <em>Need matching</em>
+        </article>
+        <article className="tx-stat">
+          <span>Provisional cash</span>
+          <strong>KES {pendingCash.toLocaleString()}</strong>
+          <em>{openHandovers.length} open handover{openHandovers.length === 1 ? "" : "s"}</em>
+        </article>
+        <article className="tx-stat">
+          <span>M-Pesa</span>
+          <strong>
+            <Badge tone={cfg?.configured ? "success" : "warning"}>{cfg?.configured ? "Ready" : "Setup"}</Badge>
+          </strong>
+          <em>Provider status</em>
+        </article>
+      </section>
 
-      <div className="repair-grid">
-        <section className="panel">
+      <section className="desk-ledger tx-ledger">
+        <div className="panel-head tx-ledger-head">
+          <div>
+            <h2>Transaction ledger</h2>
+            <p className="muted">Linked to jobs and clients · shortages recorded KES {shortageTotal.toLocaleString()}</p>
+          </div>
+          <div className="tx-filters">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search client, job, phone, ref…"
+              aria-label="Search transactions"
+            />
+            <select className="input" value={methodFilter} onChange={(e) => setMethodFilter(e.target.value)} aria-label="Method">
+              <option value="all">All methods</option>
+              <option value="mpesa_stk">M-Pesa STK</option>
+              <option value="mpesa_c2b">M-Pesa Paybill</option>
+              <option value="cash">Cash</option>
+              <option value="bank_paybill">Bank paybill</option>
+            </select>
+            <select className="input" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Status">
+              <option value="all">All statuses</option>
+              <option value="success">Successful</option>
+              <option value="pending">Pending</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+        </div>
+        {filtered.length === 0 ? (
+          <div style={{ padding: "1rem" }}>
+            <EmptyState
+              title={items.length === 0 ? "No transactions yet" : "No matches"}
+              body={items.length === 0 ? "Cash, STK, and paybill payments from jobs and sales appear here." : "Try clearing filters."}
+            />
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table className="table tx-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Client</th>
+                  <th>Job / sale</th>
+                  <th>Method</th>
+                  <th>Amount</th>
+                  <th>Status</th>
+                  <th>Ref</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.slice(0, 80).map((p) => {
+                  const jobLink =
+                    p.payable_type === "repair" && p.payable_id
+                      ? `/repairs/${p.payable_id}`
+                      : null;
+                  const clientLink = p.customer_id ? `/customers/${p.customer_id}` : null;
+                  return (
+                    <tr key={p.id}>
+                      <td className="muted">{formatWhen(p.created_at)}</td>
+                      <td>
+                        {clientLink ? (
+                          <Link to={clientLink}>{p.customer_name || "Customer"}</Link>
+                        ) : (
+                          <span className="muted">{p.customer_name || p.phone || "—"}</span>
+                        )}
+                      </td>
+                      <td>
+                        {jobLink ? (
+                          <Link to={jobLink} className="mono">
+                            {p.job_code || p.payable_id?.slice(0, 8)}
+                          </Link>
+                        ) : p.sale_label ? (
+                          <span className="mono">{p.sale_label}</span>
+                        ) : p.payable_type ? (
+                          <span className="muted">{p.payable_type}</span>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                      <td>{methodLabel(p.method)}</td>
+                      <td className="mono tx-amount">KES {p.amount.toLocaleString()}</td>
+                      <td>
+                        <Badge tone={statusTone(p.status)}>{p.status.replaceAll("_", " ")}</Badge>
+                      </td>
+                      <td className="mono muted">{p.account_reference || p.phone || p.id.slice(0, 8)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <div className="desk-attention">
+        <section className={`attention-card ${openHandovers.length ? "warn" : ""}`}>
           <h2>Cash handover</h2>
-          <p className="hint">
-            Cash stays provisional until a different manager/cashier confirms. Confirmer enters the physical count — short
-            counts raise a risk alert. You cannot confirm your own request.
-          </p>
+          <p className="hint">Cash stays provisional until another staff member confirms the physical count.</p>
           <form className="form-grid" onSubmit={submitHandover}>
             <label>
               Amount (KES)
               <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} required />
             </label>
             <label>
-              Hand to (optional)
+              Hand to
               <select className="input" value={toUser} onChange={(e) => setToUser(e.target.value)}>
-                <option value="">Any manager / cashier</option>
+                <option value="">Any manager on duty</option>
                 {staff.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.display_name}
@@ -235,256 +505,207 @@ export function PaymentsPage() {
                 ))}
               </select>
             </label>
-            <Button type="submit" disabled={busy || !(Number(amount) > 0)}>
+            <Button type="submit" disabled={busy}>
               Request handover
             </Button>
           </form>
+          {openHandovers.length > 0 ? (
+            <ul className="part-list" style={{ marginTop: "1rem" }}>
+              {openHandovers.map((h) => (
+                <li key={h.id} className="part-card">
+                  <div className="part-head">
+                    <strong>KES {h.amount.toLocaleString()}</strong>
+                    <Badge tone="pending">requested</Badge>
+                  </div>
+                  <label>
+                    Counted amount
+                    <Input
+                      type="number"
+                      value={countByHandover[h.id] ?? ""}
+                      onChange={(e) => setCountByHandover((prev) => ({ ...prev, [h.id]: e.target.value }))}
+                    />
+                  </label>
+                  <Button type="button" disabled={busy} onClick={() => void confirm(h.id)}>
+                    Confirm count
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
 
-          <h3 style={{ marginTop: "1.5rem" }}>Queue</h3>
-          {handovers.length === 0 ? (
-            <EmptyState title="No handovers" body="Request a handover after collecting provisional cash." />
+        <section className={`attention-card ${c2bOpen.length ? "warn" : ""}`}>
+          <h2>Unmatched C2B</h2>
+          <p className="hint">Paybill deposits waiting to be matched to a payment or a new sale.</p>
+          {c2bOpen.length === 0 ? (
+            <EmptyState title="All clear" body="No unmatched paybill deposits." />
           ) : (
             <ul className="part-list">
-              {handovers.slice(0, 12).map((h) => {
-                const mine = h.from_user_id === user?.id;
-                const counted = countByHandover[h.id] ?? String(h.amount);
-                const short =
-                  h.status === "requested"
-                    ? Math.max(0, h.amount - (Number(counted) || 0))
-                    : h.shortage_amount || 0;
+              {c2bOpen.map((t) => (
+                <li key={t.id} className="part-card">
+                  <div className="part-head">
+                    <div>
+                      <strong>KES {t.amount.toLocaleString()}</strong>
+                      <div className="muted">
+                        Ref <span className="mono">{t.bill_ref_number || "—"}</span>
+                        {t.trans_id ? (
+                          <>
+                            {" "}
+                            · <span className="mono">{t.trans_id}</span>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                    <Badge tone="warning">{t.status.replaceAll("_", " ")}</Badge>
+                  </div>
+                  {canMatchC2B ? (
+                    <div className="stack-form" style={{ marginTop: "0.75rem" }}>
+                      <label>
+                        Match to awaiting C2B payment
+                        <select
+                          className="input"
+                          value={matchByC2b[t.id] ?? ""}
+                          onChange={(e) => setMatchByC2b((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                        >
+                          <option value="">Select payment</option>
+                          {matchablePayments.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              KES {p.amount.toLocaleString()} · {p.status} · {p.id.slice(0, 8)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <Button type="button" disabled={busy || !matchByC2b[t.id]} onClick={() => void matchC2B(t.id)}>
+                        Match &amp; allocate
+                      </Button>
+                      <p className="muted" style={{ margin: "0.6rem 0 0.35rem", fontSize: "0.82rem" }}>
+                        Or match to a product — creates a sale and deducts stock.
+                      </p>
+                      {locations.length > 1 ? (
+                        <label>
+                          Stock location
+                          <select className="input" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                            {locations.map((l) => (
+                              <option key={l.id} value={l.id}>
+                                {l.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      <label>
+                        Product
+                        <select
+                          className="input"
+                          value={saleMatch[t.id]?.variantId ?? ""}
+                          onChange={(e) =>
+                            setSaleMatch((prev) => ({
+                              ...prev,
+                              [t.id]: { qty: prev[t.id]?.qty ?? "1", variantId: e.target.value },
+                            }))
+                          }
+                        >
+                          <option value="">Select product</option>
+                          {catalog.map((c) => (
+                            <option key={c.variant_id} value={c.variant_id}>
+                              {c.product_name} — {c.sku} · KES {c.sell_price.toLocaleString()} · {c.available_qty} in stock
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Quantity
+                        <Input
+                          type="number"
+                          min={1}
+                          value={saleMatch[t.id]?.qty ?? "1"}
+                          onChange={(e) =>
+                            setSaleMatch((prev) => ({
+                              ...prev,
+                              [t.id]: { variantId: prev[t.id]?.variantId ?? "", qty: e.target.value },
+                            }))
+                          }
+                        />
+                      </label>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={busy || !saleMatch[t.id]?.variantId}
+                        onClick={() => void matchToNewSale(t.id)}
+                      >
+                        Match to product &amp; deduct stock
+                      </Button>
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className={`attention-card ${pendingRefunds.length ? "warn" : ""}`}>
+          <h2>Refunds</h2>
+          <p className="hint">Request against allocated payments. Another manager must approve.</p>
+          {canCreateRefund ? (
+            <form className="form-grid" onSubmit={submitRefund}>
+              <label>
+                Payment
+                <select
+                  className="input"
+                  value={refundPaymentId}
+                  onChange={(e) => {
+                    setRefundPaymentId(e.target.value);
+                    const p = refundable.find((x) => x.id === e.target.value);
+                    if (p) setRefundAmount(String(p.amount));
+                  }}
+                  required
+                >
+                  <option value="">Select payment</option>
+                  {refundable.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {methodLabel(p.method)} · KES {p.amount.toLocaleString()} · {p.customer_name || p.job_code || p.status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Amount (KES)
+                <Input type="number" value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} required />
+              </label>
+              <label>
+                Reason
+                <Input value={refundReason} onChange={(e) => setRefundReason(e.target.value)} />
+              </label>
+              <Button type="submit" disabled={busy}>
+                Request refund
+              </Button>
+            </form>
+          ) : null}
+          {refunds.length === 0 ? null : (
+            <ul className="part-list" style={{ marginTop: "1rem" }}>
+              {refunds.slice(0, 6).map((r) => {
+                const mine = r.created_by === user?.id;
                 return (
-                  <li key={h.id} className="part-card">
+                  <li key={r.id} className="part-card">
                     <div className="part-head">
                       <div>
-                        <strong>KES {h.amount.toLocaleString()}</strong>
-                        <div className="muted">{new Date(h.created_at).toLocaleString()}</div>
+                        <strong>KES {r.amount.toLocaleString()}</strong>
+                        <div className="muted mono">{r.payment_id.slice(0, 8)}…</div>
                       </div>
-                      <Badge tone={h.status === "confirmed" ? (short > 0 ? "warning" : "success") : "pending"}>
-                        {h.status}
-                      </Badge>
+                      <Badge tone={r.status === "approved" ? "success" : "pending"}>{r.status}</Badge>
                     </div>
-                    {h.status === "confirmed" && (h.shortage_amount || 0) > 0 ? (
-                      <p className="hint">
-                        Shortage KES {h.shortage_amount!.toLocaleString()} — see{" "}
-                        <Link to="/risk">Risk</Link>
-                      </p>
+                    {r.status === "pending" && canApproveRefund && !mine ? (
+                      <Button type="button" disabled={busy} onClick={() => void approve(r.id)}>
+                        Approve refund
+                      </Button>
                     ) : null}
-                    {h.status === "requested" && !mine ? (
-                      <div className="stack-form" style={{ marginTop: "0.75rem" }}>
-                        <label>
-                          Counted cash (KES)
-                          <Input
-                            type="number"
-                            value={counted}
-                            onChange={(e) =>
-                              setCountByHandover((prev) => ({ ...prev, [h.id]: e.target.value }))
-                            }
-                          />
-                        </label>
-                        {short > 0 ? (
-                          <p className="hint">Will record shortage of KES {short.toLocaleString()}</p>
-                        ) : null}
-                        <Button type="button" disabled={busy} onClick={() => void confirm(h.id)}>
-                          Confirm received
-                        </Button>
-                      </div>
-                    ) : null}
-                    {h.status === "requested" && mine ? (
-                      <p className="hint">Waiting for another staff member to confirm.</p>
-                    ) : null}
+                    {r.status === "pending" && mine ? <p className="hint">Waiting for another approver.</p> : null}
                   </li>
                 );
               })}
             </ul>
           )}
         </section>
-
-        <aside className="stack">
-          <section className="panel context-panel">
-            <h2>Digital rails</h2>
-            {!cfg?.configured ? (
-              <EmptyState
-                title="Connect M-Pesa"
-                body="Daraja credentials unlock STK on repair jobs. Bank paybill reuses the same keys."
-              />
-            ) : (
-              <dl className="meta-dl">
-                <dt>Shortcode</dt>
-                <dd className="mono">{cfg.mpesa_shortcode}</dd>
-                <dt>Bank</dt>
-                <dd className="mono">
-                  {cfg.bank_configured ? `${cfg.bank_paybill} / ${cfg.bank_account}` : "off"}
-                </dd>
-              </dl>
-            )}
-            <Link to="/settings/payments">Payment settings →</Link>
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Unmatched C2B</h2>
-            </div>
-            <p className="hint">
-              Paybill deposits that did not match an awaiting account ref (or amount differed). Record an{" "}
-              <span className="mono">mpesa_c2b</span> payment on the job first, then match here. Clears the risk alert.
-            </p>
-            {c2bOpen.length === 0 ? (
-              <EmptyState title="No open C2B exceptions" body="Matched paybill confirmations settle automatically." />
-            ) : (
-              <ul className="part-list">
-                {c2bOpen.map((t) => (
-                  <li key={t.id} className="part-card">
-                    <div className="part-head">
-                      <div>
-                        <strong>KES {t.amount.toLocaleString()}</strong>
-                        <div className="muted">
-                          Ref <span className="mono">{t.bill_ref_number || "—"}</span>
-                          {t.trans_id ? (
-                            <>
-                              {" "}
-                              · <span className="mono">{t.trans_id}</span>
-                            </>
-                          ) : null}
-                        </div>
-                        {t.msisdn ? <div className="hint">{t.msisdn}</div> : null}
-                      </div>
-                      <Badge tone="warning">{t.status.replaceAll("_", " ")}</Badge>
-                    </div>
-                    {canMatchC2B ? (
-                      <div className="stack-form" style={{ marginTop: "0.75rem" }}>
-                        <label>
-                          Match to awaiting C2B payment
-                          <select
-                            className="input"
-                            value={matchByC2b[t.id] ?? ""}
-                            onChange={(e) => setMatchByC2b((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                          >
-                            <option value="">Select payment</option>
-                            {matchablePayments.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                KES {p.amount.toLocaleString()} · {p.status} · {p.id.slice(0, 8)}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <Button type="button" disabled={busy || !matchByC2b[t.id]} onClick={() => void matchC2B(t.id)}>
-                          Match &amp; allocate
-                        </Button>
-                      </div>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Refunds</h2>
-            </div>
-            <p className="hint">
-              Request against allocated/confirmed payments. A different manager or accountant must approve — you cannot
-              approve your own request.
-            </p>
-            {canCreateRefund ? (
-              <form className="form-grid" onSubmit={submitRefund}>
-                <label>
-                  Payment
-                  <select
-                    className="input"
-                    value={refundPaymentId}
-                    onChange={(e) => {
-                      setRefundPaymentId(e.target.value);
-                      const p = refundable.find((x) => x.id === e.target.value);
-                      if (p) setRefundAmount(String(p.amount));
-                    }}
-                    required
-                  >
-                    <option value="">Select payment</option>
-                    {refundable.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.method.replaceAll("_", " ")} · KES {p.amount.toLocaleString()} · {p.status}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Amount (KES)
-                  <Input
-                    type="number"
-                    value={refundAmount}
-                    onChange={(e) => setRefundAmount(e.target.value)}
-                    required
-                  />
-                </label>
-                <label>
-                  Reason
-                  <Input value={refundReason} onChange={(e) => setRefundReason(e.target.value)} placeholder="Optional" />
-                </label>
-                <Button type="submit" disabled={busy || !refundPaymentId || !(Number(refundAmount) > 0)}>
-                  Request refund
-                </Button>
-              </form>
-            ) : null}
-
-            {refunds.length === 0 ? (
-              <EmptyState title="No refunds" body="Refund requests will show here for approval." />
-            ) : (
-              <ul className="part-list" style={{ marginTop: "1rem" }}>
-                {refunds.slice(0, 10).map((r) => {
-                  const mine = r.created_by === user?.id;
-                  return (
-                    <li key={r.id} className="part-card">
-                      <div className="part-head">
-                        <div>
-                          <strong>KES {r.amount.toLocaleString()}</strong>
-                          <div className="muted mono">{r.payment_id.slice(0, 8)}…</div>
-                          {r.reason ? <div className="hint">{r.reason}</div> : null}
-                        </div>
-                        <Badge tone={r.status === "approved" ? "success" : "pending"}>{r.status}</Badge>
-                      </div>
-                      {r.status === "pending" && canApproveRefund && !mine ? (
-                        <Button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void approve(r.id)}
-                          style={{ marginTop: "0.75rem" }}
-                        >
-                          Approve refund
-                        </Button>
-                      ) : null}
-                      {r.status === "pending" && mine ? (
-                        <p className="hint">Waiting for another approver.</p>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Recent payments</h2>
-            </div>
-            {items.length === 0 ? (
-              <EmptyState title="No payments yet" body="Cash and STK from repairs appear here." />
-            ) : (
-              <ul className="list">
-                {items.slice(0, 8).map((p) => (
-                  <li key={p.id}>
-                    <Badge tone={p.status === "allocated" || p.status.includes("confirm") ? "success" : "pending"}>
-                      {p.status}
-                    </Badge>
-                    <span>
-                      {p.method.replaceAll("_", " ")} · KES {p.amount.toLocaleString()}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </aside>
       </div>
     </div>
   );

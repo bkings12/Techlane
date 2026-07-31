@@ -34,6 +34,32 @@ func TestNormalizePhone(t *testing.T) {
 	}
 }
 
+func TestPhoneMatchVariants(t *testing.T) {
+	got := PhoneMatchVariants("0712345678")
+	want := map[string]bool{"0712345678": true, "254712345678": true, "712345678": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for _, v := range got {
+		if !want[v] {
+			t.Fatalf("unexpected variant %q in %v", v, got)
+		}
+	}
+	got2 := PhoneMatchVariants("254712345678")
+	for _, need := range []string{"254712345678", "0712345678", "712345678"} {
+		found := false
+		for _, v := range got2 {
+			if v == need {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing %q in %v", need, got2)
+		}
+	}
+}
+
 func TestDevSMSSenderStoresLast(t *testing.T) {
 	s := NewDevSMSSender()
 	if err := s.SendOTP(nil, "254712345678", "123456"); err != nil {

@@ -40,6 +40,11 @@ func (s *Service) QuerySTKStatus(ctx context.Context, tenantID uuid.UUID, checko
 	if raw.Shortcode == "" || raw.ConsumerKey == "" || raw.ConsumerSecret == "" || raw.Passkey == "" {
 		return nil, fmt.Errorf("M-Pesa credentials not configured")
 	}
+	// Query always authenticates with M-Pesa shortcode credentials.
+	authShortcode, _, _ := stkPushTargets(raw, "")
+	if authShortcode == "" {
+		return nil, fmt.Errorf("M-Pesa shortcode not configured")
+	}
 	checkoutRequestID = strings.TrimSpace(checkoutRequestID)
 	if checkoutRequestID == "" {
 		return nil, fmt.Errorf("checkout_request_id required")
@@ -60,8 +65,8 @@ func (s *Service) QuerySTKStatus(ctx context.Context, tenantID uuid.UUID, checko
 	}
 	ts := time.Now().UTC().Format("20060102150405")
 	payload := stkQueryReq{
-		BusinessShortCode: raw.Shortcode,
-		Password:          stkPassword(raw.Shortcode, raw.Passkey, ts),
+		BusinessShortCode: authShortcode,
+		Password:          stkPassword(authShortcode, raw.Passkey, ts),
 		Timestamp:         ts,
 		CheckoutRequestID: checkoutRequestID,
 	}
@@ -135,9 +140,22 @@ func (s *Service) ReconcileSTKPayment(ctx context.Context, tenantID, paymentID u
 		return nil, fmt.Errorf("STK not paid: %s %s", q.ResultCode, q.ResultDesc)
 	}
 
-	ref := checkoutID
-	if q.MerchantRequestID != "" {
-		ref = q.CheckoutRequestID
+	ref := ""
+	var existingReceipt string
+	var rawCallback string
+	_ = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(mpesa_receipt, ''), COALESCE(raw_callback::text, '')
+		FROM payments.mpesa_stk_transactions
+		WHERE tenant_id = $1 AND payment_id = $2
+		ORDER BY created_at DESC LIMIT 1`, tenantID, paymentID).Scan(&existingReceipt, &rawCallback)
+	ref = CustomerFacingPaymentRef(existingReceipt, ExtractMpesaReceiptFromCallback([]byte(rawCallback)))
+	if ref == "" {
+		// Daraja Query does not return the M-Pesa receipt number; keep checkout
+		// id only as an internal fallback until the callback arrives.
+		ref = checkoutID
+		if q.CheckoutRequestID != "" {
+			ref = q.CheckoutRequestID
+		}
 	}
 	return s.ConfirmMpesaWebhook(ctx, tenantID, paymentID, ref)
 }

@@ -19,6 +19,8 @@ var migrationDirs = []string{
 	"services/payments-cash/migrations",
 	"services/repair/migrations",
 	"services/pos-sales/migrations",
+	"services/platform/migrations",
+	"services/loyalty/migrations",
 }
 
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool, repoRoot string) error {

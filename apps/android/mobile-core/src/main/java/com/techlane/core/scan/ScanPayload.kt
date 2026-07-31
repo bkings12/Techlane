@@ -13,11 +13,13 @@ data class ParsedScan(
  *
  * Supported shapes:
  * - plain text / IMEI / barcode / collection code
- * - JSON: {"type":"imei|barcode|auth|collection","code":"...","issue_id":"..."}
+ * - JSON: {"type":"imei|barcode|auth|collection|repair_pickup","code":"...","issue_id":"..."}
  * - techlane://auth/<issueId>/<authCode>
- * - techlane://collect/<code>
+ * - techlane://collect/<code>  (commerce order)
+ * - techlane://repair-pickup/<code>  (repair intake slip)
  * - auth:<issueId>:<authCode>
  * - <issueUuid>:<authCode>
+ * - PK-XXXXXX  (repair pickup code printed at intake)
  */
 fun parseScanPayload(raw: String): ParsedScan {
     val value = raw.trim()
@@ -30,6 +32,7 @@ fun parseScanPayload(raw: String): ParsedScan {
             val code = json.optString("code")
                 .ifBlank { json.optString("auth_code") }
                 .ifBlank { json.optString("collection_code") }
+                .ifBlank { json.optString("pickup_code") }
                 .ifBlank { json.optString("imei") }
                 .ifBlank { json.optString("barcode") }
             val related = json.optString("issue_id")
@@ -37,11 +40,11 @@ fun parseScanPayload(raw: String): ParsedScan {
                 .ifBlank { json.optString("related_id") }
                 .takeIf { it.isNotBlank() }
             if (code.isNotBlank()) {
-                return ParsedScan(
-                    mode = type.takeIf { it in setOf("imei", "barcode", "auth", "collection") },
-                    code = code.trim(),
-                    relatedId = related,
-                )
+                val mode = when (type) {
+                    "imei", "barcode", "auth", "collection", "repair_pickup" -> type
+                    else -> null
+                }
+                return ParsedScan(mode = mode, code = code.trim(), relatedId = related)
             }
         }
     }
@@ -53,6 +56,10 @@ fun parseScanPayload(raw: String): ParsedScan {
             if (parts.size >= 2) {
                 return ParsedScan(mode = "auth", code = parts[1], relatedId = parts[0])
             }
+        }
+        lower.startsWith("techlane://repair-pickup/") || lower.startsWith("techlane:repair-pickup:") -> {
+            val code = value.substringAfter("repair-pickup").trim(':', '/', ' ')
+            if (code.isNotBlank()) return ParsedScan(mode = "repair_pickup", code = code.uppercase())
         }
         lower.startsWith("techlane://collect/") || lower.startsWith("techlane:collect:") -> {
             val code = value.substringAfter("collect").trim(':', '/', ' ')
@@ -75,6 +82,11 @@ fun parseScanPayload(raw: String): ParsedScan {
         if (uuidLike && right.isNotBlank()) {
             return ParsedScan(mode = "auth", code = right, relatedId = left)
         }
+    }
+
+    // Repair intake pickup codes: PK-XXXXXX
+    if (value.matches(Regex("(?i)^PK-[A-Z0-9]{4,12}$"))) {
+        return ParsedScan(mode = "repair_pickup", code = value.uppercase())
     }
 
     // Collection codes are usually short alphanumeric with a prefix.

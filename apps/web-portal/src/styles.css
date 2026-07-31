@@ -269,6 +269,31 @@ input::placeholder {
   background: color-mix(in srgb, #cffafe 55%, white);
 }
 
+.pay-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.85rem;
+}
+
+.pay-status .hint {
+  flex: 1;
+}
+
+.spinner {
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--blue-500) 25%, white);
+  border-top-color: var(--blue-500);
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;
@@ -523,6 +548,7 @@ input::placeholder {
   flex-wrap: wrap;
 }
 
+.tabs a,
 .tabs button {
   border: 0;
   background: transparent;
@@ -531,13 +557,16 @@ input::placeholder {
   padding: 0.5rem 0.95rem;
   border-radius: 999px;
   cursor: pointer;
+  text-decoration: none;
   transition: background 140ms ease, color 140ms ease;
 }
 
+.tabs a:hover,
 .tabs button:hover {
   color: var(--ink);
 }
 
+.tabs a.active,
 .tabs button.active {
   background: var(--blue-500);
   color: white;

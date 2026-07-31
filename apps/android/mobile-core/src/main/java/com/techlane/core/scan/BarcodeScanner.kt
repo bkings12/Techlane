@@ -2,18 +2,13 @@ package com.techlane.core.scan
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.util.Size
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.core.resolutionselector.ResolutionSelector
-import androidx.camera.core.resolutionselector.ResolutionStrategy
-import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.mlkit.vision.MlKitAnalyzer
+import androidx.camera.view.CameraController
+import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,7 +16,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,12 +32,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -58,10 +51,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 @Composable
 fun CameraPermissionGate(
@@ -86,7 +78,9 @@ fun CameraPermissionGate(
         Column(
             modifier = modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(16.dp)
+                .background(Color(0xFFF5F6FB), RoundedCornerShape(12.dp))
+                .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -108,38 +102,15 @@ fun LiveBarcodeScanner(
     val lifecycleOwner = LocalLifecycleOwner.current
     var torchOn by remember { mutableStateOf(false) }
     var useFront by remember { mutableStateOf(false) }
-    var camera by remember { mutableStateOf<Camera?>(null) }
-    var lastValue by remember { mutableStateOf<String?>(null) }
-    var lastAt by remember { mutableLongStateOf(0L) }
-    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var flashLabel by remember { mutableStateOf<String?>(null) }
+    var statusHint by remember { mutableStateOf("Point at a QR code") }
+    val acceptScans = remember { AtomicBoolean(enabled) }
+    val onCodeRef = remember { AtomicReference(onCode) }
+    val lastScanRef = remember { AtomicReference<Pair<String, Long>?>(null) }
+    onCodeRef.set(onCode)
+
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-
-    DisposableEffect(Unit) {
-        onDispose { analysisExecutor.shutdown() }
-    }
-
-    LaunchedEffect(previewView, useFront, enabled) {
-        val view = previewView ?: return@LaunchedEffect
-        if (!enabled) {
-            camera = null
-            return@LaunchedEffect
-        }
-        val provider = suspendCancellableCoroutine { cont ->
-            val future = ProcessCameraProvider.getInstance(context)
-            future.addListener(
-                {
-                    runCatching { future.get() }
-                        .onSuccess { cont.resume(it) }
-                        .onFailure { cont.resumeWithException(it) }
-                },
-                ContextCompat.getMainExecutor(context),
-            )
-        }
-        provider.unbindAll()
-
-        val preview = Preview.Builder().build().also {
-            it.surfaceProvider = view.surfaceProvider
-        }
+    val barcodeClient = remember {
         val options = BarcodeScannerOptions.Builder()
             .setBarcodeFormats(
                 Barcode.FORMAT_QR_CODE,
@@ -155,66 +126,85 @@ fun LiveBarcodeScanner(
                 Barcode.FORMAT_ITF,
             )
             .build()
-        val barcodeClient = BarcodeScanning.getClient(options)
-        val analysis = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setResolutionSelector(
-                ResolutionSelector.Builder()
-                    .setResolutionStrategy(
-                        ResolutionStrategy(
-                            Size(1280, 720),
-                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
-                        ),
-                    )
-                    .build(),
-            )
-            .build()
-        analysis.setAnalyzer(
+        BarcodeScanning.getClient(options)
+    }
+    val cameraController = remember {
+        LifecycleCameraController(context).apply {
+            // Preview attaches via PreviewView; analysis-only is enough for QR/barcode.
+            setEnabledUseCases(CameraController.IMAGE_ANALYSIS)
+            imageAnalysisTargetSize = CameraController.OutputSize(android.util.Size(1280, 720))
+        }
+    }
+
+    LaunchedEffect(enabled) {
+        acceptScans.set(enabled)
+        if (!enabled) {
+            flashLabel = null
+            statusHint = "Looking up…"
+        } else {
+            statusHint = "Point at a QR code"
+        }
+    }
+
+    LaunchedEffect(useFront) {
+        cameraController.cameraSelector = if (useFront) {
+            androidx.camera.core.CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA
+        }
+    }
+
+    LaunchedEffect(torchOn) {
+        runCatching {
+            if (cameraController.cameraInfo?.hasFlashUnit() == true) {
+                cameraController.enableTorch(torchOn)
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            analysisExecutor.shutdown()
+            runCatching { barcodeClient.close() }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, cameraController) {
+        // LifecycleCameraController + PreviewView is the supported path for reliable QR reads.
+        cameraController.setImageAnalysisAnalyzer(
             analysisExecutor,
             MlKitAnalyzer(
                 listOf(barcodeClient),
-                ImageAnalysis.COORDINATE_SYSTEM_VIEW_REFERENCED,
+                // ORIGINAL is reliable with CameraController; VIEW_REFERENCED needs extra wiring
+                // and often yields empty results on shop-floor devices.
+                ImageAnalysis.COORDINATE_SYSTEM_ORIGINAL,
                 ContextCompat.getMainExecutor(context),
             ) { result ->
+                if (!acceptScans.get()) return@MlKitAnalyzer
                 val barcodes = result?.getValue(barcodeClient).orEmpty()
                 val value = barcodes.firstNotNullOfOrNull { barcode ->
                     barcode.rawValue?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: barcode.displayValue?.trim()?.takeIf { it.isNotEmpty() }
                 } ?: return@MlKitAnalyzer
                 val now = System.currentTimeMillis()
-                if (value == lastValue && now - lastAt < 1_800) return@MlKitAnalyzer
-                lastValue = value
-                lastAt = now
-                onCode(value)
+                val prev = lastScanRef.get()
+                if (prev != null && prev.first == value && now - prev.second < 1_800) return@MlKitAnalyzer
+                lastScanRef.set(value to now)
+                flashLabel = value.take(40)
+                statusHint = "Scanned"
+                onCodeRef.get()?.invoke(value)
             },
         )
-
-        val selector = if (useFront) {
-            CameraSelector.DEFAULT_FRONT_CAMERA
-        } else {
-            CameraSelector.DEFAULT_BACK_CAMERA
+        cameraController.bindToLifecycle(lifecycleOwner)
+        onDispose {
+            runCatching { cameraController.clearImageAnalysisAnalyzer() }
         }
-        camera = runCatching {
-            provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
-        }.getOrElse {
-            // Fall back to whichever lens is available on this device/emulator.
-            val fallback = if (useFront) {
-                CameraSelector.DEFAULT_BACK_CAMERA
-            } else {
-                CameraSelector.DEFAULT_FRONT_CAMERA
-            }
-            provider.bindToLifecycle(lifecycleOwner, fallback, preview, analysis)
-        }
-        camera?.cameraControl?.enableTorch(torchOn && camera?.cameraInfo?.hasFlashUnit() == true)
-    }
-
-    LaunchedEffect(torchOn, camera) {
-        camera?.cameraControl?.enableTorch(torchOn && camera?.cameraInfo?.hasFlashUnit() == true)
     }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(280.dp)
+            .height(340.dp)
             .background(Color.Black, RoundedCornerShape(16.dp)),
     ) {
         AndroidView(
@@ -224,8 +214,14 @@ fun LiveBarcodeScanner(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
                     )
+                    view.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                     view.scaleType = PreviewView.ScaleType.FILL_CENTER
-                    previewView = view
+                    view.controller = cameraController
+                }
+            },
+            update = { view ->
+                if (view.controller !== cameraController) {
+                    view.controller = cameraController
                 }
             },
             modifier = Modifier.fillMaxSize(),
@@ -233,11 +229,42 @@ fun LiveBarcodeScanner(
         Box(
             modifier = Modifier
                 .align(Alignment.Center)
-                .size(200.dp, 140.dp)
-                .border(2.dp, Color.White.copy(alpha = 0.85f), RoundedCornerShape(12.dp)),
+                .size(230.dp, 230.dp)
+                .border(
+                    width = 3.dp,
+                    color = if (flashLabel != null) Color(0xFFF2BE2A) else Color.White.copy(alpha = 0.9f),
+                    shape = RoundedCornerShape(18.dp),
+                ),
         )
+        flashLabel?.let { label ->
+            Surface(
+                color = Color(0xF2060386),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 14.dp),
+            ) {
+                Text(
+                    "Scanned: $label",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
+        if (!enabled) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Looking up…", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+        }
         Surface(
-            color = Color.Black.copy(alpha = 0.45f),
+            color = Color.Black.copy(alpha = 0.55f),
             shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -251,7 +278,7 @@ fun LiveBarcodeScanner(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "Point at QR / barcode",
+                    statusHint,
                     color = Color.White,
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.padding(start = 8.dp),
@@ -279,23 +306,7 @@ fun ScanCameraPanel(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    var showCamera by remember { mutableStateOf(true) }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Camera scanner", style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = { showCamera = !showCamera }) {
-                Text(if (showCamera) "Hide" else "Show")
-            }
-        }
-        if (showCamera) {
-            CameraPermissionGate {
-                LiveBarcodeScanner(onCode = onCode, enabled = enabled)
-            }
-        }
-        Spacer(Modifier.height(4.dp))
+    CameraPermissionGate(modifier = modifier) {
+        LiveBarcodeScanner(onCode = onCode, enabled = enabled)
     }
 }

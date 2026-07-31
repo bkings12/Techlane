@@ -3,7 +3,10 @@ package identity
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/techlane/techlane/packages/pkg/apierrors"
@@ -12,16 +15,45 @@ import (
 )
 
 type Handler struct {
-	svc *Service
+	svc                      *Service
+	onPasswordResetRequested func(email, displayName, token string)
+	authLimiter              *httpx.IPRateLimiter
+	signupEnabled            bool
 }
 
 func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{
+		svc: svc,
+		// 20 attempts / 5 minutes per IP across login+refresh+MFA+reset is generous for
+		// a shared shop-floor terminal but blunts scripted brute force from a single source.
+		authLimiter:   httpx.NewIPRateLimiter(20, 5*time.Minute),
+		signupEnabled: true,
+	}
+}
+
+// SetPasswordResetNotifier wires an email sender for the forgot-password flow.
+func (h *Handler) SetPasswordResetNotifier(fn func(email, displayName, token string)) {
+	h.onPasswordResetRequested = fn
+}
+
+// SetSignupEnabled toggles the self-serve /auth/signup endpoint. Self-hosted
+// operators who only want their own staff on the platform can disable it via
+// the SIGNUP_ENABLED env var; defaults to enabled.
+func (h *Handler) SetSignupEnabled(enabled bool) {
+	h.signupEnabled = enabled
 }
 
 func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
-	mux.HandleFunc("POST /auth/login", h.login)
-	mux.HandleFunc("POST /auth/refresh", h.refresh)
+	mux.Handle("POST /auth/signup", h.authLimiter.Middleware(http.HandlerFunc(h.signup)))
+	mux.Handle("POST /auth/login", h.authLimiter.Middleware(http.HandlerFunc(h.login)))
+	mux.Handle("POST /auth/refresh", h.authLimiter.Middleware(http.HandlerFunc(h.refresh)))
+	mux.Handle("POST /auth/mfa/verify", h.authLimiter.Middleware(http.HandlerFunc(h.mfaVerify)))
+	mux.Handle("POST /auth/forgot-password", h.authLimiter.Middleware(http.HandlerFunc(h.forgotPassword)))
+	mux.Handle("POST /auth/reset-password", h.authLimiter.Middleware(http.HandlerFunc(h.resetPassword)))
+	mux.Handle("GET /auth/mfa/status", auth(http.HandlerFunc(h.mfaStatus)))
+	mux.Handle("POST /auth/mfa/setup", auth(http.HandlerFunc(h.mfaSetup)))
+	mux.Handle("POST /auth/mfa/enable", auth(http.HandlerFunc(h.mfaEnable)))
+	mux.Handle("POST /auth/mfa/disable", auth(http.HandlerFunc(h.mfaDisable)))
 	mux.Handle("GET /me", auth(http.HandlerFunc(h.me)))
 
 	mux.Handle("GET /branches", auth(http.HandlerFunc(h.listBranches)))
@@ -61,8 +93,21 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
 		return
 	}
-	pair, err := h.svc.Login(r.Context(), req.Email, req.Password)
+	outcome, err := h.svc.Login(r.Context(), req.Email, req.Password, clientIP(r))
 	if err != nil {
+		var locked *ErrAccountLocked
+		if errors.As(err, &locked) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusLocked)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":         "ACCOUNT_LOCKED",
+					"message":      "too many failed attempts — account temporarily locked",
+					"locked_until": locked.Until,
+				},
+			})
+			return
+		}
 		if errors.Is(err, ErrInvalidCredentials) {
 			apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials", httpx.CorrelationID(r.Context()))
 			return
@@ -70,7 +115,199 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
 		return
 	}
+	httpx.JSON(w, http.StatusOK, outcome)
+}
+
+func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
+	if !h.signupEnabled {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "self-serve signup is disabled on this instance", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		CompanyName string `json:"company_name"`
+		OwnerName   string `json:"owner_name"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	outcome, err := h.svc.Signup(r.Context(), SignupInput{
+		CompanyName: req.CompanyName, OwnerName: req.OwnerName, Email: req.Email, Password: req.Password,
+	})
+	if err != nil {
+		writeIdentityErr(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, outcome)
+}
+
+func (h *Handler) mfaVerify(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ChallengeToken string `json:"mfa_challenge"`
+		Code           string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	pair, err := h.svc.VerifyMFAChallenge(r.Context(), req.ChallengeToken, req.Code, clientIP(r))
+	if err != nil {
+		if errors.Is(err, ErrMFAInvalidChallenge) || errors.Is(err, ErrMFAInvalidCode) {
+			apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error(), httpx.CorrelationID(r.Context()))
+			return
+		}
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
 	httpx.JSON(w, http.StatusOK, pair)
+}
+
+func (h *Handler) mfaStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	status, err := h.svc.GetMFAStatus(r.Context(), claims.UserID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, status)
+}
+
+func (h *Handler) mfaSetup(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	result, err := h.svc.SetupMFA(r.Context(), claims.UserID, claims.Email)
+	if err != nil {
+		if errors.Is(err, ErrMFAAlreadyEnabled) {
+			apierrors.Write(w, http.StatusConflict, "CONFLICT", err.Error(), httpx.CorrelationID(r.Context()))
+			return
+		}
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) mfaEnable(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	result, err := h.svc.EnableMFA(r.Context(), claims.UserID, claims.TenantID, req.Code)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrMFAInvalidCode):
+			apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error(), httpx.CorrelationID(r.Context()))
+		case errors.Is(err, ErrMFANotSetup), errors.Is(err, ErrMFAAlreadyEnabled):
+			apierrors.Write(w, http.StatusConflict, "CONFLICT", err.Error(), httpx.CorrelationID(r.Context()))
+		default:
+			apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		}
+		return
+	}
+	httpx.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) mfaDisable(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if err := h.svc.DisableMFA(r.Context(), claims.UserID, claims.TenantID, req.Password); err != nil {
+		if errors.Is(err, ErrInvalidCredentials) {
+			apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid password", httpx.CorrelationID(r.Context()))
+			return
+		}
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) forgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	reset, err := h.svc.RequestPasswordReset(r.Context(), req.Email)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	if reset != nil && h.onPasswordResetRequested != nil {
+		h.onPasswordResetRequested(reset.Email, reset.DisplayName, reset.Token)
+	}
+	// Always respond the same way, whether or not the email exists, to avoid account enumeration.
+	httpx.JSON(w, http.StatusOK, map[string]any{"message": "if that email exists, a reset link has been sent"})
+}
+
+func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if err := h.svc.ResetPassword(r.Context(), req.Token, req.Password); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidResetToken):
+			apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid or expired reset link", httpx.CorrelationID(r.Context()))
+		case errors.Is(err, ErrInvalidInput):
+			apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "password must be at least 8 characters", httpx.CorrelationID(r.Context()))
+		default:
+			apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		}
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"message": "password updated"})
+}
+
+// clientIP extracts the caller's address, preferring a proxy-set header (Caddy
+// is the front door in production) and falling back to the raw remote addr.
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		if idx := strings.IndexByte(fwd, ','); idx != -1 {
+			return strings.TrimSpace(fwd[:idx])
+		}
+		return strings.TrimSpace(fwd)
+	}
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
@@ -120,14 +357,19 @@ func (h *Handler) listBranches(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createBranch(w http.ResponseWriter, r *http.Request) {
 	claims, _ := authz.FromContext(r.Context())
 	var req struct {
-		Name string `json:"name"`
-		Code string `json:"code"`
+		Name     string  `json:"name"`
+		Code     string  `json:"code"`
+		Location string  `json:"location"`
+		Phone    *string `json:"phone"`
+		Hours    *string `json:"hours"`
+		MapURL   *string `json:"map_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
 		return
 	}
-	branch, err := h.svc.CreateBranch(r.Context(), claims.TenantID, req.Name, req.Code)
+	branch, err := h.svc.CreateBranch(r.Context(), claims.TenantID, req.Name, req.Code, req.Location,
+		BranchContactInput{Phone: req.Phone, Hours: req.Hours, MapURL: req.MapURL})
 	if err != nil {
 		writeIdentityErr(w, r, err)
 		return
@@ -143,14 +385,19 @@ func (h *Handler) updateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name *string `json:"name"`
-		Code *string `json:"code"`
+		Name     *string `json:"name"`
+		Code     *string `json:"code"`
+		Location *string `json:"location"`
+		Phone    *string `json:"phone"`
+		Hours    *string `json:"hours"`
+		MapURL   *string `json:"map_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
 		return
 	}
-	branch, err := h.svc.UpdateBranch(r.Context(), claims.TenantID, id, req.Name, req.Code)
+	branch, err := h.svc.UpdateBranch(r.Context(), claims.TenantID, id, req.Name, req.Code, req.Location,
+		BranchContactInput{Phone: req.Phone, Hours: req.Hours, MapURL: req.MapURL})
 	if err != nil {
 		writeIdentityErr(w, r, err)
 		return
@@ -568,6 +815,8 @@ func (h *Handler) putShopProfile(w http.ResponseWriter, r *http.Request) {
 		Country      *string `json:"country"`
 		VATRateBPS   *int    `json:"vat_rate_bps"`
 		VATInclusive *bool   `json:"vat_inclusive"`
+		CurrencyCode *string `json:"currency_code"`
+		Locale       *string `json:"locale"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
@@ -577,6 +826,7 @@ func (h *Handler) putShopProfile(w http.ResponseWriter, r *http.Request) {
 		LegalName: req.LegalName, TIN: req.TIN, AddressLine1: req.AddressLine1,
 		AddressLine2: req.AddressLine2, City: req.City, Country: req.Country,
 		VATRateBPS: req.VATRateBPS, VATInclusive: req.VATInclusive,
+		CurrencyCode: req.CurrencyCode, Locale: req.Locale,
 	})
 	if err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))

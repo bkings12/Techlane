@@ -1,106 +1,86 @@
 :root {
   color-scheme: light;
 
-  /* Brand palette: TechLane navy + gold */
-  --green-25: #fbfbfd;
-  --green-50: #f6f6fb;
-  --green-100: #ebebf5;
-  --green-200: #d2d2e9;
-  --green-300: #afaed8;
-  --green-400: #8786c5;
-  --green-500: #605eb2;
-  --green-600: #3d3aa1;
-  --green-700: #1f1c92;
-  --green-800: #100d8b;
-  --green-900: #060386;
-  --green-950: #040257;
+  /* Brand: TechLane navy + gold (design-tokens/tokens.json) */
+  --navy-50: #f4f4fc;
+  --navy-100: #e6e5fa;
+  --navy-200: #c9c7f3;
+  --navy-300: #9b98e4;
+  --navy-400: #6b67cf;
+  --navy-500: #3d3aa1;
+  --navy-600: #1f1c92;
+  --navy-700: #100d8b;
+  --navy-800: #060386;
+  --navy-900: #040257;
+  --navy-950: #02012e;
 
-  /* Brand gold accent */
-  --gold-100: #fdf5df;
+  /* Legacy aliases used across app.css */
+  --green-25: #fbfbfd;
+  --green-50: var(--navy-50);
+  --green-100: var(--navy-100);
+  --green-200: var(--navy-200);
+  --green-300: var(--navy-300);
+  --green-400: var(--navy-400);
+  --green-500: var(--navy-500);
+  --green-600: var(--navy-600);
+  --green-700: var(--navy-700);
+  --green-800: var(--navy-800);
+  --green-900: var(--navy-800);
+  --green-950: var(--navy-900);
+
+  --gold-100: #fcf0cd;
   --gold-200: #fbeabb;
   --gold-400: #f5cc59;
   --gold-500: #f2be2a;
   --gold-600: #c69c22;
   --gold-800: #6d5513;
 
-  /* Neutral support */
   --gray-0: #ffffff;
-  --gray-50: #f8f9fa;
-  --gray-100: #f1f2f4;
-  --gray-200: #e4e5e8;
-  --gray-300: #d2d4d7;
-  --gray-400: #9a9da2;
-  --gray-500: #6b6f76;
-  --gray-600: #4c5056;
-  --gray-700: #33373d;
-  --gray-800: #1e2228;
-  --gray-900: #111419;
+  --gray-25: #fbfcfe;
+  --gray-50: #f6f8fc;
+  --gray-100: #eef2f7;
+  --gray-200: #e2e8f0;
+  --gray-300: #cbd5e1;
+  --gray-400: #94a3b8;
+  --gray-500: #64748b;
+  --gray-600: #475569;
+  --gray-700: #334155;
+  --gray-800: #1e293b;
+  --gray-900: #0f172a;
 
-  /* Surfaces */
-  --color-background-canvas: var(--gray-50);
-  --color-background-surface: var(--gray-0);
-  --color-background-elevated: var(--gray-0);
-  --color-background-subtle: var(--gray-100);
+  --color-background-canvas: #f6f8fc;
+  --color-background-surface: #ffffff;
+  --color-background-elevated: #ffffff;
+  --color-background-subtle: #eef2f7;
 
-  /* Text */
-  --color-text-primary: var(--gray-900);
-  --color-text-secondary: var(--gray-600);
-  --color-text-muted: var(--gray-500);
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #64748b;
 
-  /* Borders */
-  --color-border-default: var(--gray-200);
-  --color-border-strong: var(--gray-300);
+  --color-border-default: #e2e8f0;
+  --color-border-strong: #cbd5e1;
 
-  /* Actions */
-  --color-action-primary: var(--green-900);
-  --color-action-primary-hover: var(--green-950);
-  --color-action-secondary: var(--green-700);
+  --color-action-primary: #060386;
+  --color-action-primary-hover: #040257;
+  --color-action-secondary: #f2be2a;
 
-  /* Status */
-  --color-status-success: #0a7b4d;
-  --color-status-warning: #b25e02;
-  --color-status-danger: #b42318;
-  --color-status-info: var(--green-600);
+  --color-status-success: #059669;
+  --color-status-warning: #d97706;
+  --color-status-danger: #dc2626;
+  --color-status-info: #4f46e5;
   --color-status-pending: var(--color-status-warning);
   --color-status-offline: var(--gray-400);
   --color-status-synced: var(--color-status-success);
 
-  /* Tints */
-  --tint-success: #ecfdf3;
-  --tint-success-border: #b6e8c9;
-  --tint-warning: #fff8ed;
-  --tint-warning-border: #f9d5a5;
+  --tint-success: #ecfdf5;
+  --tint-success-border: #a7f3d0;
+  --tint-warning: #fffbeb;
+  --tint-warning-border: #fde68a;
   --tint-danger: #fef2f2;
-  --tint-danger-border: #fecdca;
-  --tint-info: var(--green-50);
-  --tint-info-border: var(--green-200);
+  --tint-danger-border: #fecaca;
+  --tint-info: var(--navy-50);
+  --tint-info-border: var(--navy-200);
 
-  /* Sidebar light */
-  --sidebar-rail-bg: var(--gray-100);
-  --sidebar-pane-bg: var(--gray-0);
-  --sidebar-border: var(--gray-200);
-  --sidebar-icon: var(--green-400);
-  --sidebar-icon-active: var(--gray-0);
-  --sidebar-icon-active-bg: var(--green-900);
-  --sidebar-text: var(--green-700);
-  --sidebar-text-active: var(--gray-0);
-  --sidebar-text-active-bg: var(--green-900);
-  --sidebar-divider: var(--gray-200);
-  --sidebar-toggle-stroke: var(--gray-300);
-  --sidebar-toggle-active-bg: var(--green-900);
-  --sidebar-toggle-active-icon: var(--gray-0);
-  --sidebar-cta-bg: var(--gold-100);
-  --sidebar-cta-text: var(--green-900);
-  --sidebar-cta-button-bg: var(--gold-500);
-  --sidebar-cta-button-text: var(--green-900);
-  --sidebar-cta-button-icon: var(--green-900);
-  --workspace-selector-border: var(--gray-200);
-  --workspace-selector-bg: var(--gray-0);
-  --workspace-selector-text: var(--green-900);
-  --workspace-selector-icon-bg: var(--green-900);
-  --workspace-selector-icon: var(--gray-0);
-
-  /* Layout */
   --spacing-1: 4px;
   --spacing-2: 8px;
   --spacing-3: 12px;
@@ -109,82 +89,26 @@
   --spacing-6: 28px;
   --radius-sm: 8px;
   --radius-md: 12px;
-  --radius-lg: 14px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
   --radius-pill: 999px;
   --motion-fast: 120ms;
   --motion-normal: 200ms;
 
-  /* Elevation */
-  --shadow-xs: 0 1px 2px rgba(17, 20, 25, 0.04);
-  --shadow-sm: 0 1px 3px rgba(17, 20, 25, 0.08), 0 1px 2px rgba(17, 20, 25, 0.04);
-  --shadow-md: 0 4px 8px -2px rgba(17, 20, 25, 0.08), 0 2px 4px -2px rgba(17, 20, 25, 0.04);
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 8px 20px -6px rgba(6, 3, 134, 0.12), 0 2px 6px rgba(15, 23, 42, 0.05);
   --shadow-surface: var(--shadow-xs);
 
-  /* Type */
-  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-sans: "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "Plus Jakarta Sans", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --control-height: 38px;
+  --control-height: 40px;
 }
 
+/* Light-only product: dark theme request collapses to light brand. */
 [data-theme="dark"] {
-  color-scheme: dark;
-
-  --color-background-canvas: var(--green-900);
-  --color-background-surface: var(--green-800);
-  --color-background-elevated: var(--green-800);
-  --color-background-subtle: var(--green-700);
-
-  --color-text-primary: var(--gray-0);
-  --color-text-secondary: var(--green-100);
-  --color-text-muted: var(--green-200);
-
-  --color-border-default: rgba(255, 255, 255, 0.12);
-  --color-border-strong: rgba(255, 255, 255, 0.18);
-
-  --color-action-primary: var(--gold-500);
-  --color-action-primary-hover: var(--gold-400);
-  --color-action-secondary: var(--gold-200);
-
-  --color-status-success: #4ade80;
-  --color-status-warning: #fbbf24;
-  --color-status-danger: #f87171;
-  --color-status-info: #6ee7b7;
-  --color-status-pending: var(--color-status-warning);
-  --color-status-offline: var(--green-200);
-  --color-status-synced: var(--color-status-success);
-
-  --tint-success: rgba(74, 222, 128, 0.12);
-  --tint-success-border: rgba(74, 222, 128, 0.25);
-  --tint-warning: rgba(251, 191, 36, 0.12);
-  --tint-warning-border: rgba(251, 191, 36, 0.25);
-  --tint-danger: rgba(248, 113, 113, 0.12);
-  --tint-danger-border: rgba(248, 113, 113, 0.25);
-  --tint-info: rgba(110, 231, 183, 0.12);
-  --tint-info-border: rgba(110, 231, 183, 0.25);
-
-  --sidebar-rail-bg: var(--green-900);
-  --sidebar-pane-bg: var(--green-900);
-  --sidebar-border: rgba(255, 255, 255, 0.1);
-  --sidebar-icon: var(--gray-0);
-  --sidebar-icon-active: var(--green-900);
-  --sidebar-icon-active-bg: var(--gold-500);
-  --sidebar-text: var(--gray-0);
-  --sidebar-text-active: var(--green-900);
-  --sidebar-text-active-bg: var(--gold-500);
-  --sidebar-divider: rgba(255, 255, 255, 0.12);
-  --sidebar-toggle-stroke: rgba(255, 255, 255, 0.25);
-  --sidebar-toggle-active-bg: var(--gold-500);
-  --sidebar-toggle-active-icon: var(--green-900);
-  --sidebar-cta-bg: var(--green-800);
-  --sidebar-cta-text: var(--gray-0);
-  --sidebar-cta-button-bg: var(--gold-500);
-  --sidebar-cta-button-text: var(--green-900);
-  --sidebar-cta-button-icon: var(--green-900);
-  --workspace-selector-border: rgba(255, 255, 255, 0.25);
-  --workspace-selector-bg: var(--green-800);
-  --workspace-selector-text: var(--gray-0);
-  --workspace-selector-icon-bg: var(--gold-500);
-  --workspace-selector-icon: var(--green-900);
+  color-scheme: light;
 }
 
 *,
@@ -203,7 +127,10 @@ body {
   margin: 0;
   font-family: var(--font-sans);
   font-size: 0.875rem;
-  background: var(--color-background-canvas);
+  background:
+    radial-gradient(ellipse 80% 50% at 100% -10%, rgba(242, 190, 42, 0.08), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 0% 100%, rgba(6, 3, 134, 0.05), transparent 50%),
+    var(--color-background-canvas);
   color: var(--color-text-primary);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
@@ -222,6 +149,58 @@ textarea {
   font: inherit;
 }
 
+/* ============ Accessibility: focus visibility & skip link ============ */
+
+:focus-visible {
+  outline: 2px solid var(--navy-500, #063086);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.sidebar :focus-visible,
+.mobile-header :focus-visible,
+.cmdk-panel :focus-visible {
+  outline-color: var(--gold-400, #f2be2a);
+}
+
+.input:focus-visible,
+.btn:focus-visible {
+  outline-offset: 1px;
+}
+
+.skip-link {
+  position: fixed;
+  top: -60px;
+  left: 12px;
+  z-index: 300;
+  background: var(--navy-700, #063086);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 0.875rem;
+  transition: top 0.15s ease;
+}
+
+.skip-link:focus {
+  top: 12px;
+}
+
+.content:focus-visible {
+  outline: none;
+}
+
+/* One arrow only — never stack the OS caret on top of our custom chevron. */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+select::-ms-expand {
+  display: none;
+}
+
 :focus-visible {
   outline: 2px solid var(--gold-500);
   outline-offset: 2px;
@@ -229,7 +208,7 @@ textarea {
 
 ::selection {
   background: var(--gold-200);
-  color: var(--green-900);
+  color: var(--navy-900);
 }
 
 @media (prefers-reduced-motion: reduce) {

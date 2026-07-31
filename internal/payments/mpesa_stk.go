@@ -66,6 +66,12 @@ func normalizeMSISDN(phone string) (string, error) {
 }
 
 func (s *Service) shouldMockDaraja(consumerKey, consumerSecret string) bool {
+	// Never mock in production/staging: a leftover MPESA_MOCK=1 or test creds
+	// would silently auto-confirm real payments.
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if env == "production" || env == "staging" {
+		return false
+	}
 	if os.Getenv("MPESA_MOCK") == "1" {
 		return true
 	}
@@ -103,6 +109,29 @@ func stkPassword(shortcode, passkey, timestamp string) string {
 	return base64.StdEncoding.EncodeToString([]byte(shortcode + passkey + timestamp))
 }
 
+// stkPushTargets picks Daraja auth shortcode, PartyB destination, and account ref.
+// Auth always uses M-Pesa shortcode + passkey. When bank paybill is enabled,
+// PartyB/account route the payment to the bank while credentials stay M-Pesa.
+func stkPushTargets(raw rawSettings, accountRef string) (authShortcode, partyB, acct string) {
+	authShortcode = strings.TrimSpace(raw.Shortcode)
+	partyB = authShortcode
+	acct = strings.TrimSpace(accountRef)
+	if acct == "" {
+		acct = "TechLane"
+	}
+
+	bankPaybill := strings.TrimSpace(raw.BankPaybill)
+	bankAccount := strings.TrimSpace(raw.BankAccount)
+	if raw.BankEnabled && bankPaybill != "" && bankAccount != "" {
+		partyB = bankPaybill
+		acct = bankAccount
+	}
+	if len(acct) > 12 {
+		acct = acct[:12]
+	}
+	return authShortcode, partyB, acct
+}
+
 func (s *Service) InitiateSTKPush(ctx context.Context, tenantID, paymentID uuid.UUID, amount float64, phone, accountRef string) (checkoutID, merchantID string, err error) {
 	raw, err := s.loadRawSettings(ctx, tenantID)
 	if err != nil {
@@ -111,16 +140,19 @@ func (s *Service) InitiateSTKPush(ctx context.Context, tenantID, paymentID uuid.
 	if !raw.MpesaEnabled || raw.Shortcode == "" || raw.ConsumerKey == "" || raw.ConsumerSecret == "" || raw.Passkey == "" {
 		return "", "", fmt.Errorf("M-Pesa credentials not configured")
 	}
+	authShortcode, partyB, acct := stkPushTargets(raw, accountRef)
+	if authShortcode == "" {
+		return "", "", fmt.Errorf("M-Pesa shortcode not configured")
+	}
 	msisdn, err := normalizeMSISDN(phone)
 	if err != nil {
 		return "", "", err
 	}
-	if accountRef == "" {
-		accountRef = "TechLane"
-	}
-	if len(accountRef) > 12 {
-		accountRef = accountRef[:12]
-	}
+	// Persist the ref customers see on their phone (bank account when bank is on).
+	_, _ = s.pool.Exec(ctx, `
+		UPDATE payments.mpesa_stk_transactions
+		SET account_reference = $1, updated_at = now()
+		WHERE payment_id = $2`, acct, paymentID)
 
 	if s.shouldMockDaraja(raw.ConsumerKey, raw.ConsumerSecret) {
 		checkoutID = fmt.Sprintf("ws_CO_MOCK_%s", paymentID.String()[:8])
@@ -140,16 +172,16 @@ func (s *Service) InitiateSTKPush(ctx context.Context, tenantID, paymentID uuid.
 	}
 	amt := fmt.Sprintf("%.0f", amount)
 	payload := stkPushReq{
-		BusinessShortCode: raw.Shortcode,
-		Password:          stkPassword(raw.Shortcode, raw.Passkey, ts),
+		BusinessShortCode: authShortcode,
+		Password:          stkPassword(authShortcode, raw.Passkey, ts),
 		Timestamp:         ts,
 		TransactionType:   "CustomerPayBillOnline",
 		Amount:            amt,
 		PartyA:            msisdn,
-		PartyB:            raw.Shortcode,
+		PartyB:            partyB,
 		PhoneNumber:       msisdn,
 		CallBackURL:       callback,
-		AccountReference:  accountRef,
+		AccountReference:  acct,
 		TransactionDesc:   "TechLane payment",
 	}
 	b, _ := json.Marshal(payload)

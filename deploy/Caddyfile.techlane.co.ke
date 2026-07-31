@@ -1,0 +1,112 @@
+# TechLane production (Caddy)
+# Hosts: *.techlane.co.ke
+
+git.novaflow.co.ke {
+    reverse_proxy 127.0.0.1:3000
+}
+
+# --- TechLane hosts ---
+
+app.techlane.co.ke {
+	encode gzip
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8090
+	}
+	# /downloads (bare) used to fall through to the SPA → blank page.
+	@downloadsBare path /downloads /downloads/
+	redir @downloadsBare /download permanent
+	handle_path /downloads/* {
+		root * /opt/techlane/web-dist/web-ops/downloads
+		header Cache-Control "public, max-age=300"
+		file_server
+	}
+	@download path /download /download/ /download/index.html
+	handle @download {
+		root * /opt/techlane/web-dist/web-ops
+		rewrite * /download/index.html
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle {
+		root * /opt/techlane/web-dist/web-ops
+		try_files {path} {path}/index.html /index.html
+		file_server
+	}
+}
+
+portal.techlane.co.ke {
+	encode gzip
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8090
+	}
+	@downloadsBare path /downloads /downloads/
+	redir @downloadsBare /download permanent
+	handle /downloads/* {
+		redir https://app.techlane.co.ke{uri} permanent
+	}
+	@download path /download /download/ /download/index.html
+	handle @download {
+		root * /opt/techlane/web-dist/web-portal
+		rewrite * /download/index.html
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle {
+		root * /opt/techlane/web-dist/web-portal
+		try_files {path} {path}/index.html /index.html
+		file_server
+	}
+}
+
+supplier.techlane.co.ke {
+	encode gzip
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8090
+	}
+	@downloadsBare path /downloads /downloads/
+	redir @downloadsBare /download permanent
+	handle /downloads/* {
+		redir https://app.techlane.co.ke{uri} permanent
+	}
+	@download path /download /download/ /download/index.html
+	handle @download {
+		root * /opt/techlane/web-dist/web-supplier
+		rewrite * /download/index.html
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle {
+		root * /opt/techlane/web-dist/web-supplier
+		try_files {path} {path}/index.html /index.html
+		file_server
+	}
+}
+
+techlane.co.ke, www.techlane.co.ke {
+	encode gzip
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8090
+	}
+	@downloadsBare path /downloads /downloads/
+	redir @downloadsBare /download permanent
+	handle /downloads/* {
+		redir https://app.techlane.co.ke{uri} permanent
+	}
+	@download path /download /download/ /download/index.html
+	handle @download {
+		root * /opt/techlane/web-dist/web-storefront
+		rewrite * /download/index.html
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle {
+		root * /opt/techlane/web-dist/web-storefront
+		try_files {path} {path}/index.html /index.html
+		file_server
+	}
+}
+
+api.techlane.co.ke {
+	encode gzip
+	reverse_proxy 127.0.0.1:8090
+}

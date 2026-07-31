@@ -114,11 +114,15 @@ func DefaultPermissions(role string) []string {
 	case "manager":
 		return []string{
 			"users.read", "users.write", "roles.assign", "roles.write",
-			"repairs.create", "repairs.assign", "repairs.status.update", "repairs.collect",
+			"repairs.create", "repairs.assign", "repairs.status.update", "repairs.collect", "repairs.close",
+			"repairs.authorize_work", "repairs.release_unverified", "repairs.passcode.read", "repairs.edit",
+			// repairs.price.override stays owner-only via "*"; repairs.edit is manager-safe (reasoned + audited).
 			"parts.approve", "parts.collect", "parts.request", "cash.handover.confirm", "refunds.create", "refunds.approve",
-			"audit.read", "risk.read", "reports.read", "inventory.read", "inventory.adjust", "sales.create", "payments.initiate", "payments.read",
+			"audit.read", "risk.read", "reports.read", "inventory.read", "inventory.adjust", "sales.create", "payments.initiate", "payments.read", "orders.confirm_paid",
 			"commissions.read", "commissions.write", "commissions.approve", "branches.read",
+			"customers.write", "devices.write",
 			"suppliers.read", "suppliers.write", "supplier_credit.reconcile",
+			"loyalty.read", "loyalty.manage", "webhooks.manage",
 		}
 	case "accountant":
 		return []string{
@@ -126,6 +130,7 @@ func DefaultPermissions(role string) []string {
 			"audit.read", "risk.read", "reports.read",
 			"commissions.read", "commissions.approve", "users.read",
 			"suppliers.read", "supplier_credit.reconcile",
+			"loyalty.read",
 		}
 	case "inventory":
 		return []string{
@@ -133,9 +138,15 @@ func DefaultPermissions(role string) []string {
 			"suppliers.read", "suppliers.write", "supplier_credit.reconcile",
 		}
 	case "technician":
-		return []string{"repairs.create", "repairs.status.update", "parts.request", "parts.collect", "customers.write", "devices.write", "repairs.read"}
+		return []string{"repairs.create", "repairs.status.update", "repairs.passcode.read", "parts.request", "parts.collect", "customers.write", "devices.write", "repairs.read", "suppliers.read", "loyalty.read"}
 	case "cashier":
-		return []string{"repairs.create", "sales.create", "payments.initiate", "cash.receive", "cash.handover.request", "customers.write", "refunds.create"}
+		// The counter is where devices are actually handed back, so a cashier can
+		// release one — but only against a code the owner confirms, never on a vouch.
+		return []string{
+			"repairs.create", "repairs.read", "repairs.collect",
+			"sales.create", "payments.initiate", "cash.receive", "cash.handover.request",
+			"customers.write", "refunds.create", "loyalty.read",
+		}
 	case "branch_admin":
 		return []string{"users.read", "users.write", "roles.assign", "roles.write", "branches.read"}
 	default:

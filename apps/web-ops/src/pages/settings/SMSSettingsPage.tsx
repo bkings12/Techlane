@@ -1,17 +1,26 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
-import { Badge, Button, ICONS, Input, PageHeader, Stat, StatStrip } from "../../components/ui";
-import { getSMSSettings, updateSMSSettings, type SMSSettings } from "../../lib/api";
+import { Badge, Button, Input, PageHeader, PasswordInput } from "../../components/ui";
+import {
+  getSMSSettings,
+  listSMSTemplates,
+  updateSMSSettings,
+  updateSMSTemplate,
+  type SMSSettings,
+  type SMSTemplate,
+} from "../../lib/api";
 
 export function SMSSettingsPage() {
   const { user } = useAuth();
   const isOwner = user?.roles?.includes("owner") ?? false;
 
   const [cfg, setCfg] = useState<SMSSettings | null>(null);
+  const [templates, setTemplates] = useState<SMSTemplate[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
+  const [templateBusy, setTemplateBusy] = useState<string>("");
 
   const [enabled, setEnabled] = useState(false);
   const [senderID, setSenderID] = useState("");
@@ -19,12 +28,16 @@ export function SMSSettingsPage() {
   const [baseURL, setBaseURL] = useState("https://sms.blessedtexts.com/api/sms/v1");
 
   useEffect(() => {
-    getSMSSettings()
-      .then((c) => {
+    Promise.all([getSMSSettings(), listSMSTemplates()])
+      .then(([c, t]) => {
         setCfg(c);
         setEnabled(c.enabled);
         setSenderID(c.sender_id || "");
         setBaseURL(c.base_url || "https://sms.blessedtexts.com/api/sms/v1");
+        setTemplates(t.items ?? []);
+        const next: Record<string, string> = {};
+        for (const item of t.items ?? []) next[item.key] = item.body;
+        setDrafts(next);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
   }, []);
@@ -58,8 +71,8 @@ export function SMSSettingsPage() {
       setApiKey("");
       setSaved(
         next.enabled && next.configured
-          ? "Saved. Customer OTP is ready to send via BlessedTexts."
-          : "Saved. Enable SMS and finish configuration before customer OTP will work.",
+          ? "Saved. SMS delivery is ready for OTP and job notifications."
+          : "Saved. Enable SMS and finish configuration before messages will send.",
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -68,20 +81,53 @@ export function SMSSettingsPage() {
     }
   }
 
+  async function saveTemplate(key: string) {
+    setTemplateBusy(key);
+    setError("");
+    setSaved("");
+    try {
+      const updated = await updateSMSTemplate(key, drafts[key] ?? "");
+      setTemplates((prev) => prev.map((t) => (t.key === key ? updated : t)));
+      setDrafts((prev) => ({ ...prev, [key]: updated.body }));
+      setSaved(`Template “${updated.label}” saved.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Template save failed");
+    } finally {
+      setTemplateBusy("");
+    }
+  }
+
+  async function resetTemplate(key: string, defaultBody: string) {
+    setDrafts((prev) => ({ ...prev, [key]: defaultBody }));
+    setTemplateBusy(key);
+    setError("");
+    setSaved("");
+    try {
+      const updated = await updateSMSTemplate(key, "");
+      setTemplates((prev) => prev.map((t) => (t.key === key ? updated : t)));
+      setDrafts((prev) => ({ ...prev, [key]: updated.body }));
+      setSaved(`Template reset to default.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reset failed");
+    } finally {
+      setTemplateBusy("");
+    }
+  }
+
+  function insertHelper(key: string, helper: string) {
+    const token = `{{${helper}}}`;
+    setDrafts((prev) => ({ ...prev, [key]: `${prev[key] ?? ""}${token}` }));
+  }
+
   if (!cfg && !error) return <div className="boot">Loading…</div>;
 
   const ready = Boolean(cfg?.configured && cfg?.enabled);
 
   return (
-    <div>
+    <div className="settings-page">
       <PageHeader
-        title="SMS (OTP)"
-        subtitle="BlessedTexts delivery for customer repair verification codes"
-        actions={
-          <Link to="/settings" className="muted">
-            All settings
-          </Link>
-        }
+        title="SMS"
+        subtitle="BlessedTexts delivery, OTP, and editable notification templates"
       />
       {error ? <p className="form-error">{error}</p> : null}
       {saved ? (
@@ -91,34 +137,45 @@ export function SMSSettingsPage() {
       ) : null}
 
       {!isOwner ? (
-        <p className="hint panel" style={{ marginBottom: "1rem" }}>
-          Viewing as non-owner. Only the shop owner can change SMS credentials; the API will reject saves from other
-          roles.
+        <p className="form-error">
+          Viewing as non-owner. Only the shop owner can change SMS credentials and templates.
         </p>
       ) : null}
 
-      <StatStrip>
-        <Stat icon={ICONS.settings} label="Access" value={<Badge tone="info">owner only</Badge>} />
-        <Stat icon={ICONS.stk} label="Delivery" value={<Badge tone={ready ? "success" : "warning"}>{ready ? "ready" : "not ready"}</Badge>} />
-        <Stat icon={ICONS.ready} label="Enabled" value={<Badge tone={cfg?.enabled ? "success" : "pending"}>{cfg?.enabled ? "on" : "off"}</Badge>} />
-        <Stat icon={ICONS.hash} label="Sender ID" value={<span className="mono">{cfg?.sender_id || "—"}</span>} />
-      </StatStrip>
+      <section className="board-pulse" aria-label="SMS pulse">
+        <div>
+          <strong>Owner</strong>
+          <span>Access</span>
+        </div>
+        <div className={ready ? "" : "warn"}>
+          <strong>{ready ? "Ready" : "Not ready"}</strong>
+          <span>Delivery</span>
+        </div>
+        <div>
+          <strong>{cfg?.enabled ? "On" : "Off"}</strong>
+          <span>Enabled</span>
+        </div>
+        <div>
+          <strong className="mono">{cfg?.sender_id || "—"}</strong>
+          <span>Sender ID</span>
+        </div>
+      </section>
 
-      <form className="panel form-grid" onSubmit={submit}>
-        <div className="panel-head">
-          <h2>BlessedTexts</h2>
+      <form className="settings-form-card form-grid" onSubmit={submit}>
+        <div className="chip-row">
+          <h2 style={{ margin: 0 }}>BlessedTexts</h2>
           <Badge tone={cfg?.api_key_set ? "success" : "warning"}>
             {cfg?.api_key_set ? "key on file" : "key missing"}
           </Badge>
         </div>
         <p className="hint">
-          Customer portal and Android OTP require this to be enabled and configured. The API key is never shown after
-          save — leave the field blank to keep the current value. Verification codes are never written to server logs.
+          Used for customer OTP and all SMS notifications below. The API key is never shown after save — leave blank to
+          keep the current value.
         </p>
 
         <label className="checkbox-row">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          Enable BlessedTexts SMS for customer OTP
+          Enable BlessedTexts SMS
         </label>
 
         <label>
@@ -133,8 +190,7 @@ export function SMSSettingsPage() {
 
         <label>
           API key {cfg?.api_key_set ? <span className="muted">(saved — enter a new key only to replace)</span> : null}
-          <Input
-            type="password"
+          <PasswordInput
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={cfg?.api_key_set ? "••••••••" : "From BlessedTexts profile"}
@@ -157,6 +213,79 @@ export function SMSSettingsPage() {
           </Button>
         </div>
       </form>
+
+      <section className="settings-form-card">
+        <div className="chip-row">
+          <h2 style={{ margin: 0 }}>Message templates</h2>
+          <Badge tone="info">{templates.length} templates</Badge>
+        </div>
+        <p className="hint">
+          Click a helper chip to insert it into the message. Empty save / Reset restores the built-in default. Use{" "}
+          <code>{"{{helper}}"}</code> placeholders — they are replaced when the SMS is sent.
+        </p>
+
+        <div className="template-list">
+          {templates.map((tpl) => (
+            <div key={tpl.key} className="template-card">
+              <div className="template-card-head">
+                <div>
+                  <strong>{tpl.label}</strong>
+                  <p className="hint">
+                    {tpl.description} · to {tpl.audience}
+                  </p>
+                </div>
+                <Badge tone={tpl.is_customized ? "success" : "pending"}>
+                  {tpl.is_customized ? "custom" : "default"}
+                </Badge>
+              </div>
+
+              <div className="chip-row">
+                {tpl.helpers.map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    className="chip"
+                    disabled={!isOwner}
+                    onClick={() => insertHelper(tpl.key, h)}
+                    title={`Insert {{${h}}}`}
+                  >
+                    {`{{${h}}}`}
+                  </button>
+                ))}
+              </div>
+
+              <label>
+                Message
+                <textarea
+                  className="input"
+                  rows={3}
+                  value={drafts[tpl.key] ?? ""}
+                  disabled={!isOwner}
+                  onChange={(e) => setDrafts((prev) => ({ ...prev, [tpl.key]: e.target.value }))}
+                />
+              </label>
+
+              <div className="chip-row">
+                <Button
+                  type="button"
+                  disabled={!isOwner || templateBusy === tpl.key}
+                  onClick={() => void saveTemplate(tpl.key)}
+                >
+                  {templateBusy === tpl.key ? "Saving…" : "Save template"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!isOwner || templateBusy === tpl.key}
+                  onClick={() => void resetTemplate(tpl.key, tpl.default_body)}
+                >
+                  Reset to default
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

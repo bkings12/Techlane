@@ -8,11 +8,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -23,17 +26,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.outlined.Handyman
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,8 +43,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -62,10 +59,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.techlane.core.PrintSupport
+import com.techlane.core.theme.Brand
 import com.techlane.core.theme.statusPalette
+import com.techlane.core.ui.BrandAuthHeader
+import com.techlane.core.ui.BrandCard
+import com.techlane.core.ui.BrandDetailHeader
+import com.techlane.core.ui.BrandHero
+import com.techlane.core.ui.BrandSectionTitle
+import com.techlane.core.ui.GoldButton
+import com.techlane.core.ui.HeroStat
+import com.techlane.core.ui.PillBadge
+import com.techlane.core.ui.SafeBottomBar
+import com.techlane.core.ui.brandGradient
 import com.techlane.customer.CustomerApp
 import com.techlane.customer.network.CustomerApi
-import com.techlane.core.PrintSupport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -73,18 +81,17 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 @Composable
-private fun statusColors(status: String): Pair<Color, Color> {
+private fun statusColor(status: String): Color {
     val palette = statusPalette()
-    val fg = when (status.lowercase()) {
+    return when (status.lowercase()) {
         "intake" -> palette.intake
         "diagnosed" -> palette.diagnosed
         "waiting_parts" -> palette.waitingParts
         "in_progress" -> palette.inProgress
-        "completed", "ready" -> palette.completed
+        "ready_for_pickup", "completed", "ready" -> palette.completed
         "collected" -> palette.collected
-        else -> MaterialTheme.colorScheme.primary
+        else -> Brand.Navy
     }
-    return fg.copy(alpha = 0.16f) to fg
 }
 
 @Composable
@@ -94,160 +101,166 @@ fun CustomerNav(
     onSignedOut: () -> Unit,
     rootModifier: Modifier = Modifier,
 ) {
+    var sessionExpired by remember { mutableStateOf(false) }
     DisposableEffect(onSignedOut) {
         CustomerApi.setSessionExpiredListener {
-            android.os.Handler(android.os.Looper.getMainLooper()).post { onSignedOut() }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                sessionExpired = true
+                onSignedOut()
+            }
         }
         onDispose { CustomerApi.setSessionExpiredListener(null) }
     }
     if (!signedIn) {
-        OtpAuthScreen(onSignedIn = onSignedIn, rootModifier = rootModifier)
+        OtpAuthScreen(
+            onSignedIn = {
+                sessionExpired = false
+                onSignedIn()
+            },
+            sessionExpired = sessionExpired,
+            rootModifier = rootModifier,
+        )
     } else {
         CustomerShell(onSignedOut = onSignedOut, rootModifier = rootModifier)
     }
 }
 
 @Composable
-fun OtpAuthScreen(onSignedIn: () -> Unit, rootModifier: Modifier = Modifier) {
+fun OtpAuthScreen(onSignedIn: () -> Unit, sessionExpired: Boolean = false, rootModifier: Modifier = Modifier) {
     var phone by remember { mutableStateOf(CustomerApp.instance.tokenStore.phone.orEmpty()) }
     var code by remember { mutableStateOf("") }
     var step by remember { mutableStateOf("phone") }
     var error by remember { mutableStateOf<String?>(null) }
-    var hint by remember { mutableStateOf<String?>(null) }
+    var hint by remember { mutableStateOf<String?>(if (sessionExpired) "Your session expired. Please sign in again." else null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     Box(
         rootModifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(brandGradient()),
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(260.dp)
-                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)),
+        BrandAuthHeader(
+            appLabel = "Customer",
+            tagline = "Track your repairs. Pay. Collect.",
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(horizontal = 28.dp, vertical = 36.dp),
         )
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 28.dp, vertical = 48.dp),
-            verticalArrangement = Arrangement.Center,
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = Brand.Surface,
+            shadowElevation = 8.dp,
         ) {
-            Icon(
-                Icons.Outlined.Handyman,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(40.dp),
-            )
-            Spacer(Modifier.height(16.dp))
-            Text("Track your repair", style = MaterialTheme.typography.displayMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Sign in with the phone number you left at the shop.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(32.dp))
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 3.dp,
-                shadowElevation = 4.dp,
+            Column(
+                Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Column(
-                    Modifier.padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
+                Text(
+                    if (step == "phone") "Sign in" else "Enter code",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Brand.TextPrimary,
+                )
+                Text(
+                    if (step == "phone") {
+                        "Use the phone number you left at the shop."
+                    } else {
+                        "We sent a 6-digit code to $phone"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Brand.TextSecondary,
+                )
+                if (step == "phone") {
+                    hint?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = Brand.Warning)
+                    }
+                }
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it },
+                    label = { Text("Phone number") },
+                    leadingIcon = { Icon(Icons.Default.PhoneAndroid, null) },
+                    singleLine = true,
+                    enabled = step == "phone",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (step == "code") {
                     OutlinedTextField(
-                        value = phone,
-                        onValueChange = { phone = it },
-                        label = { Text("Phone number") },
-                        leadingIcon = { Icon(Icons.Default.PhoneAndroid, null) },
+                        value = code,
+                        onValueChange = { code = it.filter { ch -> ch.isDigit() }.take(6) },
+                        label = { Text("6-digit code") },
                         singleLine = true,
-                        enabled = step == "phone",
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    if (step == "code") {
-                        OutlinedTextField(
-                            value = code,
-                            onValueChange = { code = it.filter { ch -> ch.isDigit() }.take(6) },
-                            label = { Text("6-digit code") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                    hint?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Brand.Navy,
                         )
-                        hint?.let {
-                            Text(
-                                it,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
                     }
-                    error?.let {
-                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                    Button(
-                        onClick = {
-                            busy = true
-                            error = null
-                            scope.launch {
-                                try {
-                                    if (step == "phone") {
-                                        val res = withContext(Dispatchers.IO) { CustomerApi.requestOtp(phone.trim()) }
-                                        hint = res.optString("dev_hint").takeIf { it.isNotBlank() }
-                                            ?: "We sent a code by SMS."
-                                        CustomerApp.instance.tokenStore.phone = phone.trim()
-                                        step = "code"
-                                    } else {
-                                        val res = withContext(Dispatchers.IO) {
-                                            CustomerApi.verifyOtp(phone.trim(), code.trim())
-                                        }
-                                        CustomerApp.instance.tokenStore.sessionToken = res.getString("token")
-                                        CustomerApp.instance.tokenStore.phone = phone.trim()
-                                        res.optJSONObject("customer")?.optString("name")
-                                            ?.takeIf { it.isNotBlank() }
-                                            ?.let { CustomerApp.instance.tokenStore.displayName = it }
-                                        onSignedIn()
+                }
+                error?.let {
+                    Text(it, color = Brand.Danger, style = MaterialTheme.typography.bodySmall)
+                }
+                GoldButton(
+                    text = if (step == "phone") "Send code" else "Verify",
+                    onClick = {
+                        busy = true
+                        error = null
+                        scope.launch {
+                            try {
+                                if (step == "phone") {
+                                    val res = withContext(Dispatchers.IO) { CustomerApi.requestOtp(phone.trim()) }
+                                    hint = res.optString("dev_hint").takeIf { it.isNotBlank() }
+                                        ?: "We sent a code by SMS."
+                                    CustomerApp.instance.tokenStore.phone = phone.trim()
+                                    step = "code"
+                                } else {
+                                    val res = withContext(Dispatchers.IO) {
+                                        CustomerApi.verifyOtp(phone.trim(), code.trim())
                                     }
-                                } catch (e: Exception) {
-                                    error = e.message
-                                } finally {
-                                    busy = false
+                                    CustomerApp.instance.tokenStore.sessionToken = res.getString("token")
+                                    CustomerApp.instance.tokenStore.phone = phone.trim()
+                                    res.optJSONObject("customer")?.optString("name")
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?.let { CustomerApp.instance.tokenStore.displayName = it }
+                                    onSignedIn()
                                 }
+                            } catch (e: Exception) {
+                                error = e.message
+                            } finally {
+                                busy = false
                             }
-                        },
-                        enabled = !busy && phone.isNotBlank() && (step == "phone" || code.length >= 4),
+                        }
+                    },
+                    enabled = !busy && phone.isNotBlank() && (step == "phone" || code.length >= 4),
+                    loading = busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (step == "code") {
+                    Text(
+                        "Use a different number",
+                        color = Brand.Navy,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(52.dp),
-                    ) {
-                        Text(
-                            when {
-                                busy && step == "phone" -> "Sending…"
-                                busy -> "Verifying…"
-                                step == "phone" -> "Send code"
-                                else -> "Continue"
-                            },
-                        )
-                    }
-                    if (step == "code") {
-                        Text(
-                            "Use a different number",
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    step = "phone"
-                                    code = ""
-                                    hint = null
-                                }
-                                .padding(vertical = 8.dp),
-                            textAlign = TextAlign.Center,
-                        )
-                    }
+                            .clickable {
+                                step = "phone"
+                                code = ""
+                                hint = null
+                            }
+                            .padding(vertical = 8.dp),
+                        textAlign = TextAlign.Center,
+                    )
                 }
             }
         }
@@ -260,6 +273,13 @@ fun CustomerShell(onSignedOut: () -> Unit, rootModifier: Modifier = Modifier) {
     var tab by remember { mutableStateOf("home") }
     var selectedRepairId by remember { mutableStateOf<String?>(null) }
 
+    fun signOut() {
+        kotlinx.coroutines.MainScope().launch(Dispatchers.IO) {
+            CustomerApi.logout()
+        }
+        onSignedOut()
+    }
+
     if (selectedRepairId != null) {
         RepairDetailScreen(
             repairId = selectedRepairId!!,
@@ -271,56 +291,65 @@ fun CustomerShell(onSignedOut: () -> Unit, rootModifier: Modifier = Modifier) {
 
     Scaffold(
         modifier = rootModifier,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(if (tab == "profile") "Profile" else "My repairs")
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
-                actions = {
-                    if (tab == "profile") {
-                        IconButton(onClick = {
-                            kotlinx.coroutines.MainScope().launch(Dispatchers.IO) {
-                                CustomerApi.logout()
-                            }
-                            onSignedOut()
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Sign out")
-                        }
-                    }
-                },
-            )
-        },
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == "home",
-                    onClick = { tab = "home" },
-                    icon = { Icon(Icons.Default.Home, null) },
-                    label = { Text("Repairs") },
-                )
-                NavigationBarItem(
-                    selected = tab == "profile",
-                    onClick = { tab = "profile" },
-                    icon = { Icon(Icons.Default.Person, null) },
-                    label = { Text("Profile") },
-                )
+            SafeBottomBar(containerColor = Brand.Surface) {
+                NavigationBar(
+                    containerColor = Brand.Surface,
+                    windowInsets = WindowInsets(0, 0, 0, 0),
+                ) {
+                    NavigationBarItem(
+                        selected = tab == "home",
+                        onClick = { tab = "home" },
+                        icon = { Icon(Icons.Default.Home, null) },
+                        label = { Text("Repairs") },
+                    )
+                    NavigationBarItem(
+                        selected = tab == "profile",
+                        onClick = { tab = "profile" },
+                        icon = { Icon(Icons.Default.Person, null) },
+                        label = { Text("Profile") },
+                    )
+                }
             }
         },
     ) { padding ->
-        val contentMod = Modifier.padding(padding)
+        val contentMod = Modifier.padding(bottom = padding.calculateBottomPadding())
         if (tab == "profile") {
-            ProfileScreen(contentMod)
+            Column(contentMod.fillMaxSize()) {
+                BrandHero(
+                    title = "Profile",
+                    subtitle = "Your account details",
+                    appLabel = "Customer",
+                    trailing = {
+                        IconButton(onClick = { signOut() }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Logout,
+                                contentDescription = "Sign out",
+                                tint = Color.White,
+                            )
+                        }
+                    },
+                )
+                ProfileScreen(Modifier.weight(1f))
+            }
         } else {
-            RepairListScreen(onOpen = { selectedRepairId = it }, rootModifier = contentMod)
+            RepairListScreen(
+                onOpen = { selectedRepairId = it },
+                onSignedOut = { signOut() },
+                rootModifier = contentMod,
+            )
         }
     }
 }
 
 @Composable
-fun RepairListScreen(onOpen: (String) -> Unit, rootModifier: Modifier = Modifier) {
+fun RepairListScreen(
+    onOpen: (String) -> Unit,
+    rootModifier: Modifier = Modifier,
+    onSignedOut: () -> Unit = {},
+) {
     var items by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -343,48 +372,83 @@ fun RepairListScreen(onOpen: (String) -> Unit, rootModifier: Modifier = Modifier
 
     LaunchedEffect(Unit) { refresh() }
 
-    Column(rootModifier.fillMaxSize()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Approve estimates and pay when ready.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = { refresh() }) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-            }
-        }
+    val inProgressCount = items.count {
+        it.optString("status").lowercase() in setOf(
+            "intake", "diagnosed", "waiting_parts", "in_progress", "open",
+        )
+    }
+    val readyCount = items.count {
+        it.optString("status").lowercase() in setOf("ready_for_pickup", "completed", "ready")
+    }
+    val welcome = CustomerApp.instance.tokenStore.displayName
+        ?.takeIf { it.isNotBlank() }
+        ?.let { "Welcome, $it" }
+        ?: "Approve estimates and pay when ready."
+
+    Column(rootModifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        BrandHero(
+            title = "My repairs",
+            subtitle = welcome,
+            appLabel = "Customer",
+            trailing = {
+                Row {
+                    IconButton(onClick = { refresh() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White)
+                    }
+                    IconButton(onClick = onSignedOut) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Logout,
+                            contentDescription = "Sign out",
+                            tint = Color.White,
+                        )
+                    }
+                }
+            },
+            bottomContent = if (!loading && items.isNotEmpty()) {
+                {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        HeroStat("In progress", "$inProgressCount", Modifier.weight(1f))
+                        HeroStat("Ready", "$readyCount", Modifier.weight(1f))
+                        HeroStat("Total", "${items.size}", Modifier.weight(1f))
+                    }
+                }
+            } else {
+                null
+            },
+        )
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+                CircularProgressIndicator(color = Brand.Navy)
             }
             error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(error!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp),
+                ) {
+                    Text(error!!, color = Brand.Danger, textAlign = TextAlign.Center)
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = { refresh() }) { Text("Retry") }
+                    GoldButton(text = "Retry", onClick = { refresh() })
                 }
             }
-            items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                    modifier = Modifier.padding(24.dp).fillMaxWidth(),
-                ) {
+            items.isEmpty() -> Box(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                BrandCard {
                     Column(
-                        Modifier.padding(28.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
                         Surface(
                             shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                            color = Brand.NavyTint,
                             modifier = Modifier.size(56.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -392,25 +456,66 @@ fun RepairListScreen(onOpen: (String) -> Unit, rootModifier: Modifier = Modifier
                                     Icons.Default.Build,
                                     null,
                                     modifier = Modifier.size(28.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
+                                    tint = Brand.Navy,
                                 )
                             }
                         }
-                        Spacer(Modifier.height(14.dp))
-                        Text("No repairs yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "No repairs yet",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Brand.TextPrimary,
+                        )
                         Text(
                             "When you drop a device at the shop, it will show here.",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = Brand.TextSecondary,
                             textAlign = TextAlign.Center,
+                        )
+                        HorizontalDivider(color = Brand.Border)
+                        BrandSectionTitle("Already dropped a device?")
+                        var claimJob by remember { mutableStateOf("") }
+                        var claimBusy by remember { mutableStateOf(false) }
+                        var claimError by remember { mutableStateOf<String?>(null) }
+                        OutlinedTextField(
+                            value = claimJob,
+                            onValueChange = { claimJob = it.uppercase() },
+                            label = { Text("Job code") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        claimError?.let { Text(it, color = Brand.Danger) }
+                        GoldButton(
+                            text = "Claim my repair",
+                            onClick = {
+                                if (claimJob.isBlank()) {
+                                    claimError = "Job code required"
+                                    return@GoldButton
+                                }
+                                claimBusy = true
+                                claimError = null
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) { CustomerApi.claimRepair(claimJob.trim()) }
+                                        refresh()
+                                        claimJob = ""
+                                    } catch (e: Exception) {
+                                        claimError = e.message
+                                    } finally {
+                                        claimBusy = false
+                                    }
+                                }
+                            },
+                            enabled = !claimBusy,
+                            loading = claimBusy,
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
             }
             else -> LazyColumn(
                 contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(items, key = { it.optString("id") }) { job ->
                     RepairCard(job) { onOpen(job.getString("id")) }
@@ -420,68 +525,56 @@ fun RepairListScreen(onOpen: (String) -> Unit, rootModifier: Modifier = Modifier
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RepairCard(job: JSONObject, onClick: () -> Unit) {
     val status = job.optString("status").ifBlank { "open" }
-    val colors = statusColors(status)
-    Card(
-        onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp, pressedElevation = 4.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    job.optString("job_code").ifBlank { "Repair" },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                StatusPill(status, colors.first, colors.second)
-            }
-            Text(
-                listOfNotNull(
-                    job.optString("device_brand").takeIf { it.isNotBlank() },
-                    job.optString("device_model").takeIf { it.isNotBlank() },
-                ).joinToString(" ").ifBlank { "Device under repair" },
-                style = MaterialTheme.typography.bodyLarge,
-            )
-            job.optJSONObject("estimate")?.let { est ->
-                if (est.optString("status") == "pending") {
-                    Text(
-                        "Estimate awaiting your approval",
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-            }
-            if (job.optBoolean("balance_due") || job.optDouble("balance_due", 0.0) > 0) {
-                Text(
-                    "Payment due",
-                    color = MaterialTheme.colorScheme.tertiary,
-                    style = MaterialTheme.typography.labelLarge,
-                )
+    val color = statusColor(status)
+    val balance = when {
+        job.has("balance_due") && !job.isNull("balance_due") -> {
+            val raw = job.opt("balance_due")
+            when (raw) {
+                is Number -> raw.toDouble()
+                is Boolean -> if (raw) job.optDouble("amount_due", 0.0) else 0.0
+                else -> job.optDouble("balance_due", job.optDouble("amount_due", 0.0))
             }
         }
+        else -> job.optDouble("amount_due", 0.0)
     }
-}
-
-@Composable
-private fun StatusPill(label: String, bg: Color, fg: Color) {
-    Surface(color = bg, shape = RoundedCornerShape(999.dp)) {
+    BrandCard(onClick = onClick) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                job.optString("job_code").ifBlank { "Repair" },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Brand.TextPrimary,
+            )
+            PillBadge(status.replace('_', ' '), color)
+        }
         Text(
-            label.replace('_', ' '),
-            color = fg,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            listOfNotNull(
+                job.optString("device_brand").takeIf { it.isNotBlank() },
+                job.optString("device_model").takeIf { it.isNotBlank() },
+            ).joinToString(" ").ifBlank { "Device under repair" },
+            style = MaterialTheme.typography.bodyLarge,
+            color = Brand.TextSecondary,
         )
+        job.optJSONObject("estimate")?.let { est ->
+            if (est.optString("status") == "pending") {
+                PillBadge("Estimate awaiting approval", Brand.GoldDark)
+            }
+        }
+        if (balance > 0) {
+            Text(
+                "KES ${"%.0f".format(balance)} due",
+                color = Brand.Warning,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
@@ -535,362 +628,385 @@ fun RepairDetailScreen(repairId: String, onBack: () -> Unit, rootModifier: Modif
         }
     }
 
-    Scaffold(
-        modifier = rootModifier,
-        topBar = {
-            TopAppBar(
-                title = { Text(detail?.optString("job_code") ?: "Repair") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { refresh() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
-                },
-            )
-        },
-    ) { padding ->
+    val deviceLabel = detail?.let { job ->
+        listOfNotNull(
+            job.optString("device_brand").takeIf { it.isNotBlank() },
+            job.optString("device_model").takeIf { it.isNotBlank() },
+        ).joinToString(" ").ifBlank { null }
+    }
+
+    Column(
+        rootModifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        BrandDetailHeader(
+            title = detail?.optString("job_code") ?: "Repair",
+            subtitle = deviceLabel,
+            navigation = {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White,
+                    )
+                }
+            },
+            trailing = {
+                IconButton(onClick = { refresh() }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White)
+                }
+            },
+        )
         when {
             loading && detail == null -> Box(
-                Modifier.fillMaxSize().padding(padding),
+                Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator() }
+            ) { CircularProgressIndicator(color = Brand.Navy) }
             error != null && detail == null -> Box(
-                Modifier.fillMaxSize().padding(padding),
+                Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(error!!, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = { refresh() }) { Text("Retry") }
+                    Text(error!!, color = Brand.Danger)
+                    Spacer(Modifier.height(12.dp))
+                    GoldButton(text = "Retry", onClick = { refresh() })
                 }
             }
             else -> {
                 val job = detail!!
                 val estimate = job.optJSONObject("estimate") ?: job.optJSONObject("pending_estimate")
                 val timeline = job.optJSONArray("timeline") ?: job.optJSONArray("events")
-                val statusPair = statusColors(job.optString("status"))
+                val statusFg = statusColor(job.optString("status"))
                 Column(
                     Modifier
                         .fillMaxSize()
-                        .padding(padding)
                         .verticalScroll(rememberScrollState())
                         .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Card(
-                        Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                    ) {
-                        Column(
-                            Modifier.padding(18.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                listOfNotNull(
-                                    job.optString("device_brand").takeIf { it.isNotBlank() },
-                                    job.optString("device_model").takeIf { it.isNotBlank() },
-                                ).joinToString(" ").ifBlank { "Device" },
-                                style = MaterialTheme.typography.headlineSmall,
-                            )
-                            StatusPill(job.optString("status"), statusPair.first, statusPair.second)
-                            job.optString("problem_summary").takeIf { it.isNotBlank() }?.let {
-                                Text(
-                                    it,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            job.optString("customer_name").takeIf { it.isNotBlank() }?.let {
-                                Text(it, style = MaterialTheme.typography.bodyMedium)
-                            }
+                    BrandCard {
+                        BrandSectionTitle("Device")
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            listOfNotNull(
+                                job.optString("device_brand").takeIf { it.isNotBlank() },
+                                job.optString("device_model").takeIf { it.isNotBlank() },
+                            ).joinToString(" ").ifBlank { "Device" },
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = Brand.TextPrimary,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        PillBadge(job.optString("status").replace('_', ' '), statusFg)
+                        job.optString("problem_summary").takeIf { it.isNotBlank() }?.let {
+                            Spacer(Modifier.height(8.dp))
+                            Text(it, style = MaterialTheme.typography.bodyMedium, color = Brand.TextSecondary)
+                        }
+                        job.optString("customer_name").takeIf { it.isNotBlank() }?.let {
+                            Spacer(Modifier.height(4.dp))
+                            Text(it, style = MaterialTheme.typography.bodyMedium, color = Brand.TextPrimary)
                         }
                     }
 
                     if (estimate != null && estimate.optString("status") == "pending") {
-                        Card(
-                            Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                            ),
-                        ) {
-                            Column(
-                                Modifier.padding(18.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                Text(
-                                    "Estimate for approval",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                val labor = estimate.optDouble("labor_amount", 0.0)
-                                val partsAmt = estimate.optDouble("parts_amount", 0.0)
-                                val currency = estimate.optString("currency", "KES")
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Labor", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("$currency ${"%.0f".format(labor)}")
-                                }
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("Parts", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("$currency ${"%.0f".format(partsAmt)}")
-                                }
-                                Text(
-                                    "$currency ${"%.0f".format(labor + partsAmt)}",
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                estimate.optString("notes").takeIf { it.isNotBlank() }?.let {
-                                    Text(it, style = MaterialTheme.typography.bodyMedium)
-                                }
-                                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Button(
-                                        onClick = {
-                                            busy = true
-                                            scope.launch {
-                                                try {
-                                                    withContext(Dispatchers.IO) {
-                                                        CustomerApi.approveEstimate(repairId, estimate.getString("id"))
-                                                    }
-                                                    refresh()
-                                                } catch (e: Exception) {
-                                                    error = e.message
-                                                } finally {
-                                                    busy = false
-                                                }
-                                            }
-                                        },
-                                        enabled = !busy,
-                                        modifier = Modifier.weight(1f).height(48.dp),
-                                    ) { Text("Approve") }
-                                    OutlinedButton(
-                                        onClick = {
-                                            busy = true
-                                            scope.launch {
-                                                try {
-                                                    withContext(Dispatchers.IO) {
-                                                        CustomerApi.rejectEstimate(repairId, estimate.getString("id"))
-                                                    }
-                                                    refresh()
-                                                } catch (e: Exception) {
-                                                    error = e.message
-                                                } finally {
-                                                    busy = false
-                                                }
-                                            }
-                                        },
-                                        enabled = !busy,
-                                        modifier = Modifier.weight(1f).height(48.dp),
-                                    ) { Text("Reject") }
-                                }
+                        BrandCard {
+                            BrandSectionTitle("Estimate for approval")
+                            Spacer(Modifier.height(10.dp))
+                            val total = if (estimate.has("total_amount")) {
+                                estimate.optDouble("total_amount", 0.0)
+                            } else {
+                                estimate.optDouble("labor_amount", 0.0) + estimate.optDouble("parts_amount", 0.0)
                             }
+                            val currency = estimate.optString("currency", "KES")
+                            Text(
+                                "$currency ${"%.0f".format(total)}",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Brand.TextPrimary,
+                            )
+                            estimate.optString("notes").takeIf { it.isNotBlank() }?.let {
+                                Spacer(Modifier.height(6.dp))
+                                Text(it, style = MaterialTheme.typography.bodyMedium, color = Brand.TextSecondary)
+                            }
+                            error?.let {
+                                Spacer(Modifier.height(6.dp))
+                                Text(it, color = Brand.Danger)
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            GoldButton(
+                                text = "Approve estimate",
+                                onClick = {
+                                    busy = true
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) {
+                                                CustomerApi.approveEstimate(repairId, estimate.getString("id"))
+                                            }
+                                            refresh()
+                                        } catch (e: Exception) {
+                                            error = e.message
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                                loading = busy,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    busy = true
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) {
+                                                CustomerApi.rejectEstimate(repairId, estimate.getString("id"))
+                                            }
+                                            refresh()
+                                        } catch (e: Exception) {
+                                            error = e.message
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                            ) { Text("Reject") }
                         }
                     }
 
                     val balance = job.optDouble("balance_due", job.optDouble("amount_due", 0.0))
                     if (balance > 0) {
-                        Card(
-                            Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                        ) {
-                            Column(
-                                Modifier.padding(18.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                Text(
-                                    "Pay balance",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
+                        BrandCard {
+                            BrandSectionTitle("Pay balance")
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "KES ${"%.0f".format(balance)}",
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Brand.TextPrimary,
+                            )
+                            payMessage?.let {
+                                Spacer(Modifier.height(6.dp))
+                                Text(it, color = Brand.Navy)
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            GoldButton(
+                                text = if (busy) "Sending STK…" else "Pay now",
+                                onClick = {
+                                    busy = true
+                                    payMessage = null
+                                    scope.launch {
+                                        try {
+                                            val res = withContext(Dispatchers.IO) {
+                                                CustomerApi.payRepair(
+                                                    repairId,
+                                                    CustomerApp.instance.tokenStore.phone,
+                                                )
+                                            }
+                                            paymentId = res.optString("payment_id").takeIf { it.isNotBlank() }
+                                                ?: res.optString("id").takeIf { it.isNotBlank() }
+                                            payMessage = res.optString("message")
+                                                .ifBlank { "STK push sent — check your phone." }
+                                        } catch (e: Exception) {
+                                            payMessage = e.message
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                                loading = busy,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+
+                    BrandCard {
+                        BrandSectionTitle("Timeline")
+                        Spacer(Modifier.height(12.dp))
+                        if (timeline == null || timeline.length() == 0) {
+                            Text("No updates yet.", color = Brand.TextSecondary)
+                        } else {
+                            for (i in 0 until timeline.length()) {
+                                val ev = timeline.getJSONObject(i)
+                                val evStatus = ev.optString("status").ifBlank { ev.optString("event_type") }
+                                val dotColor = statusColor(evStatus)
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Box(
+                                            Modifier
+                                                .size(10.dp)
+                                                .clip(CircleShape)
+                                                .background(dotColor),
+                                        )
+                                        if (i < timeline.length() - 1) {
+                                            Box(
+                                                Modifier
+                                                    .width(2.dp)
+                                                    .height(36.dp)
+                                                    .background(Brand.Border),
+                                            )
+                                        }
+                                    }
+                                    Column(Modifier.padding(bottom = 12.dp)) {
+                                        Text(
+                                            evStatus.replace('_', ' '),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = Brand.TextPrimary,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        ev.optString("note").takeIf { it.isNotBlank() }?.let {
+                                            Text(it, style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
+                                        }
+                                        Text(
+                                            ev.optString("created_at").take(16),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Brand.TextMuted,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    BrandCard {
+                        BrandSectionTitle("Receipts")
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    busy = true
+                                    scope.launch {
+                                        try {
+                                            val html = withContext(Dispatchers.IO) {
+                                                PrintSupport.fetchText(
+                                                    CustomerApi.receiptHtmlUrl(repairId),
+                                                    CustomerApp.instance.tokenStore.sessionToken,
+                                                )
+                                            }
+                                            PrintSupport.printHtml(context, html, "Repair receipt")
+                                        } catch (e: Exception) {
+                                            error = e.message
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                            ) { Text("Print") }
+                            OutlinedButton(
+                                onClick = {
+                                    busy = true
+                                    scope.launch {
+                                        try {
+                                            val html = withContext(Dispatchers.IO) {
+                                                PrintSupport.fetchText(
+                                                    CustomerApi.receiptHtmlUrl(repairId),
+                                                    CustomerApp.instance.tokenStore.sessionToken,
+                                                )
+                                            }
+                                            PrintSupport.shareText(context, html, "Share receipt")
+                                        } catch (e: Exception) {
+                                            error = e.message
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                            ) { Text("Share") }
+                        }
+                        val receipts = job.optJSONArray("receipts")
+                        Spacer(Modifier.height(10.dp))
+                        if (receipts != null && receipts.length() > 0) {
+                            for (i in 0 until receipts.length()) {
+                                val r = receipts.getJSONObject(i)
+                                Surface(
+                                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Brand.Subtle,
+                                ) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text(
+                                            "KES ${"%.2f".format(r.optDouble("amount", 0.0))}",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = Brand.TextPrimary,
+                                        )
+                                        Text(
+                                            "${r.optString("method")} · ${r.optString("status")}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Brand.TextSecondary,
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                "Receipts appear after payment.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Brand.TextMuted,
+                            )
+                        }
+                    }
+
+                    BrandCard {
+                        BrandSectionTitle("Warranty")
+                        Spacer(Modifier.height(10.dp))
+                        if (warranty != null) {
+                            val w = warranty!!
+                            Text(
+                                "${w.optString("status")} · ${w.optInt("duration_days")} days",
+                                color = Brand.TextPrimary,
+                            )
+                            Text(
+                                "Ends ${w.optString("ends_at").take(10)}",
+                                color = Brand.TextSecondary,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            if (w.optString("status") == "active") {
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = claimNote,
+                                    onValueChange = { claimNote = it },
+                                    label = { Text("Claim note") },
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
-                                Text(
-                                    "KES ${"%.0f".format(balance)}",
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                payMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-                                Button(
+                                Spacer(Modifier.height(8.dp))
+                                GoldButton(
+                                    text = "Claim warranty",
                                     onClick = {
                                         busy = true
-                                        payMessage = null
                                         scope.launch {
                                             try {
-                                                val res = withContext(Dispatchers.IO) {
-                                                    CustomerApi.payRepair(
-                                                        repairId,
-                                                        CustomerApp.instance.tokenStore.phone,
-                                                    )
+                                                warranty = withContext(Dispatchers.IO) {
+                                                    CustomerApi.claimWarranty(repairId, claimNote)
                                                 }
-                                                paymentId = res.optString("payment_id").takeIf { it.isNotBlank() }
-                                                    ?: res.optString("id").takeIf { it.isNotBlank() }
-                                                payMessage = res.optString("message")
-                                                    .ifBlank { "STK push sent — check your phone." }
+                                                claimNote = ""
                                             } catch (e: Exception) {
-                                                payMessage = e.message
+                                                error = e.message
                                             } finally {
                                                 busy = false
                                             }
                                         }
                                     },
-                                    enabled = !busy,
-                                    modifier = Modifier.fillMaxWidth().height(52.dp),
-                                ) {
-                                    Text(if (busy) "Sending STK…" else "Pay with M-Pesa")
-                                }
-                            }
-                        }
-                    }
-
-                    Text("Timeline", style = MaterialTheme.typography.titleMedium)
-                    if (timeline == null || timeline.length() == 0) {
-                        Text("No updates yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        for (i in 0 until timeline.length()) {
-                            val ev = timeline.getJSONObject(i)
-                            Row(
-                                Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp),
+                                    enabled = !busy && claimNote.isNotBlank(),
+                                    loading = busy,
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
-                                Column {
-                                    Text(
-                                        ev.optString("status").ifBlank { ev.optString("event_type") },
-                                        style = MaterialTheme.typography.titleSmall,
-                                    )
-                                    ev.optString("note").takeIf { it.isNotBlank() }?.let {
-                                        Text(it, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    Text(
-                                        ev.optString("created_at").take(16),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
                             }
+                        } else {
+                            Text(
+                                "Warranty is issued when the repair is completed.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Brand.TextMuted,
+                            )
                         }
-                    }
-
-                    val receipts = job.optJSONArray("receipts")
-                    Text("Receipts", style = MaterialTheme.typography.titleMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                busy = true
-                                scope.launch {
-                                    try {
-                                        val html = withContext(Dispatchers.IO) {
-                                            PrintSupport.fetchText(
-                                                CustomerApi.receiptHtmlUrl(repairId),
-                                                CustomerApp.instance.tokenStore.sessionToken,
-                                            )
-                                        }
-                                        PrintSupport.printHtml(context, html, "Repair receipt")
-                                    } catch (e: Exception) {
-                                        error = e.message
-                                    } finally {
-                                        busy = false
-                                    }
-                                }
-                            },
-                            enabled = !busy,
-                        ) { Text("Print") }
-                        OutlinedButton(
-                            onClick = {
-                                busy = true
-                                scope.launch {
-                                    try {
-                                        val html = withContext(Dispatchers.IO) {
-                                            PrintSupport.fetchText(
-                                                CustomerApi.receiptHtmlUrl(repairId),
-                                                CustomerApp.instance.tokenStore.sessionToken,
-                                            )
-                                        }
-                                        PrintSupport.shareText(context, html, "Share receipt")
-                                    } catch (e: Exception) {
-                                        error = e.message
-                                    } finally {
-                                        busy = false
-                                    }
-                                }
-                            },
-                            enabled = !busy,
-                        ) { Text("Share") }
-                    }
-                    if (receipts != null && receipts.length() > 0) {
-                        for (i in 0 until receipts.length()) {
-                            val r = receipts.getJSONObject(i)
-                            Card(Modifier.fillMaxWidth()) {
-                                Column(Modifier.padding(12.dp)) {
-                                    Text(
-                                        "KES ${"%.2f".format(r.optDouble("amount", 0.0))}",
-                                        style = MaterialTheme.typography.titleMedium,
-                                    )
-                                    Text(
-                                        "${r.optString("method")} · ${r.optString("status")}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        Text(
-                            "Receipts appear after payment.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    Text("Warranty", style = MaterialTheme.typography.titleMedium)
-                    if (warranty != null) {
-                        val w = warranty!!
-                        Card(Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("${w.optString("status")} · ${w.optInt("duration_days")} days")
-                                Text("Ends ${w.optString("ends_at").take(10)}")
-                                if (w.optString("status") == "active") {
-                                    OutlinedTextField(
-                                        value = claimNote,
-                                        onValueChange = { claimNote = it },
-                                        label = { Text("Claim note") },
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                    Button(
-                                        onClick = {
-                                            busy = true
-                                            scope.launch {
-                                                try {
-                                                    warranty = withContext(Dispatchers.IO) {
-                                                        CustomerApi.claimWarranty(repairId, claimNote)
-                                                    }
-                                                    claimNote = ""
-                                                } catch (e: Exception) {
-                                                    error = e.message
-                                                } finally {
-                                                    busy = false
-                                                }
-                                            }
-                                        },
-                                        enabled = !busy && claimNote.isNotBlank(),
-                                    ) { Text("Claim warranty") }
-                                }
-                            }
-                        }
-                    } else {
-                        Text(
-                            "Warranty is issued when the repair is completed.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
             }
@@ -921,41 +1037,55 @@ fun ProfileScreen(rootModifier: Modifier = Modifier) {
         .ifBlank { phone.takeLast(2) }
 
     Column(
-        rootModifier.fillMaxSize().padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        rootModifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Card(
-            Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        ) {
-            Column(
-                Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+        BrandCard {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Box(
                     Modifier
                         .size(56.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
+                        .background(Brand.Navy),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         avatar,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = Color.White,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                     )
                 }
-                Text(name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                Text(phone, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Text(
-                    "Sessions expire for your security. You can request a new code anytime.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column {
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Brand.TextPrimary,
+                    )
+                    Text(
+                        phone,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Brand.TextSecondary,
+                    )
+                }
             }
+            error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = Brand.Danger)
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Sessions expire for your security. You can request a new code anytime.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Brand.TextSecondary,
+            )
         }
     }
 }

@@ -28,7 +28,12 @@ func SystemPermissionCatalog() []PermissionDef {
 		{Code: "repairs.assign", Description: "Assign technicians", Category: "repairs"},
 		{Code: "repairs.status.update", Description: "Update repair status", Category: "repairs"},
 		{Code: "repairs.price.override", Description: "Override repair prices", Category: "repairs"},
-		{Code: "repairs.collect", Description: "Mark device collected", Category: "repairs"},
+		{Code: "repairs.edit", Description: "Correct repair job details after creation", Category: "repairs"},
+		{Code: "repairs.collect", Description: "Release a device to the customer", Category: "repairs"},
+		{Code: "repairs.release_unverified", Description: "Release a device without the owner confirming a code", Category: "repairs"},
+		{Code: "repairs.close", Description: "Cancel a job or write it off as unrepairable", Category: "repairs"},
+		{Code: "repairs.authorize_work", Description: "Authorize bench work without a customer-approved estimate", Category: "repairs"},
+		{Code: "repairs.passcode.read", Description: "Reveal an encrypted device passcode", Category: "repairs"},
 
 		{Code: "inventory.read", Description: "View inventory", Category: "inventory"},
 		{Code: "inventory.adjust", Description: "Adjust stock", Category: "inventory"},
@@ -43,6 +48,7 @@ func SystemPermissionCatalog() []PermissionDef {
 		{Code: "sales.create", Description: "Create POS sales", Category: "sales"},
 		{Code: "sales.read", Description: "View sales", Category: "sales"},
 		{Code: "sales.void", Description: "Void sales", Category: "sales"},
+		{Code: "orders.confirm_paid", Description: "Manually confirm online orders as paid", Category: "sales"},
 
 		{Code: "payments.initiate", Description: "Initiate payments", Category: "payments"},
 		{Code: "payments.read", Description: "View payments", Category: "payments"},
@@ -62,6 +68,10 @@ func SystemPermissionCatalog() []PermissionDef {
 		{Code: "risk.read", Description: "View risk alerts", Category: "risk"},
 		{Code: "risk.ack", Description: "Acknowledge risk alerts", Category: "risk"},
 		{Code: "reports.read", Description: "View reports", Category: "reports"},
+
+		{Code: "loyalty.read", Description: "View customer loyalty point balances", Category: "marketing"},
+		{Code: "loyalty.manage", Description: "Configure loyalty point earn rates", Category: "marketing"},
+		{Code: "webhooks.manage", Description: "Manage outbound marketing/integration webhooks", Category: "marketing"},
 	}
 }
 

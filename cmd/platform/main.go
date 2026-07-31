@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -15,22 +16,30 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/techlane/techlane/internal/appversion"
 	"github.com/techlane/techlane/internal/audit"
 	"github.com/techlane/techlane/internal/commerce"
 	"github.com/techlane/techlane/internal/identity"
 	"github.com/techlane/techlane/internal/inventory"
+	"github.com/techlane/techlane/internal/loyalty"
 	"github.com/techlane/techlane/internal/notify"
 	"github.com/techlane/techlane/internal/payments"
 	"github.com/techlane/techlane/internal/platform"
+	"github.com/techlane/techlane/internal/realtime"
+	"github.com/techlane/techlane/internal/receipts"
 	"github.com/techlane/techlane/internal/repair"
 	"github.com/techlane/techlane/internal/reporting"
 	"github.com/techlane/techlane/internal/sales"
+	"github.com/techlane/techlane/internal/search"
+	"github.com/techlane/techlane/internal/storefrontcms"
 	"github.com/techlane/techlane/internal/sync"
+	"github.com/techlane/techlane/internal/whatsapp"
 	"github.com/techlane/techlane/internal/worker"
 	"github.com/techlane/techlane/packages/pkg/config"
 	"github.com/techlane/techlane/packages/pkg/db"
 	"github.com/techlane/techlane/packages/pkg/events"
 	"github.com/techlane/techlane/packages/pkg/httpx"
+	"github.com/techlane/techlane/packages/pkg/mailer"
 	"github.com/techlane/techlane/packages/pkg/objectstore"
 	"github.com/techlane/techlane/packages/pkg/otel"
 )
@@ -66,29 +75,51 @@ func main() {
 
 	bus := events.NewBus()
 	auditSvc := audit.NewService(pool)
+	httpx.SetErrorSink(auditSvc)
 	bus.Subscribe("*", func(e events.Envelope) {
 		actor := e.ActorID
 		_ = auditSvc.Record(context.Background(), e.TenantID, actor, e.EventType, "event", &e.EventID, e.Payload, e.CorrelationID)
 	})
 
+	realtimeHub := realtime.NewHub(jwtSecret)
+	bus.Subscribe("*", realtimeHub.Broadcast)
+
 	idSvc := identity.NewService(pool, jwtSecret)
+	idSvc.SetAuditSink(auditSvc)
 	if err := idSvc.Start(ctx); err != nil {
 		log.Fatalf("identity seed: %v", err)
 	}
 
 	invSvc := inventory.NewService(pool)
+	invSvc.SetEventBus(bus)
 	invSvc.SetAlertHook(auditSvc)
 	paySvc := payments.NewService(pool)
 	paySvc.SetEventBus(bus)
 	paySvc.SetRiskHook(audit.PaymentsRiskAdapter{Svc: auditSvc})
 	repairSvc := repair.NewService(pool, bus)
+	repairSvc.SetPasscodeKey([]byte(config.Env("DEVICE_PASSCODE_KEY", jwtSecret)))
 	repairSvc.SetCommissionHook(identity.RepairCommissionAdapter{Svc: idSvc})
 	repairSvc.SetCompletionHook(audit.RepairCompletionAdapter{Svc: auditSvc})
+	repairSvc.SetStockDeductor(inventory.RepairStockAdapter{Svc: invSvc})
+	// Parts consumed on a job book their cost onto that job, whether they came from
+	// a supplier or off the shop's own shelf.
+	invSvc.SetJobCostHook(repair.PartCostAdapter{Svc: repairSvc})
+	searchSvc := search.NewService(pool)
+	searchHandler := search.NewHandler(searchSvc)
+	appVersionHandler := appversion.NewHandler(appversion.NewService(pool))
+	loyaltySvc := loyalty.NewService(pool)
+	loyaltySvc.SetEventBus(bus)
+	loyaltyHandler := loyalty.NewHandler(loyaltySvc)
+	receiptSvc := receipts.NewService(pool)
+	storefrontSvc := storefrontcms.NewService(pool)
 	objCfg := objectstore.ConfigFromEnv()
 	if store, err := objectstore.New(objCfg); err != nil {
 		log.Printf("object storage: %v (attachments fall back to database)", err)
 	} else if store != nil {
 		repairSvc.SetObjectStore(store)
+		receiptSvc.SetObjectStore(store)
+		storefrontSvc.SetObjectStore(store)
+		invSvc.SetObjectStore(store)
 		log.Printf("object storage: enabled bucket=%s endpoint=%s", objCfg.Bucket, objCfg.Endpoint)
 	} else {
 		log.Printf("object storage: not configured (set OBJECT_STORAGE_* for Cloudflare R2 / MinIO)")
@@ -108,16 +139,34 @@ func main() {
 	}
 	salesSvc := sales.NewService(pool, invSvc)
 	salesSvc.SetPaymentTaker(payments.SalePaymentAdapter{Svc: paySvc})
+	paySvc.SetQuickSaleCreator(payments.SalesQuickSaleAdapter{Svc: salesSvc})
 	syncSvc := sync.NewService(pool, repairSvc, invSvc, paySvc, idSvc)
-	commerceSvc := commerce.NewService(pool, invSvc)
+	commerceSvc := commerce.NewService(pool, invSvc, storefrontSvc)
 	commerceSvc.SetPaymentTaker(payments.OrderPaymentAdapter{Svc: paySvc})
+	notifySvc := notify.NewService(pool)
+	commerceSvc.SetOrderPlacedNotifier(commerce.NotifyAdapter{Svc: notifySvc})
 	paySvc.SetOrderPaidHook(payments.CommercePaidAdapter{Svc: commerceSvc})
 	paySvc.SetRepairPaidHook(payments.RepairSettledAdapter{Svc: repairSvc})
+	paySvc.SetOutstandingResolver(func(ctx context.Context, tenantID uuid.UUID, payableType string, payableID uuid.UUID) (float64, bool, error) {
+		if payableType != "repair" {
+			return 0, false, nil
+		}
+		return repairSvc.RepairOutstanding(ctx, tenantID, payableID)
+	})
 
-	notifySvc := notify.NewService(pool)
 	notifySvc.SetSMSResolver(func(ctx context.Context, tenantID uuid.UUID) notify.SMSSender {
 		return repairSvc.ResolveSMSSender(ctx, tenantID)
 	})
+	waClient := whatsapp.NewClient(config.Env("WHATSAPP_SERVICE_URL", ""), config.Env("WHATSAPP_SERVICE_SECRET", ""))
+	waSvc := whatsapp.NewService(pool, waClient)
+	waSvc.SetRepairActions(repairSvc)
+	waSvc.SetSupplierActions(invSvc)
+	notifySvc.SetWhatsApp(waSvc)
+	if waClient.Configured() {
+		log.Printf("whatsapp: sidecar configured at %s", waClient.BaseURL)
+	} else {
+		log.Printf("whatsapp: not configured (set WHATSAPP_SERVICE_URL + WHATSAPP_SERVICE_SECRET)")
+	}
 	notifySvc.Wire(bus, repair.NotifyAdapter{Svc: repairSvc})
 
 	// Seed inventory supplier for default tenant
@@ -141,6 +190,7 @@ func main() {
 				}
 				_, _ = scanner.ScanAll(context.Background(), tenantID)
 				_, _ = paySvc.ReconcilePendingSTK(context.Background(), tenantID)
+				_, _ = repairSvc.SendCreditReminders(context.Background(), tenantID)
 			}
 		}
 		run()
@@ -164,9 +214,32 @@ func main() {
 		}
 	}()
 
+	mailCfg := mailer.ConfigFromEnv()
+	mailSvc := mailer.New(mailCfg)
+	webBaseURL := strings.TrimRight(config.Env("WEB_OPS_BASE_URL", "http://localhost:5173"), "/")
+	if mailCfg.Configured() {
+		log.Printf("email: SMTP configured (host=%s) for password resets", mailCfg.Host)
+	} else {
+		log.Printf("email: SMTP_HOST/SMTP_USERNAME not set — forgot-password links are logged, not emailed")
+	}
+
 	idHandler := identity.NewHandler(idSvc)
+	idHandler.SetSignupEnabled(strings.ToLower(config.Env("SIGNUP_ENABLED", "true")) != "false")
+	idHandler.SetPasswordResetNotifier(func(email, displayName, token string) {
+		link := fmt.Sprintf("%s/reset-password?token=%s", webBaseURL, token)
+		body := fmt.Sprintf(
+			"Hi %s,\n\nUse the link below to reset your TechLane password. It expires in 30 minutes.\n\n%s\n\nIf you didn't request this, you can safely ignore this email.",
+			displayName, link,
+		)
+		if err := mailSvc.Send(email, "Reset your TechLane password", body); err != nil {
+			slog.Error("password reset email failed", "err", err, "email", email)
+		}
+	})
 	repairHandler := repair.NewHandler(repairSvc)
+	repairHandler.SetReceiptRenderer(receiptSvc)
+	receiptHandler := receipts.NewHandler(receiptSvc)
 	invHandler := inventory.NewHandler(invSvc)
+	invHandler.SetReceiptRenderer(receiptSvc)
 	payHandler := payments.NewHandler(paySvc)
 	payHandler.SetCustomerRepairGateway(payments.RepairCustomerAdapter{
 		DefaultTenant: repairSvc.DefaultTenantID,
@@ -181,11 +254,15 @@ func main() {
 		PaymentContext:   repairSvc.RepairPaymentContext,
 	})
 	salesHandler := sales.NewHandler(salesSvc)
+	salesHandler.SetReceiptRenderer(receiptSvc)
 	auditHandler := audit.NewHandler(auditSvc)
 	syncHandler := sync.NewHandler(syncSvc)
 	commerceHandler := commerce.NewHandler(commerceSvc)
+	storefrontHandler := storefrontcms.NewHandler(storefrontSvc)
 	reportHandler := reporting.NewHandler(reporting.NewService(pool))
 	notifyHandler := notify.NewHandler(notifySvc)
+	notifyHandler.SetRepairLookup(repair.NotifyAdapter{Svc: repairSvc})
+	waHandler := whatsapp.NewHandler(waSvc)
 
 	auth := httpx.AuthMiddleware(jwtSecret)
 
@@ -193,16 +270,23 @@ func main() {
 	api.HandleFunc("GET /health", healthHandler)
 	api.HandleFunc("GET /ready", readyHandler(pool))
 	api.HandleFunc("GET /metrics", httpx.MetricsHandler)
+	api.HandleFunc("GET /events/stream", realtimeHub.ServeSSE)
 	idHandler.Register(api, auth)
 	repairHandler.Register(api, auth)
+	searchHandler.Register(api, auth)
+	appVersionHandler.Register(api, auth)
 	invHandler.Register(api, auth)
 	payHandler.Register(api, auth)
 	salesHandler.Register(api, auth)
 	auditHandler.Register(api, auth)
 	syncHandler.Register(api, auth)
 	commerceHandler.Register(api, auth)
+	storefrontHandler.Register(api, auth)
 	reportHandler.Register(api, auth)
 	notifyHandler.Register(api, auth)
+	loyaltyHandler.Register(api, auth)
+	receiptHandler.Register(api, auth)
+	waHandler.Register(api, auth)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /health", healthHandler)

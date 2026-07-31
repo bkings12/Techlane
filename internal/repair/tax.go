@@ -3,6 +3,7 @@ package repair
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,15 +18,16 @@ type ShopTaxProfile struct {
 	Country      string
 	VATRateBPS   int
 	VATInclusive bool
+	CurrencyCode string
 }
 
 func (s *Service) loadShopTaxProfile(ctx context.Context, tenantID uuid.UUID) ShopTaxProfile {
 	var p ShopTaxProfile
-	var legalName, tin, addr1, addr2, city *string
+	var legalName, tin, addr1, addr2, city, currency *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT legal_name, tin, address_line1, address_line2, city, country, vat_rate_bps, vat_inclusive
+		SELECT legal_name, tin, address_line1, address_line2, city, country, vat_rate_bps, vat_inclusive, currency_code
 		FROM identity.shop_profiles WHERE tenant_id = $1`, tenantID).
-		Scan(&legalName, &tin, &addr1, &addr2, &city, &p.Country, &p.VATRateBPS, &p.VATInclusive)
+		Scan(&legalName, &tin, &addr1, &addr2, &city, &p.Country, &p.VATRateBPS, &p.VATInclusive, &currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		p.VATRateBPS = 1600
 		p.VATInclusive = true
@@ -33,6 +35,12 @@ func (s *Service) loadShopTaxProfile(ctx context.Context, tenantID uuid.UUID) Sh
 	} else if err != nil {
 		p.VATRateBPS = 1600
 		p.VATInclusive = true
+	}
+	if currency != nil && strings.TrimSpace(*currency) != "" {
+		p.CurrencyCode = strings.ToUpper(strings.TrimSpace(*currency))
+	}
+	if p.CurrencyCode == "" {
+		p.CurrencyCode = "KES"
 	}
 	if legalName != nil {
 		p.LegalName = *legalName

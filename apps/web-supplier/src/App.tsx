@@ -14,6 +14,7 @@ import {
   logout,
   markReady,
   me,
+  onSessionExpired,
   openIssueVoucher,
   quote,
   setToken,
@@ -26,6 +27,53 @@ import { QrImage } from "./QrImage";
 
 type Tab = "queue" | "issues" | "credit" | "profile";
 type Mode = "login" | "invite";
+
+function PasswordField({
+  value,
+  onChange,
+  required,
+  minLength,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  required?: boolean;
+  minLength?: number;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <span className="password-field">
+      <input
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        required={required}
+        minLength={minLength}
+      />
+      <button
+        type="button"
+        className="password-toggle"
+        onClick={() => setVisible((v) => !v)}
+        aria-label={visible ? "Hide password" : "Show password"}
+        aria-pressed={visible}
+        tabIndex={-1}
+      >
+        {visible ? (
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+            <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+            <path d="m1 1 22 22" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        )}
+      </button>
+    </span>
+  );
+}
 
 function titleFor(req: PartRequest) {
   return req.part_name || req.description || "Part request";
@@ -59,8 +107,8 @@ function initials(name?: string | null) {
 function App() {
   const [authed, setAuthed] = useState(() => !!getToken());
   const [mode, setMode] = useState<Mode>("login");
-  const [email, setEmail] = useState("supplier@techlane.local");
-  const [password, setPassword] = useState("password");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [inviteToken, setInviteToken] = useState("");
   const [contact, setContact] = useState<SupplierContact | null>(null);
   const [tab, setTab] = useState<Tab>("queue");
@@ -75,6 +123,7 @@ function App() {
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
 
   const loadMe = useCallback(async () => {
     setContact(await me());
@@ -87,6 +136,20 @@ function App() {
       setAuthed(false);
     });
   }, [authed, loadMe]);
+
+  useEffect(
+    () =>
+      onSessionExpired(() => {
+        setAuthed(false);
+        setContact(null);
+        setRequests([]);
+        setDetail(null);
+        setIssues([]);
+        setCreditSummary(null);
+        setAuthNotice("Your session expired. Please sign in again.");
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!authed || tab !== "queue" || selectedId) return;
@@ -124,6 +187,7 @@ function App() {
     e.preventDefault();
     setBusy(true);
     setError("");
+    setAuthNotice("");
     try {
       const res =
         mode === "login"
@@ -222,6 +286,7 @@ function App() {
           <h1>Supplier portal</h1>
           <p className="lede">Quote requests, issue parts, and track credit.</p>
           <section className="panel stack">
+            {authNotice ? <p className="hint" role="status">{authNotice}</p> : null}
             <div className="chips">
               <button type="button" className={`chip ${mode === "login" ? "active" : ""}`} onClick={() => setMode("login")}>
                 Sign in
@@ -244,10 +309,9 @@ function App() {
               )}
               <label>
                 {mode === "invite" ? "Set password" : "Password"}
-                <input
-                  type="password"
+                <PasswordField
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={setPassword}
                   required
                   minLength={6}
                 />

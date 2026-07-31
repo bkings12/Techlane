@@ -35,9 +35,11 @@ export function RolesPage() {
   }, []);
 
   const selected = useMemo(() => roles.find((r) => r.id === selectedId) ?? null, [roles, selectedId]);
+  const systemCount = roles.filter((r) => r.is_system).length;
+  const customCount = roles.filter((r) => !r.is_system).length;
 
   return (
-    <div>
+    <div className="settings-page">
       <PageHeader
         title="Roles & permissions"
         subtitle="Create custom roles and assign permissions from the catalog"
@@ -53,6 +55,26 @@ export function RolesPage() {
         }
       />
       {error ? <p className="form-error">{error}</p> : null}
+
+      <section className="board-pulse" aria-label="Roles pulse">
+        <div>
+          <strong>{roles.length}</strong>
+          <span>Total roles</span>
+        </div>
+        <div>
+          <strong>{systemCount}</strong>
+          <span>System</span>
+        </div>
+        <div>
+          <strong>{customCount}</strong>
+          <span>Custom</span>
+        </div>
+        <div>
+          <strong>{perms.length}</strong>
+          <span>Permissions</span>
+        </div>
+      </section>
+
       {showPermCreate ? (
         <CreatePermissionForm
           onCreated={() => {
@@ -72,22 +94,26 @@ export function RolesPage() {
         />
       ) : null}
 
-      <div className="roles-layout">
-        <section className="panel">
+      <div className="settings-split">
+        <section className="settings-form-card">
           <h2>Roles</h2>
           {roles.length === 0 ? (
             <EmptyState title="No roles" body="System roles will appear after API restart." />
           ) : (
-            <ul className="list">
+            <ul className="settings-roster">
               {roles.map((r) => (
                 <li key={r.id}>
                   <button
                     type="button"
-                    className={`role-pick ${selectedId === r.id ? "active" : ""}`}
+                    className={`settings-roster-row role-pick ${selectedId === r.id ? "active" : ""}`}
                     onClick={() => setSelectedId(r.id)}
                   >
-                    <strong>{r.name}</strong>
-                    <span className="muted mono">{r.key}</span>
+                    <span>
+                      <strong>{r.name}</strong>
+                      <span className="muted mono">{r.key}</span>
+                    </span>
+                    <span />
+                    <span />
                     {r.is_system ? <Badge tone="info">system</Badge> : <Badge tone="pending">custom</Badge>}
                   </button>
                 </li>
@@ -96,7 +122,7 @@ export function RolesPage() {
           )}
         </section>
 
-        <section className="panel">
+        <section className="settings-form-card">
           {selected ? (
             <EditRolePanel
               role={selected}
@@ -139,7 +165,7 @@ function CreatePermissionForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <form className="panel form-grid" onSubmit={submit}>
+    <form className="settings-form-card form-grid" onSubmit={submit}>
       <h2>New permission</h2>
       <label>
         Code
@@ -196,7 +222,7 @@ function CreateRoleForm({
   const byCategory = groupByCategory(permissions);
 
   return (
-    <form className="panel form-grid" onSubmit={submit}>
+    <form className="settings-form-card form-grid" onSubmit={submit}>
       <h2>New custom role</h2>
       <label>
         Key

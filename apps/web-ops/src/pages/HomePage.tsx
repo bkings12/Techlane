@@ -1,40 +1,23 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { Badge, EmptyState, ICONS as SHARED_ICONS, Icon, PageHeader, Stat, StatStrip } from "../components/ui";
+import { Badge, EmptyState, ICONS as SHARED_ICONS, Icon, PageHeader } from "../components/ui";
+import { useCurrency } from "../lib/currency";
 import {
   getReportSummary,
   listRepairs,
   listRiskAlerts,
-  listSyncCommands,
   type RepairJob,
   type ReportSummary,
   type RiskAlert,
-  type SyncCommand,
 } from "../lib/api";
 
 const KPI_ICONS = {
   risk: SHARED_ICONS.risk,
   cash: SHARED_ICONS.cash,
-  shortage: SHARED_ICONS.shortage,
   repairs: SHARED_ICONS.repairs,
   sales: SHARED_ICONS.reports,
-  credit: SHARED_ICONS.package,
-  stk: SHARED_ICONS.stk,
-  ready: SHARED_ICONS.ready,
 };
-
-function fmtKES(n: number) {
-  return `KES ${n.toLocaleString()}`;
-}
-
-export function HomePage() {
-  const { primaryRole } = useAuth();
-  if (primaryRole === "technician") return <TechnicianHome />;
-  if (primaryRole === "cashier") return <CashierHome />;
-  if (primaryRole === "accountant") return <AccountantHome />;
-  return <OwnerHome />;
-}
 
 function KpiCard({
   label,
@@ -61,11 +44,19 @@ function KpiCard({
   );
 }
 
+export function HomePage() {
+  const { primaryRole } = useAuth();
+  if (primaryRole === "technician") return <TechnicianHome />;
+  if (primaryRole === "cashier") return <CashierHome />;
+  if (primaryRole === "accountant") return <AccountantHome />;
+  return <OwnerHome />;
+}
+
 function OwnerHome() {
+  const { formatMoney } = useCurrency();
   const [summary, setSummary] = useState<ReportSummary | null>(null);
   const [alerts, setAlerts] = useState<RiskAlert[]>([]);
   const [repairs, setRepairs] = useState<RepairJob[]>([]);
-  const [syncNeeds, setSyncNeeds] = useState(0);
   const [error, setError] = useState("");
   const [days, setDays] = useState(7);
 
@@ -74,28 +65,35 @@ function OwnerHome() {
       getReportSummary(days).catch(() => null),
       listRiskAlerts("open").catch(() => ({ items: [] as RiskAlert[] })),
       listRepairs().catch(() => ({ items: [] as RepairJob[] })),
-      listSyncCommands("needs_attention").catch(() => ({ items: [] as SyncCommand[] })),
     ])
-      .then(([s, a, r, sync]) => {
+      .then(([s, a, r]) => {
         setSummary(s);
         setAlerts(a.items ?? []);
         setRepairs(r.items ?? []);
-        setSyncNeeds((sync.items ?? []).length);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
   }, [days]);
 
   const openRepairs = useMemo(
-    () => repairs.filter((r) => !["completed", "collected"].includes(r.status)),
+    () => repairs.filter((r) => !["completed", "collected", "cancelled", "unrepairable"].includes(r.status)),
     [repairs],
   );
   const openRisk = summary?.risk_open_total ?? alerts.length;
   const shortages = summary?.shortage_amount_period ?? 0;
   const provisional = summary?.payments_cash_provisional ?? 0;
   const sales = summary?.sales_completed_period ?? 0;
-  const credit = summary?.supplier_credit_outstanding ?? 0;
   const stkPending = summary?.payments_stk_pending ?? 0;
   const ready = summary?.repairs_ready ?? 0;
+  const cashToReconcile = provisional + shortages;
+  const cashTone: "warn" | "danger" | undefined =
+    shortages > 0 ? "warn" : provisional > 0 && days === 1 ? "danger" : undefined;
+  const cashHint =
+    stkPending > 0
+      ? `${stkPending} STK pending`
+      : `${days === 1 ? "Today" : `${days}d`} window`;
+
+  // TODO: surface supplier_credit_outstanding / sync backlog in Needs attention when
+  // listRiskAlerts emits dedicated kinds (none today for supplier credit or sync).
 
   return (
     <div className="owner-home">
@@ -131,21 +129,6 @@ function OwnerHome() {
           hint={openRisk > 0 ? "Needs attention" : "All clear"}
         />
         <KpiCard
-          label="Provisional cash"
-          value={fmtKES(provisional)}
-          icon={KPI_ICONS.cash}
-          to="/payments"
-          hint="Unreconciled"
-        />
-        <KpiCard
-          label="Shortages"
-          value={fmtKES(shortages)}
-          icon={KPI_ICONS.shortage}
-          tone={shortages > 0 ? "warn" : undefined}
-          to="/payments"
-          hint={`${days === 1 ? "Today" : `${days}d`} window`}
-        />
-        <KpiCard
           label="Open repairs"
           value={openRepairs.length || (summary?.repairs_open ?? 0)}
           icon={KPI_ICONS.repairs}
@@ -154,34 +137,19 @@ function OwnerHome() {
         />
         <KpiCard
           label="Sales"
-          value={fmtKES(sales)}
+          value={formatMoney(sales)}
           icon={KPI_ICONS.sales}
           tone="success"
           to="/reports"
           hint={`${summary?.sales_count_period ?? 0} transactions`}
         />
         <KpiCard
-          label="Supplier credit"
-          value={fmtKES(credit)}
-          icon={KPI_ICONS.credit}
-          to="/suppliers"
-          hint="Outstanding"
-        />
-        <KpiCard
-          label="STK pending"
-          value={stkPending}
-          icon={KPI_ICONS.stk}
-          tone={stkPending > 0 ? "warn" : undefined}
+          label="Cash to reconcile"
+          value={formatMoney(cashToReconcile)}
+          icon={KPI_ICONS.cash}
+          tone={cashTone}
           to="/payments"
-          hint="Awaiting confirmation"
-        />
-        <KpiCard
-          label="Sync conflicts"
-          value={syncNeeds}
-          icon={<Icon d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" extra={<path d="M3 3v5h5m-5 4a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16m0 5v-5h-5" />} />}
-          tone={syncNeeds > 0 ? "warn" : undefined}
-          to="/sync"
-          hint={syncNeeds > 0 ? "Needs attention" : "In sync"}
+          hint={cashHint}
         />
       </section>
 
@@ -236,44 +204,6 @@ function OwnerHome() {
           )}
         </section>
       </div>
-
-      <section className="owner-section">
-        <div className="owner-section-head">
-          <h2>Quick actions</h2>
-        </div>
-        <div className="goto-grid">
-          <Link className="goto-link" to="/repairs">
-            <span className="goto-icon">{KPI_ICONS.repairs}</span>
-            <strong>Repairs</strong>
-            <span>Intake, assign, estimate</span>
-          </Link>
-          <Link className="goto-link" to="/pos">
-            <span className="goto-icon">{KPI_ICONS.sales}</span>
-            <strong>POS</strong>
-            <span>New sale</span>
-          </Link>
-          <Link className="goto-link" to="/payments">
-            <span className="goto-icon">{KPI_ICONS.cash}</span>
-            <strong>Payments</strong>
-            <span>Handovers & cash</span>
-          </Link>
-          <Link className="goto-link" to="/suppliers">
-            <span className="goto-icon">{KPI_ICONS.credit}</span>
-            <strong>Suppliers</strong>
-            <span>Credit reconciliation</span>
-          </Link>
-          <Link className="goto-link" to="/reports">
-            <span className="goto-icon"><Icon d="M3 3v18h18" extra={<path d="m19 9-5 5-4-4-3 3" />} /></span>
-            <strong>Reports</strong>
-            <span>Period snapshot</span>
-          </Link>
-          <Link className="goto-link" to="/risk">
-            <span className="goto-icon">{KPI_ICONS.risk}</span>
-            <strong>Risk board</strong>
-            <span>{openRisk} open alerts</span>
-          </Link>
-        </div>
-      </section>
     </div>
   );
 }
@@ -285,27 +215,53 @@ function TechnicianHome() {
       .then((r) => setRepairs(r.items ?? []))
       .catch(() => setRepairs([]));
   }, []);
+  const open = repairs.filter((j) => !["collected", "cancelled", "unrepairable"].includes(j.status));
+  const collected = repairs.filter((j) => j.status === "collected").length;
   return (
-    <div>
-      <PageHeader title="My jobs" subtitle="Assigned work and waiting actions" />
-      <div className="action-grid" style={{ marginBottom: "1.25rem" }}>
-        <Link className="action-tile" to="/repairs">
+    <div className="role-home">
+      <PageHeader title="My jobs" subtitle="Assigned work and waiting actions — open the board for full detail." />
+      <section className="board-pulse" aria-label="Tech pulse">
+        <div>
+          <strong>{open.length}</strong>
+          <span>Open</span>
+        </div>
+        <div>
+          <strong>{collected}</strong>
+          <span>Collected</span>
+        </div>
+        <div>
+          <strong>{repairs.length}</strong>
+          <span>Loaded</span>
+        </div>
+      </section>
+      <div className="workspace-links">
+        <Link to="/repairs">
           <strong>All repairs</strong>
-          <span>Status, parts, timeline</span>
+          <em>Status, parts, timeline</em>
+        </Link>
+        <Link to="/parts">
+          <strong>Part requests</strong>
+          <em>Quotes and collection</em>
         </Link>
       </div>
-      <section className="panel">
+      <section className="panel" style={{ padding: "0.85rem" }}>
+        <div className="panel-head">
+          <h2>Job list</h2>
+        </div>
         {repairs.length === 0 ? (
           <EmptyState title="No jobs yet" body="New assignments will appear here." />
         ) : (
-          <ul className="list">
+          <ul className="job-board">
             {repairs.map((j) => (
               <li key={j.id}>
-                <Badge tone="pending">{j.status}</Badge>
-                <Link to={`/repairs/${j.id}`}>
-                  <span className="mono">{j.job_code ?? j.id.slice(0, 8)}</span>
-                  {" · "}
-                  {j.problem_summary}
+                <Link className="job-board-row" to={`/repairs/${j.id}`}>
+                  <div className="job-board-id">
+                    <strong className="mono">{j.job_code ?? j.id.slice(0, 8)}</strong>
+                    <Badge tone="pending">{j.status.replaceAll("_", " ")}</Badge>
+                  </div>
+                  <div className="job-board-body">
+                    <p>{j.problem_summary}</p>
+                  </div>
                 </Link>
               </li>
             ))}
@@ -318,24 +274,28 @@ function TechnicianHome() {
 
 function CashierHome() {
   return (
-    <div>
-      <PageHeader title="Cashier" subtitle="Sales, repair payments, and cash drawer" />
-      <div className="action-grid">
-        <Link className="action-tile" to="/pos">
+    <div className="role-home">
+      <PageHeader title="Cashier" subtitle="Sales, repair payments, and cash drawer — pick a workspace." />
+      <div className="workspace-links">
+        <Link to="/pos">
           <strong>Start sale</strong>
-          <span>Open POS workspace</span>
+          <em>Open POS workspace</em>
         </Link>
-        <Link className="action-tile" to="/repairs">
+        <Link to="/repairs">
           <strong>Repair payment</strong>
-          <span>Look up a job</span>
+          <em>Look up a job</em>
         </Link>
-        <Link className="action-tile" to="/payments">
+        <Link to="/payments">
           <strong>Cash & payments</strong>
-          <span>Drawer and handovers</span>
+          <em>Drawer and handovers</em>
         </Link>
-        <Link className="action-tile" to="/inventory">
+        <Link to="/inventory">
           <strong>Stock check</strong>
-          <span>Counter balances</span>
+          <em>Counter balances</em>
+        </Link>
+        <Link to="/orders">
+          <strong>Online pickup</strong>
+          <em>Collect with code</em>
         </Link>
       </div>
     </div>
@@ -343,6 +303,7 @@ function CashierHome() {
 }
 
 function AccountantHome() {
+  const { formatMoney } = useCurrency();
   const [summary, setSummary] = useState<ReportSummary | null>(null);
   useEffect(() => {
     getReportSummary(7)
@@ -350,35 +311,42 @@ function AccountantHome() {
       .catch(() => setSummary(null));
   }, []);
   return (
-    <div>
-      <PageHeader title="Finance" subtitle="Cash accountability and period totals" />
-      <StatStrip>
-        <Stat icon={SHARED_ICONS.reports} label="Allocated (7d)" value={`KES ${(summary?.payments_allocated_period ?? 0).toLocaleString()}`} />
-        <Stat icon={SHARED_ICONS.cash} label="Provisional cash" value={`KES ${(summary?.payments_cash_provisional ?? 0).toLocaleString()}`} />
-        <Stat
-          icon={SHARED_ICONS.shortage}
-          label="Shortages"
-          value={`KES ${(summary?.shortage_amount_period ?? 0).toLocaleString()}`}
-          tone={(summary?.shortage_amount_period ?? 0) > 0 ? "warn" : undefined}
-        />
-        <Stat icon={SHARED_ICONS.suppliers} label="Supplier credit" value={`KES ${(summary?.supplier_credit_outstanding ?? 0).toLocaleString()}`} />
-      </StatStrip>
-      <div className="action-grid">
-        <Link className="action-tile" to="/reports">
+    <div className="role-home">
+      <PageHeader title="Finance" subtitle="Cash accountability and period totals — leakage first." />
+      <section className="leakage-strip" aria-label="Finance pulse">
+        <div className="leakage-tile">
+          <span>Allocated (7d)</span>
+          <strong>{formatMoney(summary?.payments_allocated_period ?? 0)}</strong>
+        </div>
+        <div className="leakage-tile">
+          <span>Provisional cash</span>
+          <strong>{formatMoney(summary?.payments_cash_provisional ?? 0)}</strong>
+        </div>
+        <div className={`leakage-tile ${(summary?.shortage_amount_period ?? 0) > 0 ? "warn" : ""}`}>
+          <span>Shortages</span>
+          <strong>{formatMoney(summary?.shortage_amount_period ?? 0)}</strong>
+        </div>
+        <div className="leakage-tile">
+          <span>Supplier credit</span>
+          <strong>{formatMoney(summary?.supplier_credit_outstanding ?? 0)}</strong>
+        </div>
+      </section>
+      <div className="workspace-links">
+        <Link to="/reports">
           <strong>Reports</strong>
-          <span>Period snapshot</span>
+          <em>Period snapshot</em>
         </Link>
-        <Link className="action-tile" to="/payments">
+        <Link to="/payments">
           <strong>Handovers</strong>
-          <span>Confirm and shortages</span>
+          <em>Confirm and shortages</em>
         </Link>
-        <Link className="action-tile" to="/risk">
+        <Link to="/risk">
           <strong>Risk</strong>
-          <span>{summary?.risk_open_total ?? 0} open alerts</span>
+          <em>{summary?.risk_open_total ?? 0} open alerts</em>
         </Link>
-        <Link className="action-tile" to="/suppliers">
+        <Link to="/suppliers">
           <strong>Suppliers</strong>
-          <span>Credit reconciliation</span>
+          <em>Credit reconciliation</em>
         </Link>
       </div>
     </div>

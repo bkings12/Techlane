@@ -27,6 +27,22 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("POST /risk/alerts", auth(http.HandlerFunc(h.createAlert)))
 	mux.Handle("POST /risk/alerts/{id}/ack", auth(http.HandlerFunc(h.ackAlert)))
 	mux.Handle("POST /risk/alerts/{id}/resolve", auth(http.HandlerFunc(h.resolveAlert)))
+	mux.Handle("GET /platform/errors", auth(http.HandlerFunc(h.listErrors)))
+}
+
+func (h *Handler) listErrors(w http.ResponseWriter, r *http.Request) {
+	claims, _ := authz.FromContext(r.Context())
+	if !claims.HasPermission("audit.read") && !claims.HasPermission("*") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "audit.read required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.svc.ListErrorEvents(r.Context(), limit)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {

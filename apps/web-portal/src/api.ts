@@ -2,6 +2,14 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080/api/v1"
 
 const TOKEN_KEY = "portal_session_token";
 const PHONE_KEY = "portal_phone";
+const SESSION_EXPIRED_EVENT = "techlane:portal-session-expired";
+
+export function onSessionExpired(handler: () => void) {
+  if (typeof window === "undefined") return () => undefined;
+  const listener = () => handler();
+  window.addEventListener(SESSION_EXPIRED_EVENT, listener);
+  return () => window.removeEventListener(SESSION_EXPIRED_EVENT, listener);
+}
 
 export type Customer = {
   id: string;
@@ -12,8 +20,9 @@ export type Customer = {
 
 export type Estimate = {
   id: string;
-  labor_amount: number;
-  parts_amount: number;
+  total_amount?: number;
+  labor_amount?: number;
+  parts_amount?: number;
   currency?: string;
   notes?: string;
   status: string;
@@ -84,7 +93,15 @@ async function request<T>(path: string, init: RequestInit = {}, authed = false):
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
-  if (!res.ok) await parseError(res);
+  if (!res.ok) {
+    if (res.status === 401 && authed) {
+      clearSession();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+      }
+    }
+    await parseError(res);
+  }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -138,6 +155,14 @@ export async function listRepairs() {
   return data.items ?? [];
 }
 
+export async function claimRepair(jobCode: string) {
+  return request<{ job_id: string; job_code: string }>(
+    "/customer/repairs/claim",
+    { method: "POST", body: JSON.stringify({ job_code: jobCode.trim() }) },
+    true,
+  );
+}
+
 export async function getRepair(id: string) {
   return request<Repair>(`/customer/repairs/${id}`, {}, true);
 }
@@ -177,7 +202,13 @@ export async function openRepairReceipt(repairId: string) {
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`${API_BASE}/customer/repairs/${repairId}/receipt.html`, { headers });
-  if (!res.ok) await parseError(res);
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearSession();
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
+    await parseError(res);
+  }
   const html = await res.text();
   const win = window.open("", "_blank", "noopener,noreferrer");
   if (!win) throw new Error("Pop-up blocked — allow pop-ups to print the receipt");
@@ -190,7 +221,13 @@ export async function downloadRepairReceiptPDF(repairId: string) {
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`${API_BASE}/customer/repairs/${repairId}/receipt.pdf`, { headers });
-  if (!res.ok) await parseError(res);
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearSession();
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
+    await parseError(res);
+  }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -211,7 +248,8 @@ export type Warranty = {
 };
 
 export async function getRepairWarranty(repairId: string) {
-  return request<Warranty>(`/customer/repairs/${repairId}/warranty`, {}, true);
+  const warr = await request<Warranty | undefined>(`/customer/repairs/${repairId}/warranty`, {}, true);
+  return warr ?? null;
 }
 
 export async function claimRepairWarranty(repairId: string, note: string) {
@@ -226,7 +264,10 @@ export const statusLabels: Record<string, string> = {
   diagnosed: "Diagnosis complete",
   waiting_parts: "Waiting for parts",
   in_progress: "Repair in progress",
-  completed: "Ready for collection",
+  ready_for_pickup: "Ready for collection",
+  completed: "Repair complete",
   ready: "Ready for collection",
   collected: "Collected",
+  cancelled: "Cancelled",
+  unrepairable: "Cannot be repaired",
 };

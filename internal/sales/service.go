@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,13 +30,26 @@ func NewService(pool *pgxpool.Pool, inventory InventoryMover) *Service {
 type SaleItemInput struct {
 	VariantID uuid.UUID `json:"variant_id"`
 	Quantity  int       `json:"quantity"`
+	// Quick-sale fields: set when this line isn't in the catalog — staff sourced it
+	// from a supplier on the spot. Description + UnitPrice replace the variant lookup.
+	// UnitCost + SupplierID are internal-only: they generate a supplier credit entry
+	// (what we owe) and let margin be computed, and are never on the customer receipt.
+	Description string     `json:"description,omitempty"`
+	UnitPrice   *float64   `json:"unit_price,omitempty"`
+	UnitCost    *float64   `json:"unit_cost,omitempty"`
+	SupplierID  *uuid.UUID `json:"supplier_id,omitempty"`
 }
 
 type SaleItem struct {
-	VariantID uuid.UUID `json:"variant_id"`
-	Quantity  int       `json:"quantity"`
-	UnitPrice float64   `json:"unit_price"`
-	LineTotal float64   `json:"line_total"`
+	// VariantID is the nil UUID for a quick-sale line — check Description instead.
+	VariantID   uuid.UUID  `json:"variant_id"`
+	Description string     `json:"description,omitempty"`
+	Quantity    int        `json:"quantity"`
+	UnitPrice   float64    `json:"unit_price"`
+	LineTotal   float64    `json:"line_total"`
+	UnitCost    *float64   `json:"unit_cost,omitempty"`
+	SupplierID  *uuid.UUID `json:"supplier_id,omitempty"`
+	Margin      *float64   `json:"margin,omitempty"`
 }
 
 type Sale struct {
@@ -73,11 +87,40 @@ func (s *Service) CreateSale(ctx context.Context, in CreateSaleInput) (*Sale, er
 		if it.Quantity <= 0 {
 			return nil, fmt.Errorf("invalid quantity")
 		}
-		price, err := s.inventory.GetVariantPrice(ctx, in.TenantID, it.VariantID)
-		if err != nil {
-			return nil, fmt.Errorf("variant %s: %w", it.VariantID, err)
+		if it.VariantID != uuid.Nil {
+			price, err := s.inventory.GetVariantPrice(ctx, in.TenantID, it.VariantID)
+			if err != nil {
+				return nil, fmt.Errorf("variant %s: %w", it.VariantID, err)
+			}
+			line := SaleItem{VariantID: it.VariantID, Quantity: it.Quantity, UnitPrice: price, LineTotal: price * float64(it.Quantity)}
+			subtotal += line.LineTotal
+			lineItems = append(lineItems, line)
+			continue
 		}
-		line := SaleItem{VariantID: it.VariantID, Quantity: it.Quantity, UnitPrice: price, LineTotal: price * float64(it.Quantity)}
+		// Quick sale: no catalog variant, so price and (optionally) cost/supplier are
+		// supplied directly by staff instead of looked up from inventory.
+		desc := strings.TrimSpace(it.Description)
+		if desc == "" {
+			return nil, fmt.Errorf("description required for a quick-sale item")
+		}
+		if it.UnitPrice == nil || *it.UnitPrice <= 0 {
+			return nil, fmt.Errorf("unit_price required for a quick-sale item")
+		}
+		if (it.SupplierID == nil) != (it.UnitCost == nil) {
+			return nil, fmt.Errorf("supplier_id and unit_cost must be provided together")
+		}
+		if it.UnitCost != nil && *it.UnitCost < 0 {
+			return nil, fmt.Errorf("unit_cost cannot be negative")
+		}
+		price := *it.UnitPrice
+		line := SaleItem{
+			Description: desc, Quantity: it.Quantity, UnitPrice: price, LineTotal: price * float64(it.Quantity),
+			UnitCost: it.UnitCost, SupplierID: it.SupplierID,
+		}
+		if it.UnitCost != nil {
+			margin := line.LineTotal - (*it.UnitCost)*float64(it.Quantity)
+			line.Margin = &margin
+		}
 		subtotal += line.LineTotal
 		lineItems = append(lineItems, line)
 	}
@@ -98,12 +141,35 @@ func (s *Service) CreateSale(ctx context.Context, in CreateSaleInput) (*Sale, er
 	}
 	for _, li := range lineItems {
 		itemID := uuid.New()
+		var variantID *uuid.UUID
+		if li.VariantID != uuid.Nil {
+			v := li.VariantID
+			variantID = &v
+		}
+		var description *string
+		if li.Description != "" {
+			description = &li.Description
+		}
 		_, err = tx.Exec(ctx, `
-			INSERT INTO sales.sale_items (id, tenant_id, sale_id, variant_id, quantity, unit_price, line_total)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			itemID, in.TenantID, id, li.VariantID, li.Quantity, li.UnitPrice, li.LineTotal)
+			INSERT INTO sales.sale_items (id, tenant_id, sale_id, variant_id, description, quantity, unit_price, line_total, unit_cost, supplier_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			itemID, in.TenantID, id, variantID, description, li.Quantity, li.UnitPrice, li.LineTotal, li.UnitCost, li.SupplierID)
 		if err != nil {
 			return nil, err
+		}
+		// Sourced from a supplier on the spot: record what we owe them in the same
+		// ledger SuppliersPage's reconciliation view already reads (supplier_issue_id
+		// stays NULL — that column only applies to repair part requests).
+		if li.SupplierID != nil && li.UnitCost != nil {
+			creditAmount := (*li.UnitCost) * float64(li.Quantity)
+			note := fmt.Sprintf("Quick sale — %s", li.Description)
+			_, err = tx.Exec(ctx, `
+				INSERT INTO inventory.supplier_credit_entries (id, tenant_id, supplier_id, amount, entry_type, created_by, note, correlation_id)
+				VALUES ($1, $2, $3, $4, 'issue', $5, $6, $7)`,
+				uuid.New(), in.TenantID, *li.SupplierID, creditAmount, in.ActorID, note, in.CorrID)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -127,8 +193,10 @@ func (s *Service) CompleteSale(ctx context.Context, tenantID, saleID, locationID
 		return nil, fmt.Errorf("sale not in draft state")
 	}
 
+	// Quick-sale lines (variant_id NULL) never touched inventory, so there's no
+	// stock to deduct for them.
 	rows, err := s.pool.Query(ctx, `
-		SELECT variant_id, quantity FROM sales.sale_items WHERE tenant_id = $1 AND sale_id = $2`, tenantID, saleID)
+		SELECT variant_id, quantity FROM sales.sale_items WHERE tenant_id = $1 AND sale_id = $2 AND variant_id IS NOT NULL`, tenantID, saleID)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +244,7 @@ func (s *Service) ReverseSale(ctx context.Context, tenantID, saleID, locationID,
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT variant_id, quantity FROM sales.sale_items WHERE tenant_id = $1 AND sale_id = $2`, tenantID, saleID)
+		SELECT variant_id, quantity FROM sales.sale_items WHERE tenant_id = $1 AND sale_id = $2 AND variant_id IS NOT NULL`, tenantID, saleID)
 	if err != nil {
 		return nil, err
 	}
@@ -212,15 +280,24 @@ func (s *Service) GetSale(ctx context.Context, tenantID, saleID uuid.UUID) (*Sal
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT variant_id, quantity, unit_price, line_total FROM sales.sale_items WHERE tenant_id = $1 AND sale_id = $2`, tenantID, saleID)
+		SELECT variant_id, COALESCE(description, ''), quantity, unit_price, line_total, unit_cost, supplier_id
+		FROM sales.sale_items WHERE tenant_id = $1 AND sale_id = $2`, tenantID, saleID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var it SaleItem
-		if err := rows.Scan(&it.VariantID, &it.Quantity, &it.UnitPrice, &it.LineTotal); err != nil {
+		var variantID *uuid.UUID
+		if err := rows.Scan(&variantID, &it.Description, &it.Quantity, &it.UnitPrice, &it.LineTotal, &it.UnitCost, &it.SupplierID); err != nil {
 			return nil, err
+		}
+		if variantID != nil {
+			it.VariantID = *variantID
+		}
+		if it.UnitCost != nil {
+			margin := it.LineTotal - (*it.UnitCost)*float64(it.Quantity)
+			it.Margin = &margin
 		}
 		sale.Items = append(sale.Items, it)
 	}

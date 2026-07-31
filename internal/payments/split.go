@@ -40,8 +40,24 @@ func (s *Service) CreateSplitPayment(ctx context.Context, in SplitPaymentInput) 
 		}
 		sum += t.Amount
 	}
-	if in.BalanceDue > 0 && sum > in.BalanceDue+0.009 {
-		return nil, fmt.Errorf("tender total %.2f exceeds balance due %.2f", sum, in.BalanceDue)
+	balanceDue := in.BalanceDue
+	enforceable := balanceDue > 0
+	if !enforceable && s.outstanding != nil {
+		if due, ok, err := s.outstanding(ctx, in.TenantID, in.PayableType, in.PayableID); err != nil {
+			return nil, err
+		} else if ok {
+			balanceDue = due
+			enforceable = true
+			in.BalanceDue = due
+		}
+	}
+	if enforceable {
+		if balanceDue <= 0.009 {
+			return nil, fmt.Errorf("already fully paid — no balance due")
+		}
+		if sum > balanceDue+0.009 {
+			return nil, fmt.Errorf("tender total %.2f exceeds balance due %.2f", sum, balanceDue)
+		}
 	}
 	out := make([]Payment, 0, len(in.Tenders))
 	for i, t := range in.Tenders {

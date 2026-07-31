@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<title>Download TechLane Apps</title>
+<style>
+  :root {
+    --navy: #060386;
+    --navy-dark: #040257;
+    --gold: #F2BE2A;
+    --ink: #10142a;
+    --muted: #5b6178;
+    --line: #e4e6ef;
+    --paper: #ffffff;
+    --mist: #f5f6fb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f6fb;
+    color: #10142a;
+  }
+  header {
+    background: linear-gradient(135deg, #060386, #040257);
+    color: #fff;
+    padding: 40px 20px 56px;
+    text-align: center;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 18px;
+    font-weight: 700;
+    font-size: 1.15rem;
+  }
+  .brand svg { width: 34px; height: 34px; }
+  header h1 { margin: 0 0 8px; font-size: 1.7rem; }
+  header p { margin: 0; color: rgba(255,255,255,0.78); }
+  main { max-width: 920px; margin: -32px auto 0; padding: 0 20px 60px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    background: #fff;
+    border: 1px solid #e4e6ef;
+    border-left: 3px solid #060386;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+  }
+  .card h2 { margin: 0 0 6px; font-size: 1.15rem; }
+  .pkg { font-size: 0.75rem; color: #5b6178; margin-bottom: 12px; font-family: ui-monospace, monospace; }
+  .desc { margin: 0 0 20px; color: #5b6178; font-size: 0.9rem; line-height: 1.5; flex-grow: 1; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #060386;
+    color: #fff !important;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.95rem;
+    padding: 14px 16px;
+  }
+  .btn span { color: #F2BE2A; margin-left: 8px; }
+  .note {
+    margin-top: 36px;
+    background: #fff;
+    border: 1px solid #e4e6ef;
+    padding: 22px 24px;
+    font-size: 0.88rem;
+    color: #5b6178;
+    line-height: 1.65;
+  }
+  .note strong { color: #10142a; }
+  footer { text-align: center; color: #5b6178; font-size: 0.8rem; padding: 30px 20px 40px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="32" height="32" rx="6" fill="#F2BE2A" />
+        <rect x="5" y="10" width="3" height="12" rx="1.5" fill="#060386" />
+        <rect x="11" y="8" width="3" height="16" rx="1.5" fill="#040257" />
+        <rect x="17" y="12" width="3" height="8" rx="1.5" fill="#060386" />
+        <rect x="23" y="7" width="3" height="18" rx="1.5" fill="#040257" />
+      </svg>
+      TechLane
+    </div>
+    <h1>Download the TechLane apps</h1>
+    <p>Pick the app for your role. Android only, direct install (no Play Store yet).</p>
+  </header>
+
+  <main>
+    <div class="grid">
+      <div class="card">
+        <h2>TechLane Ops</h2>
+        <div class="pkg">com.techlane.ops · staff · v0.1.32</div>
+        <p class="desc">For owners, technicians &amp; cashiers. Repair jobs, POS, payments, cash handovers, offline sync, and QR scanning.</p>
+        <a class="btn" href="https://pub-c5cbd20e1eff426bb9379d8f58fca06f.r2.dev/downloads/techlane-ops.apk?v=0.1.32">Download APK <span>→</span></a>
+      </div>
+
+      <div class="card">
+        <h2>TechLane Customer</h2>
+        <div class="pkg">com.techlane.customer · customers</div>
+        <p class="desc">Track your repair, approve estimates, pay via M-Pesa, and get your receipt &amp; warranty.</p>
+        <a class="btn" href="https://app.techlane.co.ke/downloads/techlane-customer.apk?v=0.1.1">Download APK <span>→</span></a>
+      </div>
+
+      <div class="card">
+        <h2>TechLane Supplier</h2>
+        <div class="pkg">com.techlane.supplier · suppliers · v0.1.2</div>
+        <p class="desc">Manage part request quotes, issue with a collection QR, and track your credit ledger.</p>
+        <a class="btn" href="https://app.techlane.co.ke/downloads/techlane-supplier.apk?v=0.1.2">Download APK <span>→</span></a>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Installing on Android:</strong> these are direct-install APKs (not Play Store). Android will warn about an unknown source the first time — tap <strong>Install anyway</strong> / allow installs from this browser once.
+    </div>
+  </main>
+
+  <footer>TechLane IT Solutions</footer>
+</body>
+</html>

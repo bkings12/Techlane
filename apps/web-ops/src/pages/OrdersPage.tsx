@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Badge, Button, EmptyState, ICONS, Input, PageHeader, Stat, StatStrip } from "../components/ui";
+import { Badge, Button, EmptyState, ICONS, Input, PageHeader } from "../components/ui";
 import {
   collectOnlineOrder,
   confirmOnlineOrderPaid,
@@ -89,6 +89,8 @@ export function OrdersPage() {
         location_id: locationId,
         method: "mpesa_c2b",
         fulfilment_type: "branch_pickup",
+        customer_name: "Demo customer",
+        phone: "0700000000",
         items,
       });
       const ref = result.payment?.account_reference;
@@ -119,64 +121,105 @@ export function OrdersPage() {
   }
 
   const ready = orders.filter((o) => o.status === "ready_for_pickup");
+  const cartCount = Object.values(cart).reduce((sum, q) => sum + q, 0);
 
   return (
-    <div>
+    <div className="orders-counter">
       <PageHeader
         title="Online orders"
-        subtitle="Buy online, collect in branch — reservations hold stock until paid"
+        subtitle="Collect at the counter first — queue and demo checkout stay beside it."
       />
       {error ? <p className="form-error">{error}</p> : null}
       {message ? <p className="hint">{message}</p> : null}
 
-      <StatStrip>
-        <Stat icon={ICONS.ready} label="Ready for pickup" value={ready.length} tone={ready.length ? "success" : undefined} />
-        <Stat icon={ICONS.orders} label="Listed" value={orders.length} />
-        <Stat icon={ICONS.inventory} label="Online SKUs" value={catalog.length} />
-      </StatStrip>
+      <section className="board-pulse" aria-label="Orders pulse">
+        <button type="button" className={filter === "ready_for_pickup" ? "active" : ""} onClick={() => setFilter("ready_for_pickup")}>
+          <strong>{ready.length}</strong>
+          <span>Ready</span>
+        </button>
+        <button type="button" className={filter === "pending_payment" ? "active" : ""} onClick={() => setFilter("pending_payment")}>
+          <strong>{filter === "pending_payment" ? orders.length : "—"}</strong>
+          <span>Pending pay</span>
+        </button>
+        <div>
+          <strong>{orders.length}</strong>
+          <span>Listed</span>
+        </div>
+        <div>
+          <strong>{catalog.length}</strong>
+          <span>Online SKUs</span>
+        </div>
+        <button type="button" className={filter === "" ? "active" : ""} onClick={() => setFilter("")}>
+          <strong>All</strong>
+          <span>Statuses</span>
+        </button>
+      </section>
 
-      <div className="repair-grid">
-        <section className="panel">
-          <h2>Collect in branch</h2>
-          <p className="hint">
-            Customer presents the collection code shown after payment. Unpaid holds expire after ~15 minutes and stock
-            returns to available.
-          </p>
-          <form className="form-grid" onSubmit={collect}>
-            <label>
-              Collection code
-              <Input
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="ABC123"
-                required
-              />
-            </label>
-            <Button type="submit" disabled={busy || code.trim().length < 4}>
-              Mark collected
-            </Button>
-          </form>
+      <div className="orders-layout">
+        <div className="stack">
+          <section className="panel collect-panel">
+            <h2>Collect in branch</h2>
+            <p className="hint">
+              Customer presents the collection code after payment. Unpaid holds expire after ~15 minutes.
+            </p>
+            <form className="form-grid" onSubmit={collect}>
+              <label>
+                Collection code
+                <Input
+                  className="auth-code"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.toUpperCase())}
+                  placeholder="ABC123"
+                  required
+                />
+              </label>
+              <Button type="submit" disabled={busy || code.trim().length < 4}>
+                Mark collected
+              </Button>
+            </form>
+          </section>
 
-          <div className="panel-head" style={{ marginTop: "1.5rem" }}>
-            <h2>Queue</h2>
-            <select className="input" value={filter} onChange={(e) => setFilter(e.target.value)}>
-              <option value="ready_for_pickup">Ready for pickup</option>
-              <option value="pending_payment">Pending payment</option>
-              <option value="expired">Expired holds</option>
-              <option value="delivered">Delivered</option>
-              <option value="">All</option>
-            </select>
-          </div>
-          {orders.length === 0 ? (
-            <EmptyState title="No orders" body="Place a demo checkout or wait for storefront traffic." />
-          ) : (
-            <ul className="part-list">
-              {orders.map((o) => (
-                <li key={o.id} className="part-card">
-                  <div className="part-head">
+          <section className="panel" style={{ padding: "0.85rem" }}>
+            <div className="panel-head">
+              <h2>Pickup queue</h2>
+              <select className="input" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter queue by status">
+                <option value="ready_for_pickup">Ready for pickup</option>
+                <option value="confirmed">Confirmed (delivery)</option>
+                <option value="pending_payment">Pending payment</option>
+                <option value="expired">Expired holds</option>
+                <option value="delivered">Delivered / completed</option>
+                <option value="">All</option>
+              </select>
+            </div>
+            {orders.length === 0 ? (
+              <EmptyState title="No orders" body="Place a demo checkout or wait for storefront traffic." icon={ICONS.orders} />
+            ) : (
+              <ul className="order-queue">
+                {orders.map((o) => (
+                  <li key={o.id} className={`order-row ${o.status === "ready_for_pickup" ? "is-ready" : ""}`}>
                     <div>
                       <strong>KES {o.total.toLocaleString()}</strong>
                       <div className="muted mono">{o.id.slice(0, 8)}…</div>
+                      {o.guest_name ? (
+                        <div className="hint">
+                          {o.guest_name}
+                          {o.guest_phone ? ` · ${o.guest_phone}` : ""}
+                        </div>
+                      ) : null}
+                      <div className="hint">
+                        {o.fulfilment_type === "delivery"
+                          ? `Delivery${o.delivery_location_name ? ` · ${o.delivery_location_name}` : ""}${
+                              o.delivery_fee ? ` · fee KES ${o.delivery_fee.toLocaleString()}` : ""
+                            }`
+                          : "Branch pickup"}
+                      </div>
+                      {o.fulfilment_type === "delivery" && (o.delivery_address_line1 || o.delivery_landmark) ? (
+                        <div className="muted tiny">
+                          {[o.delivery_address_line1, o.delivery_address_line2, o.delivery_landmark]
+                            .filter(Boolean)
+                            .join(", ")}
+                        </div>
+                      ) : null}
                       {o.collection_code ? (
                         <div className="hint">
                           Code <span className="mono">{o.collection_code}</span>
@@ -184,79 +227,82 @@ export function OrdersPage() {
                       ) : (
                         <div className="hint">Code hidden until paid</div>
                       )}
+                      {o.status === "pending_payment" ? (
+                        <Button type="button" disabled={busy} onClick={() => void confirmPaid(o.id)} style={{ marginTop: "0.55rem" }}>
+                          Confirm paid / cash collected
+                        </Button>
+                      ) : null}
                     </div>
                     <Badge tone={o.status === "ready_for_pickup" ? "success" : o.status === "delivered" ? "info" : "pending"}>
                       {o.status.replaceAll("_", " ")}
                     </Badge>
-                  </div>
-                  {o.status === "pending_payment" ? (
-                    <Button type="button" disabled={busy} onClick={() => void confirmPaid(o.id)} style={{ marginTop: "0.75rem" }}>
-                      Confirm paid (sandbox)
-                    </Button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <aside className="stack">
-          <section className="panel">
-            <h2>Demo checkout</h2>
-            <p className="hint">Ops-side cart against the online catalog. Reserves stock, creates C2B payment.</p>
-            <label>
-              Fulfillment location
-              <select className="input" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-                {locations.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {catalog.length === 0 ? (
-              <EmptyState title="No online products" body="Publish products or restart API to seed online_visible accessories." />
-            ) : (
-              <ul className="list" style={{ marginTop: "0.75rem" }}>
-                {catalog.slice(0, 8).map((it) => (
-                  <li key={it.variant_id}>
-                    <span>
-                      {it.product_name} · KES {it.sell_price.toLocaleString()}
-                      <span className="muted"> · {it.available_qty} avail</span>
-                    </span>
-                    <Button
-                      type="button"
-                      disabled={it.available_qty <= 0 || busy}
-                      onClick={() => setCart((prev) => ({ ...prev, [it.variant_id]: (prev[it.variant_id] || 0) + 1 }))}
-                    >
-                      +{cart[it.variant_id] ? ` ${cart[it.variant_id]}` : ""}
-                    </Button>
                   </li>
                 ))}
               </ul>
             )}
-            <Button type="button" disabled={busy} onClick={() => void demoCheckout()} style={{ marginTop: "1rem" }}>
-              Place C2B order
-            </Button>
-            <Button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                setError("");
-                expireOnlineHolds()
-                  .then(async (r) => {
-                    setMessage(`Released ${r.released} expired hold(s)`);
-                    await refresh();
-                  })
-                  .catch((err) => setError(err instanceof Error ? err.message : "Expire failed"))
-                  .finally(() => setBusy(false));
-              }}
-              style={{ marginTop: "0.5rem" }}
-            >
-              Release expired holds
-            </Button>
           </section>
+        </div>
+
+        <aside className="cart-rail">
+          <h2>Demo checkout</h2>
+          <p className="hint">Ops-side cart against the online catalog. Reserves stock, creates C2B payment.</p>
+          <label>
+            Fulfillment location
+            <select className="input" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+              {locations.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {catalog.length === 0 ? (
+            <EmptyState title="No online products" body="Publish products or restart API to seed online_visible accessories." />
+          ) : (
+            <ul className="list" style={{ marginTop: "0.75rem" }}>
+              {catalog.slice(0, 8).map((it) => (
+                <li key={it.variant_id}>
+                  <span>
+                    {it.product_name} · KES {it.sell_price.toLocaleString()}
+                    <span className="muted"> · {it.available_qty} avail</span>
+                  </span>
+                  <Button
+                    type="button"
+                    disabled={it.available_qty <= 0 || busy}
+                    onClick={() => setCart((prev) => ({ ...prev, [it.variant_id]: (prev[it.variant_id] || 0) + 1 }))}
+                  >
+                    +{cart[it.variant_id] ? ` ${cart[it.variant_id]}` : ""}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="pos-total">
+            <span className="muted">In cart</span>
+            <strong>{cartCount}</strong>
+          </div>
+          <Button type="button" disabled={busy || cartCount === 0} onClick={() => void demoCheckout()}>
+            Place C2B order
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setError("");
+              expireOnlineHolds()
+                .then(async (r) => {
+                  setMessage(`Released ${r.released} expired hold(s)`);
+                  await refresh();
+                })
+                .catch((err) => setError(err instanceof Error ? err.message : "Expire failed"))
+                .finally(() => setBusy(false));
+            }}
+            style={{ marginTop: "0.5rem" }}
+          >
+            Release expired holds
+          </Button>
         </aside>
       </div>
     </div>

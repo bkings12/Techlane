@@ -18,22 +18,26 @@ const (
 )
 
 type RepairEstimate struct {
-	ID           uuid.UUID  `json:"id"`
-	RepairJobID  uuid.UUID  `json:"repair_job_id"`
-	LaborAmount  float64    `json:"labor_amount"`
-	PartsAmount  float64    `json:"parts_amount"`
-	Currency     string     `json:"currency"`
-	Notes        *string    `json:"notes,omitempty"`
-	Status       string     `json:"status"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
-	CreatedBy    *uuid.UUID `json:"created_by,omitempty"`
-	DecidedAt    *time.Time `json:"decided_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ID          uuid.UUID  `json:"id"`
+	RepairJobID uuid.UUID  `json:"repair_job_id"`
+	LaborAmount float64    `json:"-"` // internal — customers only see TotalAmount
+	PartsAmount float64    `json:"-"`
+	TotalAmount float64    `json:"total_amount"`
+	Currency    string     `json:"currency"`
+	Notes       *string    `json:"notes,omitempty"`
+	Status      string     `json:"status"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
+	DecidedAt   *time.Time `json:"decided_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 type CreateEstimateInput struct {
 	TenantID     uuid.UUID
 	RepairJobID  uuid.UUID
+	// TotalAmount is what the customer is quoted. Labor/Parts remain internal
+	// bookkeeping (optional split); prefer TotalAmount from the counter UI.
+	TotalAmount  float64
 	LaborAmount  float64
 	PartsAmount  float64
 	Notes        *string
@@ -56,8 +60,16 @@ func CanDecideEstimate(status string, expiresAt *time.Time, now time.Time) error
 }
 
 func (s *Service) CreateEstimate(ctx context.Context, in CreateEstimateInput) (*RepairEstimate, error) {
-	if in.LaborAmount < 0 || in.PartsAmount < 0 {
+	labor, parts := in.LaborAmount, in.PartsAmount
+	if in.TotalAmount > 0 {
+		// Customer-facing quote is a single total; keep the split internal as labour.
+		labor, parts = in.TotalAmount, 0
+	}
+	if labor < 0 || parts < 0 {
 		return nil, fmt.Errorf("amounts cannot be negative")
+	}
+	if labor+parts <= 0 {
+		return nil, fmt.Errorf("estimate total must be greater than zero")
 	}
 	var exists bool
 	if err := s.pool.QueryRow(ctx, `
@@ -83,7 +95,7 @@ func (s *Service) CreateEstimate(ctx context.Context, in CreateEstimateInput) (*
 		INSERT INTO repair.repair_estimates
 			(id, tenant_id, repair_job_id, labor_amount, parts_amount, currency, notes, status, expires_at, created_by, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		id, in.TenantID, in.RepairJobID, in.LaborAmount, in.PartsAmount, currency, in.Notes,
+		id, in.TenantID, in.RepairJobID, labor, parts, currency, in.Notes,
 		EstimatePending, expires, in.ActorID, now)
 	if err != nil {
 		return nil, err
@@ -91,14 +103,14 @@ func (s *Service) CreateEstimate(ctx context.Context, in CreateEstimateInput) (*
 	s.AdvanceStatusIf(ctx, in.TenantID, in.RepairJobID,
 		[]string{StatusIntake}, StatusDiagnosed,
 		"Estimate created", in.ActorID, uuid.New())
+	total := labor + parts
 	s.publish("estimate.pending", in.TenantID, uuid.Nil, in.ActorID, uuid.New(), map[string]any{
 		"repair_job_id": in.RepairJobID.String(),
-		"labor_amount":  in.LaborAmount,
-		"parts_amount":  in.PartsAmount,
+		"total_amount":  total,
 		"estimate_id":   id.String(),
 	})
 	return &RepairEstimate{
-		ID: id, RepairJobID: in.RepairJobID, LaborAmount: in.LaborAmount, PartsAmount: in.PartsAmount,
+		ID: id, RepairJobID: in.RepairJobID, LaborAmount: labor, PartsAmount: parts, TotalAmount: total,
 		Currency: currency, Notes: in.Notes, Status: EstimatePending, ExpiresAt: &expires,
 		CreatedBy: &in.ActorID, CreatedAt: now,
 	}, nil
@@ -131,6 +143,7 @@ func (s *Service) ListEstimates(ctx context.Context, tenantID, repairID uuid.UUI
 				UPDATE repair.repair_estimates SET status = $1 WHERE id = $2 AND status = $3`,
 				EstimateExpired, e.ID, EstimatePending)
 		}
+		e.TotalAmount = e.LaborAmount + e.PartsAmount
 		items = append(items, e)
 	}
 	return items, rows.Err()
@@ -174,9 +187,15 @@ func (s *Service) decideEstimate(ctx context.Context, tenantID, repairID, estima
 		return nil, err
 	}
 	if decision == EstimateApproved {
+		// The customer agreeing to a price *is* the authorisation to do the work.
+		total := e.LaborAmount + e.PartsAmount
 		_, err = tx.Exec(ctx, `
-			UPDATE repair.repair_jobs SET labor_amount = $1, updated_at = now(), version = version + 1
-			WHERE tenant_id = $2 AND id = $3`, e.LaborAmount, tenantID, repairID)
+			UPDATE repair.repair_jobs
+			SET labor_amount = $1, work_authorized_at = $2, work_authorized_by = NULL,
+			    work_authorization_source = $3, authorized_amount = $1,
+			    updated_at = now(), version = version + 1
+			WHERE tenant_id = $4 AND id = $5`,
+			total, now, AuthSourceCustomerEstimate, tenantID, repairID)
 		if err != nil {
 			return nil, err
 		}
@@ -186,6 +205,7 @@ func (s *Service) decideEstimate(ctx context.Context, tenantID, repairID, estima
 	}
 	e.Status = decision
 	e.DecidedAt = &now
+	e.TotalAmount = e.LaborAmount + e.PartsAmount
 	if decision == EstimateApproved {
 		// Customer approved work — move into active repair unless waiting on parts.
 		s.AdvanceStatusIf(ctx, tenantID, repairID,
@@ -201,4 +221,55 @@ func (s *Service) ApproveEstimate(ctx context.Context, tenantID, repairID, estim
 
 func (s *Service) RejectEstimate(ctx context.Context, tenantID, repairID, estimateID, customerID uuid.UUID) (*RepairEstimate, error) {
 	return s.decideEstimate(ctx, tenantID, repairID, estimateID, customerID, EstimateRejected)
+}
+
+// DecideEstimateByPhone approves or rejects a pending estimate for the customer
+// who owns the phone (WhatsApp / two-way messaging). No portal JWT required.
+// If estimateID is nil, the latest pending estimate for that customer is used.
+func (s *Service) DecideEstimateByPhone(ctx context.Context, tenantID uuid.UUID, phone string, approve bool, estimateID *uuid.UUID) (jobCode string, err error) {
+	e164, err := NormalizePhone(phone)
+	if err != nil {
+		return "", fmt.Errorf("invalid phone")
+	}
+	customer, err := s.findCustomerByPhoneVariants(ctx, tenantID, PhoneMatchVariants(e164))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("no customer found for this number")
+	}
+	if err != nil {
+		return "", err
+	}
+	var repairID, estID uuid.UUID
+	var code string
+	if estimateID != nil && *estimateID != uuid.Nil {
+		err = s.pool.QueryRow(ctx, `
+			SELECT e.id, e.repair_job_id, COALESCE(j.job_code, '')
+			FROM repair.repair_estimates e
+			JOIN repair.repair_jobs j ON j.id = e.repair_job_id AND j.tenant_id = e.tenant_id
+			WHERE e.tenant_id = $1 AND e.id = $2 AND e.status = $3 AND j.customer_id = $4`,
+			tenantID, *estimateID, EstimatePending, customer.ID).
+			Scan(&estID, &repairID, &code)
+	} else {
+		err = s.pool.QueryRow(ctx, `
+			SELECT e.id, e.repair_job_id, COALESCE(j.job_code, '')
+			FROM repair.repair_estimates e
+			JOIN repair.repair_jobs j ON j.id = e.repair_job_id AND j.tenant_id = e.tenant_id
+			WHERE e.tenant_id = $1 AND e.status = $2 AND j.customer_id = $3
+			ORDER BY e.created_at DESC
+			LIMIT 1`, tenantID, EstimatePending, customer.ID).
+			Scan(&estID, &repairID, &code)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("no pending estimate for this number")
+	}
+	if err != nil {
+		return "", err
+	}
+	decision := EstimateRejected
+	if approve {
+		decision = EstimateApproved
+	}
+	if _, err := s.decideEstimate(ctx, tenantID, repairID, estID, customer.ID, decision); err != nil {
+		return "", err
+	}
+	return code, nil
 }

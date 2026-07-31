@@ -12,8 +12,8 @@ android {
         applicationId = "com.techlane.supplier"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.1.2"
         buildConfigField("String", "API_BASE", "\"http://10.0.2.2:8080/api/v1\"")
     }
 
@@ -29,7 +29,7 @@ android {
             buildConfigField(
                 "String",
                 "API_BASE",
-                "\"${apiBaseOverride.ifEmpty { "https://api.example.com/api/v1" }}\"",
+                "\"${apiBaseOverride.ifEmpty { "https://api.techlane.co.ke/api/v1" }}\"",
             )
             signingConfig = signingConfigs.getByName("debug")
         }

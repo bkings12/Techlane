@@ -16,6 +16,8 @@ const (
 	SchemaAudit     = "audit"
 	SchemaNotify    = "notify"
 	SchemaGateway   = "gateway"
+	SchemaPlatform  = "platform"
+	SchemaLoyalty   = "loyalty"
 )
 
 var AllSchemas = []string{
@@ -27,6 +29,8 @@ var AllSchemas = []string{
 	SchemaAudit,
 	SchemaNotify,
 	SchemaGateway,
+	SchemaPlatform,
+	SchemaLoyalty,
 }
 
 const ensureSchemasSQL = `
@@ -38,6 +42,8 @@ CREATE SCHEMA IF NOT EXISTS payments;
 CREATE SCHEMA IF NOT EXISTS audit;
 CREATE SCHEMA IF NOT EXISTS notify;
 CREATE SCHEMA IF NOT EXISTS gateway;
+CREATE SCHEMA IF NOT EXISTS platform;
+CREATE SCHEMA IF NOT EXISTS loyalty;
 `
 
 func EnsureSchemas(ctx context.Context, pool *pgxpool.Pool) error {

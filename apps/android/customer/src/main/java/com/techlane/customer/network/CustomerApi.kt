@@ -38,6 +38,12 @@ object CustomerApi {
 
     fun repairDetail(id: String): JSONObject = http.get("/customer/repairs/$id")
 
+    fun claimRepair(jobCode: String): JSONObject =
+        http.post(
+            "/customer/repairs/claim",
+            JSONObject().put("job_code", jobCode),
+        )
+
     fun approveEstimate(repairId: String, estimateId: String): JSONObject =
         http.post("/customer/repairs/$repairId/estimates/$estimateId/approve")
 

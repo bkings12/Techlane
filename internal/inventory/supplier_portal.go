@@ -345,6 +345,20 @@ func (s *Service) AssignPartRequest(ctx context.Context, tenantID, requestID, su
 	if !exists {
 		return nil, fmt.Errorf("supplier not found")
 	}
+	var branchID, repairJobID uuid.UUID
+	var desc string
+	var qty int
+	err = s.pool.QueryRow(ctx, `
+		SELECT branch_id, repair_job_id, description, quantity
+		FROM inventory.part_requests
+		WHERE tenant_id = $1 AND id = $2 AND status = 'pending'`,
+		tenantID, requestID).Scan(&branchID, &repairJobID, &desc, &qty)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("part request not found or not pending")
+	}
+	if err != nil {
+		return nil, err
+	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE inventory.part_requests
 		SET assigned_supplier_id = $1, quote_status = COALESCE(quote_status, 'awaiting'), updated_at = now()
@@ -356,6 +370,8 @@ func (s *Service) AssignPartRequest(ctx context.Context, tenantID, requestID, su
 	if tag.RowsAffected() == 0 {
 		return nil, fmt.Errorf("part request not found or not pending")
 	}
+	sid := supplierID
+	s.publishPartRequestCreated(ctx, tenantID, branchID, requestID, repairJobID, desc, qty, &sid, uuid.Nil, uuid.Nil)
 	return s.getPartRequest(ctx, tenantID, requestID)
 }
 
@@ -387,8 +403,20 @@ func (s *Service) ListSupplierPortalRequests(ctx context.Context, tenantID, supp
 		WHERE pr.tenant_id = $1 AND pr.assigned_supplier_id = $2`
 	args := []any{tenantID, supplierID}
 	if status != "" {
-		q += ` AND pr.status = $3`
-		args = append(args, status)
+		// Portal clients filter by the quote lifecycle, not the internal request status.
+		switch status {
+		case "assigned", "new", "awaiting":
+			q += ` AND COALESCE(pr.quote_status, 'awaiting') = 'awaiting'`
+		case "quoted", "accepted":
+			// Quoting auto-accepts today, so both labels map to 'accepted'.
+			q += ` AND pr.quote_status IN ('quoted', 'accepted')`
+		case "declined", "ready":
+			q += ` AND pr.quote_status = $3`
+			args = append(args, status)
+		default:
+			q += ` AND pr.status = $3`
+			args = append(args, status)
+		}
 	}
 	q += ` ORDER BY pr.created_at DESC LIMIT 200`
 	rows, err := s.pool.Query(ctx, q, args...)
@@ -651,6 +679,134 @@ func (s *Service) DeclineSupplierRequest(ctx context.Context, tenantID, supplier
 	}, nil
 }
 
+func phoneDigitVariants(raw string) []string {
+	var digits strings.Builder
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	d := digits.String()
+	if d == "" {
+		return nil
+	}
+	out := []string{d}
+	if strings.HasPrefix(d, "254") && len(d) >= 12 {
+		out = append(out, "0"+d[3:], d[3:])
+	} else if strings.HasPrefix(d, "0") && len(d) >= 10 {
+		out = append(out, "254"+d[1:], d[1:])
+	} else if len(d) == 9 {
+		out = append(out, "0"+d, "254"+d)
+	}
+	// unique
+	seen := map[string]struct{}{}
+	uniq := make([]string, 0, len(out))
+	for _, v := range out {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		uniq = append(uniq, v)
+	}
+	return uniq
+}
+
+func (s *Service) findSupplierIDByPhone(ctx context.Context, tenantID uuid.UUID, phone string) (uuid.UUID, error) {
+	variants := phoneDigitVariants(phone)
+	if len(variants) == 0 {
+		return uuid.Nil, fmt.Errorf("invalid phone")
+	}
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT id FROM inventory.suppliers
+		WHERE tenant_id = $1
+		  AND regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($2::text[])
+		ORDER BY created_at ASC
+		LIMIT 1`, tenantID, variants).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Also match supplier contacts.
+		err = s.pool.QueryRow(ctx, `
+			SELECT supplier_id FROM inventory.supplier_contacts
+			WHERE tenant_id = $1
+			  AND regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($2::text[])
+			ORDER BY created_at ASC
+			LIMIT 1`, tenantID, variants).Scan(&id)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, fmt.Errorf("no supplier found for this number")
+	}
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
+func (s *Service) resolvePartRequestForPhone(ctx context.Context, tenantID, supplierID uuid.UUID, requestID *uuid.UUID) (uuid.UUID, string, error) {
+	var id uuid.UUID
+	var jobCode string
+	var err error
+	if requestID != nil && *requestID != uuid.Nil {
+		err = s.pool.QueryRow(ctx, `
+			SELECT pr.id, COALESCE(j.job_code, '')
+			FROM inventory.part_requests pr
+			LEFT JOIN repair.repair_jobs j ON j.id = pr.repair_job_id
+			WHERE pr.tenant_id = $1 AND pr.id = $2 AND pr.assigned_supplier_id = $3 AND pr.status = 'pending'`,
+			tenantID, *requestID, supplierID).Scan(&id, &jobCode)
+	} else {
+		err = s.pool.QueryRow(ctx, `
+			SELECT pr.id, COALESCE(j.job_code, '')
+			FROM inventory.part_requests pr
+			LEFT JOIN repair.repair_jobs j ON j.id = pr.repair_job_id
+			WHERE pr.tenant_id = $1 AND pr.assigned_supplier_id = $2 AND pr.status = 'pending'
+			ORDER BY pr.created_at DESC
+			LIMIT 1`, tenantID, supplierID).Scan(&id, &jobCode)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, "", fmt.Errorf("no pending part request for this number")
+	}
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	return id, jobCode, nil
+}
+
+// SubmitSupplierQuoteByPhone records a quote from a WhatsApp reply (no portal login).
+func (s *Service) SubmitSupplierQuoteByPhone(ctx context.Context, tenantID uuid.UUID, phone string, unitCost float64, requestID *uuid.UUID) (jobCode string, err error) {
+	supplierID, err := s.findSupplierIDByPhone(ctx, tenantID, phone)
+	if err != nil {
+		return "", err
+	}
+	reqID, code, err := s.resolvePartRequestForPhone(ctx, tenantID, supplierID, requestID)
+	if err != nil {
+		return "", err
+	}
+	actor := uuid.Nil
+	_ = s.pool.QueryRow(ctx, `
+		SELECT id FROM inventory.supplier_contacts
+		WHERE tenant_id = $1 AND supplier_id = $2
+		ORDER BY created_at ASC LIMIT 1`, tenantID, supplierID).Scan(&actor)
+	if _, err := s.SubmitSupplierQuote(ctx, tenantID, supplierID, reqID, unitCost, nil, actor); err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+// DeclineSupplierRequestByPhone declines the assigned pending request for this phone.
+func (s *Service) DeclineSupplierRequestByPhone(ctx context.Context, tenantID uuid.UUID, phone string, requestID *uuid.UUID) (jobCode string, err error) {
+	supplierID, err := s.findSupplierIDByPhone(ctx, tenantID, phone)
+	if err != nil {
+		return "", err
+	}
+	reqID, code, err := s.resolvePartRequestForPhone(ctx, tenantID, supplierID, requestID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.DeclineSupplierRequest(ctx, tenantID, supplierID, reqID, nil); err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
 func (s *Service) requireAssignedPendingRequest(ctx context.Context, tenantID, supplierID, requestID uuid.UUID) (*PartRequest, error) {
 	pr, err := s.getPartRequest(ctx, tenantID, requestID)
 	if err != nil {
@@ -691,6 +847,25 @@ func (s *Service) MarkSupplierRequestReady(ctx context.Context, tenantID, suppli
 	}
 	pr.QuoteStatus = &ready
 	return pr, nil
+}
+
+// CollectIssueAsSupplier lets the supplier confirm the part was handed over,
+// so collection does not depend solely on the technician marking it.
+func (s *Service) CollectIssueAsSupplier(ctx context.Context, tenantID, supplierID, issueID uuid.UUID, authCode string, actorContactID uuid.UUID) (*SupplierIssue, error) {
+	var ownerID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT supplier_id FROM inventory.supplier_issues WHERE tenant_id = $1 AND id = $2`,
+		tenantID, issueID).Scan(&ownerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("supplier issue not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ownerID != supplierID {
+		return nil, fmt.Errorf("supplier issue not found")
+	}
+	return s.CollectSupplierIssue(ctx, tenantID, issueID, authCode, actorContactID, uuid.New())
 }
 
 func (s *Service) IssueAsSupplier(ctx context.Context, tenantID, supplierID, requestID, actorContactID uuid.UUID) (*SupplierIssueResult, error) {

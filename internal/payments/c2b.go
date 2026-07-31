@@ -219,6 +219,103 @@ func (s *Service) recordAmountMismatchC2B(ctx context.Context, tenantID, payment
 	return nil
 }
 
+// MatchC2BToNewSaleInput is what the owner supplies: money already arrived
+// (the C2B transaction), and here's what it was for.
+type MatchC2BToNewSaleInput struct {
+	BranchID   uuid.UUID
+	LocationID uuid.UUID
+	VariantID  uuid.UUID
+	Quantity   int
+}
+
+// MatchC2BToNewSale resolves an unmatched/mismatched C2B transaction by creating
+// a one-line sale for the chosen product and quantity — deducting stock — then
+// recording the full received amount as payment against that new sale. The
+// amount is whatever the customer actually paid; it isn't required to equal the
+// catalog total, same as any other over/under-payment already tracked here.
+func (s *Service) MatchC2BToNewSale(ctx context.Context, tenantID, c2bID uuid.UUID, in MatchC2BToNewSaleInput, actorID uuid.UUID) (*Payment, error) {
+	if s.quickSaleCreator == nil {
+		return nil, fmt.Errorf("quick sale creation is not configured")
+	}
+	if in.BranchID == uuid.Nil || in.LocationID == uuid.Nil || in.VariantID == uuid.Nil {
+		return nil, fmt.Errorf("branch_id, location_id, and variant_id are required")
+	}
+	if in.Quantity <= 0 {
+		return nil, fmt.Errorf("quantity must be positive")
+	}
+
+	var status, transID string
+	var amount float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT status, COALESCE(trans_id, ''), COALESCE(amount, 0)::float8
+		FROM payments.mpesa_c2b_transactions
+		WHERE tenant_id = $1 AND id = $2`, tenantID, c2bID).Scan(&status, &transID, &amount)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("c2b transaction not found")
+		}
+		return nil, err
+	}
+	if status != "unmatched" && status != "amount_mismatch" {
+		return nil, fmt.Errorf("c2b transaction is not unmatched")
+	}
+
+	corrID := uuid.New()
+	sale, err := s.quickSaleCreator.CreateQuickSale(ctx, QuickSaleInput{
+		TenantID: tenantID, BranchID: in.BranchID, LocationID: in.LocationID,
+		VariantID: in.VariantID, Quantity: in.Quantity, ActorID: actorID, CorrID: corrID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create sale: %w", err)
+	}
+
+	id := uuid.New()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	branchID := in.BranchID
+	_, err = tx.Exec(ctx, `
+		INSERT INTO payments.payments (id, tenant_id, branch_id, method, amount, currency, status, received_by, created_by, correlation_id)
+		VALUES ($1, $2, $3, 'mpesa_c2b', $4, 'KES', 'initiated', $5, $5, $6)`,
+		id, tenantID, branchID, amount, actorID, corrID)
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO payments.payment_allocations (id, tenant_id, payment_id, payable_type, payable_id, amount)
+		VALUES ($1, $2, $3, 'sale', $4, $5)`,
+		uuid.New(), tenantID, id, sale.ID, amount)
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE payments.mpesa_c2b_transactions
+		SET payment_id = $1, status = 'pending', updated_at = now()
+		WHERE id = $2`, id, c2bID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	ref := transID
+	if ref == "" {
+		ref = c2bID.String()
+	}
+	pay, err := s.ConfirmMpesaWebhook(ctx, tenantID, id, ref)
+	if err != nil {
+		return nil, err
+	}
+	if s.riskHook != nil {
+		_, _ = s.riskHook.ResolveOpenAlertsByEntity(ctx, tenantID, "unmatched_c2b", c2bID, actorID)
+		_, _ = s.riskHook.ResolveOpenAlertsByEntity(ctx, tenantID, "c2b_amount_mismatch", id, actorID)
+	}
+	return pay, nil
+}
+
 func (s *Service) ListC2BTransactions(ctx context.Context, tenantID uuid.UUID, status string) ([]C2BTransaction, error) {
 	q := `
 		SELECT id, payment_id, COALESCE(trans_id, ''), COALESCE(amount, 0)::float8,

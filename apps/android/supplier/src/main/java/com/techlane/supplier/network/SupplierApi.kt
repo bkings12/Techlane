@@ -62,6 +62,9 @@ object SupplierApi {
 
     fun listIssues(): JSONArray = http.getArray("/supplier/issues")
 
+    fun collect(issueId: String, authCode: String): JSONObject =
+        http.post("/supplier/issues/$issueId/collect", JSONObject().put("auth_code", authCode))
+
     fun credit(): JSONObject = http.get("/supplier/credit")
 
     fun voucherHtmlUrl(issueId: String): String =
