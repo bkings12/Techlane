@@ -235,6 +235,10 @@ function TechnicianHome() {
         </div>
       </section>
       <div className="workspace-links">
+        <Link to="/repairs/pos">
+          <strong>New job</strong>
+          <em>Take a device in</em>
+        </Link>
         <Link to="/repairs">
           <strong>All repairs</strong>
           <em>Status, parts, timeline</em>
@@ -280,6 +284,10 @@ function CashierHome() {
         <Link to="/pos">
           <strong>Start sale</strong>
           <em>Open POS workspace</em>
+        </Link>
+        <Link to="/repairs/pos">
+          <strong>New repair</strong>
+          <em>Take a device in</em>
         </Link>
         <Link to="/repairs">
           <strong>Repair payment</strong>

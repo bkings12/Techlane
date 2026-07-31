@@ -13,7 +13,8 @@ type PaletteItem = {
 
 const QUICK_LINKS: { label: string; path: string; icon: string; keywords: string }[] = [
   { label: "Home", path: "/", icon: "reports", keywords: "home dashboard" },
-  { label: "Repairs", path: "/repairs", icon: "repairs", keywords: "repairs jobs workshop" },
+  { label: "Repairs", path: "/repairs", icon: "repairs", keywords: "repairs jobs workshop records board" },
+  { label: "Job POS", path: "/repairs/pos", icon: "repairs", keywords: "intake new job take in device ticket" },
   { label: "Customers", path: "/customers", icon: "customers", keywords: "customers clients" },
   { label: "Part requests", path: "/parts", icon: "parts", keywords: "parts requests" },
   { label: "Inventory", path: "/inventory", icon: "inventory", keywords: "inventory stock" },

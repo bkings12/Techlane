@@ -37,12 +37,14 @@ import { LoyaltyMarketingPage } from "./pages/settings/LoyaltyMarketingPage";
 import { RolesPage } from "./pages/settings/RolesPage";
 import { IntakePresetsPage } from "./pages/settings/IntakePresetsPage";
 import { SecuritySettingsPage } from "./pages/settings/SecuritySettingsPage";
+import { CounterHomePage } from "./pages/CounterHomePage";
 import { SettingsHomePage } from "./pages/settings/SettingsHomePage";
 import { SettingsLayout } from "./pages/settings/SettingsLayout";
 import { StaffDetailPage } from "./pages/settings/StaffDetailPage";
 import { StaffListPage } from "./pages/settings/StaffListPage";
 
 const RepairsPage = lazy(() => import("./pages/RepairsPage").then((module) => ({ default: module.RepairsPage })));
+const JobPosPage = lazy(() => import("./pages/JobPosPage").then((module) => ({ default: module.JobPosPage })));
 const RepairDetailPage = lazy(() => import("./pages/RepairDetailPage").then((module) => ({ default: module.RepairDetailPage })));
 const InventoryPage = lazy(() => import("./pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
 const POSPage = lazy(() => import("./pages/POSPage").then((module) => ({ default: module.POSPage })));
@@ -90,6 +92,7 @@ export default function App() {
         >
           <Route index element={<HomePage />} />
           <Route path="repairs" element={<RepairsPage />} />
+          <Route path="repairs/pos" element={<JobPosPage />} />
           <Route path="repairs/:id" element={<RepairDetailPage />} />
           <Route path="customers" element={<CustomersPage />} />
           <Route path="customers/:id" element={<CustomerDetailPage />} />
@@ -99,6 +102,7 @@ export default function App() {
           <Route path="orders" element={<OrdersPage />} />
           <Route path="payments" element={<PaymentsPage />} />
           <Route path="pos" element={<POSPage />} />
+          <Route path="counter" element={<CounterHomePage />} />
           <Route path="counter/fix" element={<QuickFixPage />} />
           <Route path="counter/pickup" element={<CounterPickupPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
