@@ -7012,6 +7012,30 @@ button.linkish:hover {
   color: var(--gray-500);
 }
 
+.ticket-line {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  gap: 0.45rem 0.65rem;
+  align-items: baseline;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--gray-100);
+}
+
+.ticket-line-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ticket-line-value {
+  min-width: 0;
+  color: var(--navy-950);
+  font-weight: 600;
+  word-break: break-word;
+}
+
 .pos-item.is-selected {
   border-color: var(--navy-500);
   background: color-mix(in srgb, var(--navy-500) 8%, white);

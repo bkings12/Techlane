@@ -482,13 +482,24 @@ function QuickIntake({
   const ticketFilled =
     Boolean(customerValue) || Boolean(brand) || Boolean(model) || Boolean(problem) || conditionTags.length > 0;
 
+  const customerTicketLabel = !customerValue
+    ? ""
+    : anonymous
+      ? "Walk-in (no record)"
+      : [customerName, customerPhone].filter(Boolean).join(" · ") || "Customer selected";
+
+  const deviceTicketLabel =
+    brand || model ? `${brand}${brand && model ? " " : ""}${model}`.trim() : "";
+
+  const issueTicketLabel = problem.trim();
+
   return (
     <div className="repair-grid" style={{ marginBottom: "1.25rem" }}>
       <section className="panel" style={{ padding: "0.85rem" }}>
         <div className="panel-head">
           <div>
             <h2>Quick pick</h2>
-            <span className="muted">Shortcuts for the common case — search the ticket fields for anything else</span>
+            <span className="muted">Search or tap a shortcut</span>
           </div>
         </div>
 
@@ -504,6 +515,8 @@ function QuickIntake({
                   onClick={() => {
                     setDeviceKind(k);
                     setDeviceValue("");
+                    setBrand("");
+                    setModel("");
                     setLast(null);
                   }}
                 >
@@ -515,7 +528,31 @@ function QuickIntake({
         </div>
 
         <h3 className="intake-pick-heading">Customers</h3>
-        <ul className="pos-catalog-grid">
+        <SearchableCombobox
+          label="Search customer"
+          placeholder="Search name or phone…"
+          options={customerOptions}
+          onSearch={searchCustomers}
+          value={customerValue}
+          loading={customerSearching}
+          onSelect={onCustomerSelect}
+          addNewFields={{ primary: "Full name", secondary: "Phone number" }}
+          onAddNew={async ({ primary, secondary }) => {
+            const c = await createCustomer({
+              full_name: primary,
+              phone: secondary || undefined,
+            });
+            const opt = { value: c.id, label: c.full_name, sublabel: c.phone || "No phone" };
+            setCustomerOptions((prev) => [prev[0]!, opt, ...prev.slice(1).filter((p) => p.value !== c.id)]);
+            setCustomerName(c.full_name);
+            setCustomerPhone(c.phone ?? "");
+            setAnonymous(false);
+            setRecentCustomers((prev) => [c, ...prev.filter((x) => x.id !== c.id)].slice(0, 12));
+            setLast(null);
+            return opt;
+          }}
+        />
+        <ul className="pos-catalog-grid" style={{ marginTop: "0.65rem" }}>
           {quickCustomers.items.map((c) => (
             <li key={c.id}>
               <button
@@ -537,10 +574,33 @@ function QuickIntake({
         ) : null}
 
         <h3 className="intake-pick-heading">Devices</h3>
+        <SearchableCombobox
+          label="Search device"
+          placeholder="Brand and model…"
+          options={deviceOptions}
+          value={deviceValue}
+          onSelect={onDeviceSelect}
+          addNewFields={{ primary: "Brand", secondary: "Model" }}
+          onAddNew={async ({ primary, secondary }) => {
+            const brandName = primary.trim();
+            const modelName = (secondary ?? "").trim() || "Unknown";
+            const opt = {
+              value: `${brandName}|${modelName}`,
+              label: `${brandName} ${modelName}`.trim(),
+              sublabel: deviceKind,
+            };
+            setBrand(brandName);
+            setModel(modelName);
+            setLast(null);
+            return opt;
+          }}
+        />
         {quickDevices.items.length === 0 ? (
-          <p className="muted">No device presets for this kind — search or add on the ticket.</p>
+          <p className="muted" style={{ marginTop: "0.65rem" }}>
+            No device presets for this kind — search or add above.
+          </p>
         ) : (
-          <ul className="pos-catalog-grid">
+          <ul className="pos-catalog-grid" style={{ marginTop: "0.65rem" }}>
             {quickDevices.items.map((d) => (
               <li key={d.value}>
                 <button
@@ -563,7 +623,22 @@ function QuickIntake({
         ) : null}
 
         <h3 className="intake-pick-heading">Common issues</h3>
-        <ul className="pos-catalog-grid">
+        <SearchableCombobox
+          label="Search issue"
+          placeholder="What’s wrong?"
+          options={issueOptions}
+          value={issueValue}
+          onSelect={onIssueSelect}
+          addNewFields={{ primary: "Describe the issue" }}
+          onAddNew={async ({ primary }) => {
+            const opt = { value: primary, label: primary };
+            setIssueOptions((prev) => [opt, ...prev.filter((p) => p.value !== primary)]);
+            setProblem(primary);
+            setLast(null);
+            return opt;
+          }}
+        />
+        <ul className="pos-catalog-grid" style={{ marginTop: "0.65rem" }}>
           {quickIssues.items.map((issue) => (
             <li key={issue.value}>
               <button
@@ -601,52 +676,64 @@ function QuickIntake({
           </div>
 
           <form className="stack-form" onSubmit={(e) => void submit(e)}>
-            <SearchableCombobox
-              label="Customer"
-              placeholder="Search name or phone…"
-              options={customerOptions}
-              onSearch={searchCustomers}
-              value={customerValue}
-              loading={customerSearching}
-              onSelect={onCustomerSelect}
-              addNewFields={{ primary: "Full name", secondary: "Phone number" }}
-              onAddNew={async ({ primary, secondary }) => {
-                const c = await createCustomer({
-                  full_name: primary,
-                  phone: secondary || undefined,
-                });
-                const opt = { value: c.id, label: c.full_name, sublabel: c.phone || "No phone" };
-                setCustomerOptions((prev) => [prev[0]!, opt, ...prev.slice(1).filter((p) => p.value !== c.id)]);
-                setCustomerName(c.full_name);
-                setCustomerPhone(c.phone ?? "");
-                setAnonymous(false);
-                setRecentCustomers((prev) => [c, ...prev.filter((x) => x.id !== c.id)].slice(0, 12));
-                setLast(null);
-                return opt;
-              }}
-            />
+            <div className="ticket-line">
+              <span className="ticket-line-label">Customer</span>
+              <span className="ticket-line-value">{customerTicketLabel || "Not set"}</span>
+              {customerValue ? (
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() => {
+                    setCustomerValue("");
+                    setCustomerName("");
+                    setCustomerPhone("");
+                    setAnonymous(false);
+                    setLast(null);
+                  }}
+                >
+                  Change
+                </button>
+              ) : null}
+            </div>
 
-            <SearchableCombobox
-              label="Device"
-              placeholder="Brand and model…"
-              options={deviceOptions}
-              value={deviceValue}
-              onSelect={onDeviceSelect}
-              addNewFields={{ primary: "Brand", secondary: "Model" }}
-              onAddNew={async ({ primary, secondary }) => {
-                const brandName = primary.trim();
-                const modelName = (secondary ?? "").trim() || "Unknown";
-                const opt = {
-                  value: `${brandName}|${modelName}`,
-                  label: `${brandName} ${modelName}`.trim(),
-                  sublabel: deviceKind,
-                };
-                setBrand(brandName);
-                setModel(modelName);
-                setLast(null);
-                return opt;
-              }}
-            />
+            <div className="ticket-line">
+              <span className="ticket-line-label">Device</span>
+              <span className="ticket-line-value">
+                {deviceTicketLabel ? `${deviceTicketLabel} · ${deviceKind}` : "Not set"}
+              </span>
+              {deviceTicketLabel || deviceValue ? (
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() => {
+                    setDeviceValue("");
+                    setBrand("");
+                    setModel("");
+                    setLast(null);
+                  }}
+                >
+                  Change
+                </button>
+              ) : null}
+            </div>
+
+            <div className="ticket-line">
+              <span className="ticket-line-label">Issue</span>
+              <span className="ticket-line-value">{issueTicketLabel || "Not set"}</span>
+              {issueTicketLabel || issueValue ? (
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() => {
+                    setIssueValue("");
+                    setProblem("");
+                    setLast(null);
+                  }}
+                >
+                  Change
+                </button>
+              ) : null}
+            </div>
 
             <label>
               {deviceKind === "phone" ? "IMEI" : "Serial number"}
@@ -660,22 +747,6 @@ function QuickIntake({
                 placeholder={deviceKind === "phone" ? "Type or photograph the sticker" : "Serial / service tag"}
               />
             </label>
-
-            <SearchableCombobox
-              label="Issue"
-              placeholder="What’s wrong?"
-              options={issueOptions}
-              value={issueValue}
-              onSelect={onIssueSelect}
-              addNewFields={{ primary: "Describe the issue" }}
-              onAddNew={async ({ primary }) => {
-                const opt = { value: primary, label: primary };
-                setIssueOptions((prev) => [opt, ...prev.filter((p) => p.value !== primary)]);
-                setProblem(primary);
-                setLast(null);
-                return opt;
-              }}
-            />
 
             <PhotoCaptureField
               label={deviceKind === "phone" ? "IMEI / serial photo" : "Serial photo"}
