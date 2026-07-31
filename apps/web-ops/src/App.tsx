@@ -35,6 +35,7 @@ import { SMSSettingsPage } from "./pages/settings/SMSSettingsPage";
 import { WhatsAppSettingsPage } from "./pages/settings/WhatsAppSettingsPage";
 import { LoyaltyMarketingPage } from "./pages/settings/LoyaltyMarketingPage";
 import { RolesPage } from "./pages/settings/RolesPage";
+import { IntakePresetsPage } from "./pages/settings/IntakePresetsPage";
 import { SecuritySettingsPage } from "./pages/settings/SecuritySettingsPage";
 import { SettingsHomePage } from "./pages/settings/SettingsHomePage";
 import { SettingsLayout } from "./pages/settings/SettingsLayout";
@@ -112,6 +113,7 @@ export default function App() {
             <Route path="staff" element={<StaffListPage />} />
             <Route path="staff/:id" element={<StaffDetailPage />} />
             <Route path="roles" element={<RolesPage />} />
+            <Route path="intake-presets" element={<IntakePresetsPage />} />
             <Route path="commissions" element={<CommissionsPage />} />
             <Route path="payments" element={<PaymentSettingsPage />} />
             <Route path="shop" element={<ShopProfilePage />} />

@@ -29,6 +29,7 @@ func SystemPermissionCatalog() []PermissionDef {
 		{Code: "repairs.status.update", Description: "Update repair status", Category: "repairs"},
 		{Code: "repairs.price.override", Description: "Override repair prices", Category: "repairs"},
 		{Code: "repairs.edit", Description: "Correct repair job details after creation", Category: "repairs"},
+		{Code: "repairs.presets.write", Description: "Manage intake condition tags and issue presets", Category: "repairs"},
 		{Code: "repairs.collect", Description: "Release a device to the customer", Category: "repairs"},
 		{Code: "repairs.release_unverified", Description: "Release a device without the owner confirming a code", Category: "repairs"},
 		{Code: "repairs.close", Description: "Cancel a job or write it off as unrepairable", Category: "repairs"},

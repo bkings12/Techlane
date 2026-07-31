@@ -56,6 +56,10 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 
 	mux.Handle("POST /devices", auth(http.HandlerFunc(h.createDevice)))
 	mux.Handle("POST /repairs/intake", auth(http.HandlerFunc(h.intake)))
+	mux.Handle("GET /repairs/intake-presets", auth(http.HandlerFunc(h.listIntakePresets)))
+	mux.Handle("POST /repairs/intake-presets", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.createIntakePreset))))
+	mux.Handle("PATCH /repairs/intake-presets/{id}", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.updateIntakePreset))))
+	mux.Handle("DELETE /repairs/intake-presets/{id}", auth(httpx.RequirePermission("repairs.presets.write")(http.HandlerFunc(h.deleteIntakePreset))))
 	mux.Handle("POST /repairs", auth(http.HandlerFunc(h.createRepair)))
 	mux.Handle("GET /repairs", auth(http.HandlerFunc(h.listRepairs)))
 	mux.Handle("GET /repairs/trash", auth(http.HandlerFunc(h.listTrashedRepairs)))
@@ -2224,4 +2228,105 @@ func (h *Handler) writeReceiptPDF(w http.ResponseWriter, r *http.Request, tenant
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, filename))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(pdf)
+}
+
+func (h *Handler) listIntakePresets(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	includeInactive := r.URL.Query().Get("include_inactive") == "1" ||
+		strings.EqualFold(r.URL.Query().Get("include_inactive"), "true")
+	items, err := h.svc.ListIntakePresets(r.Context(), claims.TenantID, kind, includeInactive)
+	if err != nil {
+		if errors.Is(err, ErrPresetInvalid) {
+			apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))
+			return
+		}
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) createIntakePreset(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		Kind  string `json:"kind"`
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
+		return
+	}
+	item, err := h.svc.CreateIntakePreset(r.Context(), claims.TenantID, req.Kind, req.Label)
+	if err != nil {
+		writePresetErr(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, item)
+}
+
+func (h *Handler) updateIntakePreset(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		Label    *string `json:"label"`
+		IsActive *bool   `json:"is_active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
+		return
+	}
+	item, err := h.svc.UpdateIntakePreset(r.Context(), claims.TenantID, id, req.Label, req.IsActive)
+	if err != nil {
+		writePresetErr(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) deleteIntakePreset(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if err := h.svc.DeleteIntakePreset(r.Context(), claims.TenantID, id); err != nil {
+		writePresetErr(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writePresetErr(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, ErrPresetNotFound):
+		apierrors.Write(w, http.StatusNotFound, "NOT_FOUND", err.Error(), httpx.CorrelationID(r.Context()))
+	case errors.Is(err, ErrPresetConflict):
+		apierrors.Write(w, http.StatusConflict, "CONFLICT", err.Error(), httpx.CorrelationID(r.Context()))
+	case errors.Is(err, ErrPresetInvalid):
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))
+	default:
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+	}
 }

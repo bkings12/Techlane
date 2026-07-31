@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useBranch } from "../branch/BranchContext";
@@ -11,6 +10,7 @@ import {
   createCustomer,
   intakeRepair,
   listCustomers,
+  listIntakePresets,
   listRepairs,
   openIntakeSlip,
   uploadRepairAttachment,
@@ -29,11 +29,12 @@ const STAGES: { value: string; label: string; hint: string }[] = [
   { value: "overdue", label: "Overdue", hint: "Past promise" },
   { value: "collected", label: "Collected", hint: "Handed back" },
   { value: "", label: "All", hint: "Every job" },
-]
+];
 
 const WALK_IN_VALUE = "__walk_in__";
 
-const COMMON_ISSUES: ComboOption[] = [
+/** Fallback only if the presets API is unreachable — primary source is listIntakePresets. */
+const FALLBACK_ISSUES: ComboOption[] = [
   { value: "Screen cracked", label: "Screen cracked" },
   { value: "Won't charge", label: "Won't charge" },
   { value: "No power", label: "No power" },
@@ -43,6 +44,16 @@ const COMMON_ISSUES: ComboOption[] = [
   { value: "Camera not working", label: "Camera not working" },
   { value: "Software / boot loop", label: "Software / boot loop" },
   { value: "Charging port damaged", label: "Charging port damaged" },
+];
+
+const FALLBACK_CONDITION_TAGS = [
+  "Back cover missing",
+  "Screen scratches",
+  "Powers on",
+  "Does not power on",
+  "Liquid marks",
+  "Bent frame",
+  "Missing screws",
 ];
 
 // TODO: back with real recent-devices query
@@ -60,16 +71,9 @@ const RECENT_DEVICES: ComboOption[] = [
   { value: "Lenovo|ThinkPad", label: "Lenovo ThinkPad", sublabel: "laptop" },
 ];
 
-const CONDITION_TAGS = [
-  "Back cover missing",
-  "Screen scratches",
-  "Powers on",
-  "Does not power on",
-  "Liquid marks",
-  "Bent frame",
-  "Missing screws",
-];
+const DEVICE_KINDS = ["phone", "laptop", "tablet", "other"] as const;
 
+type DeviceKind = (typeof DEVICE_KINDS)[number];
 type PendingPhoto = { file: File; preview: string };
 
 function jobAge(createdAt?: string) {
@@ -155,7 +159,6 @@ export function RepairsPage() {
   const [allOpen, setAllOpen] = useState<RepairJob[]>([]);
   const [collectedCount, setCollectedCount] = useState(0);
   const [error, setError] = useState("");
-  const [showForm, setShowForm] = useState(false);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState(() => {
     const raw = searchParams.get("status") ?? "open";
@@ -202,20 +205,6 @@ export function RepairsPage() {
     void refresh();
   });
 
-  useEffect(() => {
-    if (!showForm) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setShowForm(false);
-    };
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.body.style.overflow = prev;
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [showForm]);
-
   const pulse: Record<string, number> = {
     open: allOpen.length,
     waiting_parts: allOpen.filter((j) => j.status === "waiting_parts").length,
@@ -230,16 +219,16 @@ export function RepairsPage() {
 
   return (
     <div className="jobs-desk">
-      <PageHeader
-        title="Jobs"
-        subtitle="Find a job on the board, or take a new device in."
-        actions={
-          <Button type="button" onClick={() => setShowForm(true)}>
-            New job
-          </Button>
-        }
-      />
+      <PageHeader title="Jobs" subtitle="Take a device in above, then find work on the board below." />
       {error ? <p className="form-error">{error}</p> : null}
+
+      <QuickIntake
+        branchId={branchId}
+        userId={user?.id}
+        onCreated={() => {
+          void refresh();
+        }}
+      />
 
       <section className="jobs-stages" aria-label="Job stages">
         {STAGES.map((stage) => {
@@ -292,8 +281,8 @@ export function RepairsPage() {
               title="No jobs here"
               body={
                 status === "open"
-                  ? "Nothing open on this branch. Take a device in to get started."
-                  : "Try another stage, clear search, or take a new job in."
+                  ? "Nothing open on this branch. Use intake above to take a device in."
+                  : "Try another stage or clear search."
               }
               icon={ICONS.repairs}
             />
@@ -310,9 +299,6 @@ export function RepairsPage() {
                   Show open jobs
                 </Button>
               ) : null}
-              <Button type="button" onClick={() => setShowForm(true)}>
-                New job
-              </Button>
             </div>
           </div>
         ) : (
@@ -349,30 +335,6 @@ export function RepairsPage() {
           </ul>
         )}
       </section>
-
-      {showForm
-        ? createPortal(
-            <div className="jobs-intake-portal" role="presentation">
-              <button
-                type="button"
-                className="jobs-intake-backdrop"
-                aria-label="Close intake"
-                onClick={() => setShowForm(false)}
-              />
-              <aside className="jobs-intake" aria-label="New job" role="dialog" aria-modal="true">
-                <QuickIntake
-                  branchId={branchId}
-                  userId={user?.id}
-                  onClose={() => setShowForm(false)}
-                  onCreated={() => {
-                    void refresh();
-                  }}
-                />
-              </aside>
-            </div>,
-            document.body,
-          )
-        : null}
     </div>
   );
 }
@@ -380,15 +342,16 @@ export function RepairsPage() {
 function QuickIntake({
   branchId,
   userId,
-  onClose,
   onCreated,
 }: {
   branchId: string;
   userId?: string;
-  onClose: () => void;
   onCreated: () => void;
 }) {
   const { formatMoney } = useCurrency();
+  const [pickQuery, setPickQuery] = useState("");
+  const [recentCustomers, setRecentCustomers] = useState<Customer[]>([]);
+
   const [customerValue, setCustomerValue] = useState("");
   const [customerOptions, setCustomerOptions] = useState<ComboOption[]>([
     { value: WALK_IN_VALUE, label: "Walk-in (no record)", sublabel: "Anonymous check-in" },
@@ -398,14 +361,15 @@ function QuickIntake({
   const [customerPhone, setCustomerPhone] = useState("");
   const [anonymous, setAnonymous] = useState(false);
 
-  const [deviceKind, setDeviceKind] = useState<"phone" | "laptop" | "tablet" | "other">("phone");
+  const [deviceKind, setDeviceKind] = useState<DeviceKind>("phone");
   const [deviceValue, setDeviceValue] = useState("");
   const [brand, setBrand] = useState("");
   const [model, setModel] = useState("");
   const [imei, setImei] = useState("");
 
   const [issueValue, setIssueValue] = useState("");
-  const [issueOptions, setIssueOptions] = useState<ComboOption[]>(COMMON_ISSUES);
+  const [issueOptions, setIssueOptions] = useState<ComboOption[]>(FALLBACK_ISSUES);
+  const [conditionCatalog, setConditionCatalog] = useState<string[]>(FALLBACK_CONDITION_TAGS);
   const [problem, setProblem] = useState("");
 
   const [toDiagnose, setToDiagnose] = useState(true);
@@ -416,12 +380,61 @@ function QuickIntake({
   const [devicePhoto, setDevicePhoto] = useState<PendingPhoto | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [created, setCreated] = useState<IntakeResult | null>(null);
+  const [last, setLast] = useState<IntakeResult | null>(null);
   const [actionMsg, setActionMsg] = useState("");
+
+  useEffect(() => {
+    listCustomers()
+      .then((r) => setRecentCustomers((r.items ?? []).slice(0, 12)))
+      .catch(() => setRecentCustomers([]));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      listIntakePresets("issue"),
+      listIntakePresets("condition_tag"),
+    ])
+      .then(([issues, tags]) => {
+        if (cancelled) return;
+        const issueItems = (issues.items ?? []).map((p) => ({ value: p.label, label: p.label }));
+        const tagItems = (tags.items ?? []).map((p) => p.label);
+        if (issueItems.length) setIssueOptions(issueItems);
+        if (tagItems.length) setConditionCatalog(tagItems);
+      })
+      .catch(() => {
+        /* keep FALLBACK_* so intake still works if presets are briefly down */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const deviceOptions = useMemo(() => {
     return RECENT_DEVICES.filter((d) => !d.sublabel || d.sublabel === deviceKind || deviceKind === "other");
   }, [deviceKind]);
+
+  const needle = pickQuery.trim().toLowerCase();
+
+  const visibleCustomers = useMemo(() => {
+    const walkIn = { id: WALK_IN_VALUE, full_name: "Walk-in", phone: "No record" };
+    const list = [walkIn, ...recentCustomers.map((c) => ({ id: c.id, full_name: c.full_name, phone: c.phone || "No phone" }))];
+    if (!needle) return list.slice(0, 8);
+    return list
+      .filter((c) => `${c.full_name} ${c.phone}`.toLowerCase().includes(needle))
+      .slice(0, 12);
+  }, [recentCustomers, needle]);
+
+  const visibleDevices = useMemo(() => {
+    const list = deviceOptions;
+    if (!needle) return list.slice(0, 8);
+    return list.filter((d) => d.label.toLowerCase().includes(needle)).slice(0, 12);
+  }, [deviceOptions, needle]);
+
+  const visibleIssues = useMemo(() => {
+    if (!needle) return issueOptions;
+    return issueOptions.filter((i) => i.label.toLowerCase().includes(needle));
+  }, [needle, issueOptions]);
 
   const canSubmit =
     Boolean(branchId) &&
@@ -429,6 +442,12 @@ function QuickIntake({
     Boolean(deviceKind) &&
     (anonymous || Boolean(customerValue)) &&
     (!toDiagnose ? Number(amount) > 0 : true);
+
+  const estimateLabel = toDiagnose
+    ? "To diagnose"
+    : Number(amount) > 0
+      ? formatMoney(Number(amount))
+      : "—";
 
   const searchCustomers = useCallback((query: string) => {
     const q = query.trim();
@@ -462,6 +481,7 @@ function QuickIntake({
 
   function onCustomerSelect(opt: ComboOption) {
     setCustomerValue(opt.value);
+    setLast(null);
     if (!opt.value) {
       setAnonymous(false);
       return;
@@ -477,8 +497,24 @@ function QuickIntake({
     setCustomerPhone(opt.sublabel && opt.sublabel !== "No phone" ? opt.sublabel : "");
   }
 
+  function pickCustomer(id: string, name: string, phone: string) {
+    onCustomerSelect({
+      value: id,
+      label: name,
+      sublabel: phone,
+    });
+    if (id !== WALK_IN_VALUE) {
+      setCustomerOptions((prev) => {
+        const walk = prev[0] ?? { value: WALK_IN_VALUE, label: "Walk-in (no record)", sublabel: "Anonymous check-in" };
+        const opt = { value: id, label: name, sublabel: phone };
+        return [walk, opt, ...prev.slice(1).filter((p) => p.value !== id)];
+      });
+    }
+  }
+
   function onDeviceSelect(opt: ComboOption) {
     setDeviceValue(opt.value);
+    setLast(null);
     if (!opt.value) {
       setBrand("");
       setModel("");
@@ -492,10 +528,41 @@ function QuickIntake({
   function onIssueSelect(opt: ComboOption) {
     setIssueValue(opt.value);
     setProblem(opt.label || opt.value);
+    setLast(null);
   }
 
   function toggleTag(tag: string) {
     setConditionTags((cur) => (cur.includes(tag) ? cur.filter((t) => t !== tag) : [...cur, tag]));
+    setLast(null);
+  }
+
+  function clearTicket() {
+    setCustomerValue("");
+    setCustomerName("");
+    setCustomerPhone("");
+    setAnonymous(false);
+    setDeviceKind("phone");
+    setDeviceValue("");
+    setBrand("");
+    setModel("");
+    setImei("");
+    setIssueValue("");
+    setProblem("");
+    setToDiagnose(true);
+    setAmount("");
+    setConditionTags([]);
+    setAssignMe(true);
+    setImeiPhoto((prev) => {
+      if (prev) URL.revokeObjectURL(prev.preview);
+      return null;
+    });
+    setDevicePhoto((prev) => {
+      if (prev) URL.revokeObjectURL(prev.preview);
+      return null;
+    });
+    setErr("");
+    setActionMsg("");
+    setLast(null);
   }
 
   async function onImeiPhoto(file: File) {
@@ -504,6 +571,7 @@ function QuickIntake({
       if (prev) URL.revokeObjectURL(prev.preview);
       return { file, preview };
     });
+    setLast(null);
     const scanned = await tryReadImeiFromPhoto(file);
     if (scanned) setImei(scanned);
   }
@@ -514,6 +582,7 @@ function QuickIntake({
       if (prev) URL.revokeObjectURL(prev.preview);
       return { file, preview };
     });
+    setLast(null);
   }
 
   async function submit(e: FormEvent) {
@@ -572,7 +641,30 @@ function QuickIntake({
         );
       }
       if (uploads.length) await Promise.all(uploads);
-      setCreated(result);
+
+      // Keep the page open for the next walk-in — mirror POS clearing the cart after checkout.
+      setLast(result);
+      setCustomerValue("");
+      setCustomerName("");
+      setCustomerPhone("");
+      setAnonymous(false);
+      setDeviceValue("");
+      setBrand("");
+      setModel("");
+      setImei("");
+      setIssueValue("");
+      setProblem("");
+      setToDiagnose(true);
+      setAmount("");
+      setConditionTags([]);
+      setImeiPhoto((prev) => {
+        if (prev) URL.revokeObjectURL(prev.preview);
+        return null;
+      });
+      setDevicePhoto((prev) => {
+        if (prev) URL.revokeObjectURL(prev.preview);
+        return null;
+      });
       onCreated();
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Failed");
@@ -581,274 +673,349 @@ function QuickIntake({
     }
   }
 
-  if (created) {
-    const job = created.repair;
-    return (
-      <div className="jobs-intake-form jobs-intake-success">
-        <header className="jobs-intake-head">
-          <div>
-            <p className="jobs-intake-kicker">Job created</p>
-            <h2>{job.job_code}</h2>
-          </div>
-          <button type="button" className="jobs-intake-close" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </header>
-        <div className="jobs-intake-body">
-          <div className="action-block" style={{ margin: 0 }}>
-            <p className="muted">Last intake</p>
-            <dl className="meta-dl">
-              <dt>Status</dt>
-              <dd>
-                <Badge tone="success">{statusLabel(job.status)}</Badge>
-              </dd>
-              <dt>Device</dt>
-              <dd>{deviceLabel(job)}</dd>
-              <dt>Issue</dt>
-              <dd>{job.problem_summary}</dd>
-              <dt>Price</dt>
-              <dd>
-                {(job.labor_amount ?? 0) > 0 ? formatMoney(job.labor_amount ?? 0) : "To be diagnosed"}
-              </dd>
-              {job.pickup_code ? (
-                <>
-                  <dt>Pickup code</dt>
-                  <dd className="mono">{job.pickup_code}</dd>
-                </>
-              ) : null}
-            </dl>
-            <div className="chip-row" style={{ marginTop: "0.6rem" }}>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() =>
-                  void openIntakeSlip(job.id).catch((e) =>
-                    setActionMsg(e instanceof Error ? e.message : "Print failed"),
-                  )
-                }
-              >
-                Print slip
-              </Button>
-              {userId ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() =>
-                    void assignRepair(job.id, userId)
-                      .then(() => setActionMsg("Assigned to you"))
-                      .catch((e) => setActionMsg(e instanceof Error ? e.message : "Assign failed"))
-                  }
-                >
-                  Assign to me
-                </Button>
-              ) : null}
-              <Link className="btn btn-ghost" to={`/repairs/${job.id}`} onClick={onClose}>
-                Open job
-              </Link>
-            </div>
-            {actionMsg ? <p className="hint">{actionMsg}</p> : null}
-          </div>
-        </div>
-        <footer className="jobs-intake-foot">
-          <Button type="button" onClick={onClose}>
-            Done
-          </Button>
-        </footer>
-      </div>
-    );
-  }
+  const ticketFilled =
+    Boolean(customerValue) || Boolean(brand) || Boolean(model) || Boolean(problem) || conditionTags.length > 0;
 
   return (
-    <form className="jobs-intake-form jobs-intake-compact" onSubmit={(e) => void submit(e)}>
-      <header className="jobs-intake-head">
-        <div>
-          <p className="jobs-intake-kicker">New job</p>
-          <h2>Quick intake</h2>
-        </div>
-        <button type="button" className="jobs-intake-close" onClick={onClose} aria-label="Close">
-          ×
-        </button>
-      </header>
-
-      <div className="jobs-intake-body">
-        <p className="hint jobs-intake-lead">One form — search or add as you go, then create the job.</p>
-
-        <SearchableCombobox
-          label="Customer"
-          placeholder="Search name or phone…"
-          options={customerOptions}
-          onSearch={searchCustomers}
-          value={customerValue}
-          loading={customerSearching}
-          onSelect={onCustomerSelect}
-          addNewFields={{ primary: "Full name", secondary: "Phone number" }}
-          onAddNew={async ({ primary, secondary }) => {
-            const c = await createCustomer({
-              full_name: primary,
-              phone: secondary || undefined,
-            });
-            const opt = { value: c.id, label: c.full_name, sublabel: c.phone || "No phone" };
-            setCustomerOptions((prev) => [prev[0]!, opt, ...prev.slice(1).filter((p) => p.value !== c.id)]);
-            setCustomerName(c.full_name);
-            setCustomerPhone(c.phone ?? "");
-            setAnonymous(false);
-            return opt;
-          }}
-        />
-
-        <fieldset className="intake-kind">
-          <legend>Device kind</legend>
-          <div className="intake-kind-grid">
-            {(["phone", "laptop", "tablet", "other"] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                className={deviceKind === k ? "active" : ""}
-                onClick={() => {
-                  setDeviceKind(k);
-                  setDeviceValue("");
-                }}
-              >
-                {k}
-              </button>
-            ))}
+    <div className="repair-grid" style={{ marginBottom: "1.25rem" }}>
+      <section className="panel" style={{ padding: "0.85rem" }}>
+        <div className="panel-head">
+          <div>
+            <h2>Quick pick</h2>
+            <span className="muted">Tap a tile to fill the ticket — same as adding to a POS cart</span>
           </div>
-        </fieldset>
-
-        <SearchableCombobox
-          label="Device"
-          placeholder="Brand and model…"
-          options={deviceOptions}
-          value={deviceValue}
-          onSelect={onDeviceSelect}
-          addNewFields={{ primary: "Brand", secondary: "Model" }}
-          onAddNew={async ({ primary, secondary }) => {
-            const brandName = primary.trim();
-            const modelName = (secondary ?? "").trim() || "Unknown";
-            const opt = {
-              value: `${brandName}|${modelName}`,
-              label: `${brandName} ${modelName}`.trim(),
-              sublabel: deviceKind,
-            };
-            setBrand(brandName);
-            setModel(modelName);
-            return opt;
-          }}
-        />
-
-        <label>
-          {deviceKind === "phone" ? "IMEI" : "Serial number"}
-          <Input
-            value={imei}
-            onChange={(e) => setImei(e.target.value)}
-            className="mono"
-            placeholder={deviceKind === "phone" ? "Type or photograph the sticker" : "Serial / service tag"}
+          <SearchInput
+            value={pickQuery}
+            onChange={(e) => setPickQuery(e.target.value)}
+            placeholder="Filter customers, devices, issues…"
+            aria-label="Filter quick picks"
           />
-        </label>
+        </div>
 
-        <SearchableCombobox
-          label="Issue"
-          placeholder="What’s wrong?"
-          options={issueOptions}
-          value={issueValue}
-          onSelect={onIssueSelect}
-          addNewFields={{ primary: "Describe the issue" }}
-          onAddNew={async ({ primary }) => {
-            const opt = { value: primary, label: primary };
-            setIssueOptions((prev) => [opt, ...prev.filter((p) => p.value !== primary)]);
-            setProblem(primary);
-            return opt;
-          }}
-        />
-
-        <PhotoCaptureField
-          label={deviceKind === "phone" ? "IMEI / serial photo" : "Serial photo"}
-          hint="Photo of the sticker or barcode — scans when the browser can."
-          previewUrl={imeiPhoto?.preview}
-          onFile={(file) => void onImeiPhoto(file)}
-          onClear={() =>
-            setImeiPhoto((prev) => {
-              if (prev) URL.revokeObjectURL(prev.preview);
-              return null;
-            })
-          }
-        />
-        <PhotoCaptureField
-          label="Device condition photo"
-          hint="Cracks, missing parts, water marks."
-          previewUrl={devicePhoto?.preview}
-          onFile={(file) => void onDevicePhoto(file)}
-          onClear={() =>
-            setDevicePhoto((prev) => {
-              if (prev) URL.revokeObjectURL(prev.preview);
-              return null;
-            })
-          }
-        />
-
-        <fieldset className="intake-checklist">
-          <legend>Condition tags</legend>
-          <div className="intake-tag-row">
-            {CONDITION_TAGS.map((tag) => {
-              const on = conditionTags.includes(tag);
-              return (
+        <div className="pos-toolbar" style={{ marginTop: "0.75rem" }}>
+          <span className="muted">Device kind</span>
+          <fieldset className="intake-kind" style={{ margin: 0, flex: 1 }} aria-label="Device kind">
+            <div className="intake-kind-grid">
+              {DEVICE_KINDS.map((k) => (
                 <button
-                  key={tag}
+                  key={k}
                   type="button"
-                  className={`intake-tag${on ? " is-on" : ""}`}
-                  aria-pressed={on}
-                  onClick={() => toggleTag(tag)}
+                  className={deviceKind === k ? "active" : ""}
+                  onClick={() => {
+                    setDeviceKind(k);
+                    setDeviceValue("");
+                    setLast(null);
+                  }}
                 >
-                  {tag}
+                  {k}
                 </button>
-              );
-            })}
-          </div>
-        </fieldset>
+              ))}
+            </div>
+          </fieldset>
+        </div>
 
-        <div className="intake-amount-block">
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={toDiagnose}
-              onChange={(e) => {
-                setToDiagnose(e.target.checked);
-                if (e.target.checked) setAmount("");
+        <h3 className="intake-pick-heading">Customers</h3>
+        <ul className="pos-catalog-grid">
+          {visibleCustomers.map((c) => (
+            <li key={c.id}>
+              <button
+                type="button"
+                className={`pos-item${customerValue === c.id ? " is-selected" : ""}`}
+                onClick={() => pickCustomer(c.id, c.full_name, c.phone)}
+              >
+                <strong>{c.full_name}</strong>
+                <span className="muted">{c.phone}</span>
+                <span className="pos-add-label">{customerValue === c.id ? "On ticket" : "Use customer"}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        <h3 className="intake-pick-heading">Devices</h3>
+        {visibleDevices.length === 0 ? (
+          <p className="muted">No device presets for this kind — type brand/model on the ticket.</p>
+        ) : (
+          <ul className="pos-catalog-grid">
+            {visibleDevices.map((d) => (
+              <li key={d.value}>
+                <button
+                  type="button"
+                  className={`pos-item${deviceValue === d.value ? " is-selected" : ""}`}
+                  onClick={() => onDeviceSelect(d)}
+                >
+                  <strong>{d.label}</strong>
+                  <span className="muted">{d.sublabel ?? deviceKind}</span>
+                  <span className="pos-add-label">{deviceValue === d.value ? "On ticket" : "Use device"}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <h3 className="intake-pick-heading">Common issues</h3>
+        <ul className="pos-catalog-grid">
+          {visibleIssues.map((issue) => (
+            <li key={issue.value}>
+              <button
+                type="button"
+                className={`pos-item${issueValue === issue.value ? " is-selected" : ""}`}
+                onClick={() => onIssueSelect(issue)}
+              >
+                <strong>{issue.label}</strong>
+                <span className="pos-add-label">{issueValue === issue.value ? "On ticket" : "Use issue"}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <aside className="stack">
+        <section className="panel" style={{ padding: "0.85rem" }}>
+          <div className="panel-head">
+            <div>
+              <h2>
+                Ticket{" "}
+                <small className="muted">{ticketFilled ? "in progress" : "empty"}</small>
+              </h2>
+            </div>
+            {ticketFilled ? (
+              <button type="button" className="cart-clear" onClick={clearTicket}>
+                Clear
+              </button>
+            ) : null}
+          </div>
+
+          <form className="stack-form" onSubmit={(e) => void submit(e)}>
+            <SearchableCombobox
+              label="Customer"
+              placeholder="Search name or phone…"
+              options={customerOptions}
+              onSearch={searchCustomers}
+              value={customerValue}
+              loading={customerSearching}
+              onSelect={onCustomerSelect}
+              addNewFields={{ primary: "Full name", secondary: "Phone number" }}
+              onAddNew={async ({ primary, secondary }) => {
+                const c = await createCustomer({
+                  full_name: primary,
+                  phone: secondary || undefined,
+                });
+                const opt = { value: c.id, label: c.full_name, sublabel: c.phone || "No phone" };
+                setCustomerOptions((prev) => [prev[0]!, opt, ...prev.slice(1).filter((p) => p.value !== c.id)]);
+                setCustomerName(c.full_name);
+                setCustomerPhone(c.phone ?? "");
+                setAnonymous(false);
+                setRecentCustomers((prev) => [c, ...prev.filter((x) => x.id !== c.id)].slice(0, 12));
+                setLast(null);
+                return opt;
               }}
             />
-            To be diagnosed
-          </label>
-          <label>
-            Amount (KES)
-            <Input
-              type="number"
-              min={1}
-              step="1"
-              value={amount}
-              disabled={toDiagnose}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder={toDiagnose ? "Diagnose first" : "Agreed price"}
+
+            <SearchableCombobox
+              label="Device"
+              placeholder="Brand and model…"
+              options={deviceOptions}
+              value={deviceValue}
+              onSelect={onDeviceSelect}
+              addNewFields={{ primary: "Brand", secondary: "Model" }}
+              onAddNew={async ({ primary, secondary }) => {
+                const brandName = primary.trim();
+                const modelName = (secondary ?? "").trim() || "Unknown";
+                const opt = {
+                  value: `${brandName}|${modelName}`,
+                  label: `${brandName} ${modelName}`.trim(),
+                  sublabel: deviceKind,
+                };
+                setBrand(brandName);
+                setModel(modelName);
+                setLast(null);
+                return opt;
+              }}
             />
-          </label>
-        </div>
 
-        <label className="checkbox-row">
-          <input type="checkbox" checked={assignMe} onChange={(e) => setAssignMe(e.target.checked)} />
-          Assign to me
-        </label>
+            <label>
+              {deviceKind === "phone" ? "IMEI" : "Serial number"}
+              <Input
+                value={imei}
+                onChange={(e) => {
+                  setImei(e.target.value);
+                  setLast(null);
+                }}
+                className="mono"
+                placeholder={deviceKind === "phone" ? "Type or photograph the sticker" : "Serial / service tag"}
+              />
+            </label>
 
-        {err ? <p className="form-error">{err}</p> : null}
-      </div>
+            <SearchableCombobox
+              label="Issue"
+              placeholder="What’s wrong?"
+              options={issueOptions}
+              value={issueValue}
+              onSelect={onIssueSelect}
+              addNewFields={{ primary: "Describe the issue" }}
+              onAddNew={async ({ primary }) => {
+                const opt = { value: primary, label: primary };
+                setIssueOptions((prev) => [opt, ...prev.filter((p) => p.value !== primary)]);
+                setProblem(primary);
+                setLast(null);
+                return opt;
+              }}
+            />
 
-      <footer className="jobs-intake-foot">
-        <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={busy || !canSubmit}>
-          {busy ? "Creating…" : "Create job"}
-        </Button>
-      </footer>
-    </form>
+            <PhotoCaptureField
+              label={deviceKind === "phone" ? "IMEI / serial photo" : "Serial photo"}
+              hint="Photo of the sticker or barcode — scans when the browser can."
+              previewUrl={imeiPhoto?.preview}
+              onFile={(file) => void onImeiPhoto(file)}
+              onClear={() =>
+                setImeiPhoto((prev) => {
+                  if (prev) URL.revokeObjectURL(prev.preview);
+                  return null;
+                })
+              }
+            />
+            <PhotoCaptureField
+              label="Device condition photo"
+              hint="Cracks, missing parts, water marks."
+              previewUrl={devicePhoto?.preview}
+              onFile={(file) => void onDevicePhoto(file)}
+              onClear={() =>
+                setDevicePhoto((prev) => {
+                  if (prev) URL.revokeObjectURL(prev.preview);
+                  return null;
+                })
+              }
+            />
+
+            <fieldset className="intake-checklist">
+              <legend>Condition tags</legend>
+              <div className="intake-tag-row">
+                {conditionCatalog.map((tag) => {
+                  const on = conditionTags.includes(tag);
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`intake-tag${on ? " is-on" : ""}`}
+                      aria-pressed={on}
+                      onClick={() => toggleTag(tag)}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+
+            <div className="intake-amount-block">
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={toDiagnose}
+                  onChange={(e) => {
+                    setToDiagnose(e.target.checked);
+                    if (e.target.checked) setAmount("");
+                    setLast(null);
+                  }}
+                />
+                To be diagnosed
+              </label>
+              <label>
+                Amount (KES)
+                <Input
+                  type="number"
+                  min={1}
+                  step="1"
+                  value={amount}
+                  disabled={toDiagnose}
+                  onChange={(e) => {
+                    setAmount(e.target.value);
+                    setLast(null);
+                  }}
+                  placeholder={toDiagnose ? "Diagnose first" : "Agreed price"}
+                />
+              </label>
+            </div>
+
+            <label className="checkbox-row">
+              <input type="checkbox" checked={assignMe} onChange={(e) => setAssignMe(e.target.checked)} />
+              Assign to me
+            </label>
+
+            {err ? <p className="form-error">{err}</p> : null}
+
+            <div className="pos-total">
+              <span className="muted">Estimate</span>
+              <strong>{estimateLabel}</strong>
+            </div>
+            <Button type="submit" disabled={busy || !canSubmit}>
+              {busy ? "Creating…" : "Create job"}
+            </Button>
+          </form>
+        </section>
+
+        {last ? (
+          <section className="panel" style={{ padding: "0.85rem" }}>
+            <div className="action-block" style={{ margin: 0, paddingTop: 0, borderTop: 0 }}>
+              <p className="muted">Last intake</p>
+              <dl className="meta-dl">
+                <dt>Job</dt>
+                <dd className="mono">{last.repair.job_code}</dd>
+                <dt>Status</dt>
+                <dd>
+                  <Badge tone="success">{statusLabel(last.repair.status)}</Badge>
+                </dd>
+                <dt>Device</dt>
+                <dd>{deviceLabel(last.repair)}</dd>
+                <dt>Issue</dt>
+                <dd>{last.repair.problem_summary}</dd>
+                <dt>Price</dt>
+                <dd>
+                  {(last.repair.labor_amount ?? 0) > 0
+                    ? formatMoney(last.repair.labor_amount ?? 0)
+                    : "To be diagnosed"}
+                </dd>
+                {last.repair.pickup_code ? (
+                  <>
+                    <dt>Pickup code</dt>
+                    <dd className="mono">{last.repair.pickup_code}</dd>
+                  </>
+                ) : null}
+              </dl>
+              <div className="chip-row" style={{ marginTop: "0.6rem" }}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    void openIntakeSlip(last.repair.id).catch((e) =>
+                      setActionMsg(e instanceof Error ? e.message : "Print failed"),
+                    )
+                  }
+                >
+                  Print slip
+                </Button>
+                {userId ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() =>
+                      void assignRepair(last.repair.id, userId)
+                        .then(() => setActionMsg("Assigned to you"))
+                        .catch((e) => setActionMsg(e instanceof Error ? e.message : "Assign failed"))
+                    }
+                  >
+                    Assign to me
+                  </Button>
+                ) : null}
+                <Link className="btn btn-ghost" to={`/repairs/${last.repair.id}`}>
+                  Open job
+                </Link>
+              </div>
+              {actionMsg ? <p className="hint">{actionMsg}</p> : null}
+            </div>
+          </section>
+        ) : null}
+      </aside>
+    </div>
   );
 }
-

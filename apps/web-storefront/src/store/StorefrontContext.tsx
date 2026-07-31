@@ -216,6 +216,7 @@ export function StorefrontProvider({ children }: { children: ReactNode }) {
     setError("");
     try {
       const [cat, cms] = await Promise.all([
+        // TODO: move to server-side pagination if catalog size becomes a performance problem
         listCatalog(branch.location_id),
         getStorefrontContent(branch.location_id).catch(() => null),
       ]);

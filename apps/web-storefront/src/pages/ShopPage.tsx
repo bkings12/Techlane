@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useStorefront } from "../store/StorefrontContext";
 import { ProductCard } from "../components/ProductCard";
@@ -44,10 +44,30 @@ function buildShopCategoryTree(
   return roots;
 }
 
+/** Compact windowed page list: 1 … 4 5 [6] 7 8 … 20 */
+function pageWindow(current: number, total: number): Array<number | "ellipsis"> {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages = new Set<number>();
+  pages.add(1);
+  pages.add(total);
+  for (let p = current - 2; p <= current + 2; p++) {
+    if (p >= 1 && p <= total) pages.add(p);
+  }
+  const sorted = [...pages].sort((a, b) => a - b);
+  const out: Array<number | "ellipsis"> = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const n = sorted[i]!;
+    if (i > 0 && n - sorted[i - 1]! > 1) out.push("ellipsis");
+    out.push(n);
+  }
+  return out;
+}
+
 type SortKey = "popular" | "name" | "price-asc" | "price-desc" | "newest";
 
 export function ShopPage() {
   const { catalog, content, loadingShop, error, formatPrice } = useStorefront();
+  // TODO: move to server-side pagination if catalog size becomes a performance problem
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
   const brandFilter = searchParams.get("brand") ?? "";
@@ -57,6 +77,7 @@ export function ShopPage() {
   const [brandSearch, setBrandSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("popular");
   const [pageSize, setPageSize] = useState(15);
+  const [page, setPage] = useState(1);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [openWidgets, setOpenWidgets] = useState<Record<string, boolean>>({
     categories: true,
@@ -66,6 +87,7 @@ export function ShopPage() {
   });
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
   const [bannerIdx, setBannerIdx] = useState(0);
+  const catalogRef = useRef<HTMLDivElement>(null);
 
   const brands = useMemo(() => {
     const counts = new Map<string, number>();
@@ -121,6 +143,10 @@ export function ShopPage() {
     return () => window.clearInterval(t);
   }, [shopBanners.length]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [query, brandFilter, categoryFilter, minPrice, maxPrice, sort, pageSize]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const min = minPrice ? Number(minPrice) : undefined;
@@ -155,7 +181,17 @@ export function ShopPage() {
     return list;
   }, [catalog, query, brandFilter, categoryFilter, minPrice, maxPrice, sort]);
 
-  const visible = filtered.slice(0, pageSize);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const rangeStart = filtered.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const rangeEnd = Math.min(filtered.length, safePage * pageSize);
+  const visible = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  function goToPage(next: number) {
+    const clamped = Math.max(1, Math.min(totalPages, next));
+    setPage(clamped);
+    catalogRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   function setParam(key: string, value: string) {
     const next = new URLSearchParams(searchParams);
@@ -369,7 +405,7 @@ export function ShopPage() {
           <div className="shop-head">
             <h2 className="shop-title">{heading}</h2>
             <p className="shop-count">
-              Showing {visible.length === 0 ? 0 : 1}–{visible.length} of {filtered.length} results
+              Showing {rangeStart}–{rangeEnd} of {filtered.length} results
             </p>
           </div>
 
@@ -404,13 +440,13 @@ export function ShopPage() {
 
           {error ? <p className="error">{error}</p> : null}
           {loadingShop ? (
-            <div className="catalog limupa-catalog">
+            <div className="catalog limupa-catalog" ref={catalogRef}>
               <div className="skeleton" style={{ minHeight: "14rem" }} />
               <div className="skeleton" style={{ minHeight: "14rem" }} />
               <div className="skeleton" style={{ minHeight: "14rem" }} />
             </div>
           ) : filtered.length === 0 ? (
-            <div className="empty-state">
+            <div className="empty-state" ref={catalogRef}>
               <strong>{catalog.length === 0 ? "No products yet" : "No matches"}</strong>
               <p>
                 {catalog.length === 0
@@ -419,11 +455,55 @@ export function ShopPage() {
               </p>
             </div>
           ) : (
-            <div className="catalog limupa-catalog">
-              {visible.map((item) => (
-                <ProductCard key={item.variant_id} item={item} />
-              ))}
-            </div>
+            <>
+              <div className="catalog limupa-catalog" ref={catalogRef}>
+                {visible.map((item) => (
+                  <ProductCard key={item.variant_id} item={item} />
+                ))}
+              </div>
+              {totalPages > 1 ? (
+                <nav className="shop-pagination" aria-label="Product pages">
+                  <button
+                    type="button"
+                    className="shop-page-btn"
+                    disabled={safePage <= 1}
+                    onClick={() => goToPage(safePage - 1)}
+                  >
+                    Previous
+                  </button>
+                  <div className="shop-page-numbers">
+                    {pageWindow(safePage, totalPages).map((item, idx) =>
+                      item === "ellipsis" ? (
+                        <span key={`e-${idx}`} className="shop-page-ellipsis" aria-hidden="true">
+                          …
+                        </span>
+                      ) : (
+                        <button
+                          key={item}
+                          type="button"
+                          className={`shop-page-btn${item === safePage ? " is-active" : ""}`}
+                          aria-current={item === safePage ? "page" : undefined}
+                          onClick={() => goToPage(item)}
+                        >
+                          {item}
+                        </button>
+                      ),
+                    )}
+                  </div>
+                  <span className="shop-page-status">
+                    Page {safePage} of {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="shop-page-btn"
+                    disabled={safePage >= totalPages}
+                    onClick={() => goToPage(safePage + 1)}
+                  >
+                    Next
+                  </button>
+                </nav>
+              ) : null}
+            </>
           )}
         </section>
       </div>

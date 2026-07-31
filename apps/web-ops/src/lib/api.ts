@@ -1358,6 +1358,35 @@ export function deleteRole(id: string) {
   return api<void>(`/roles/${id}`, { method: "DELETE" });
 }
 
+export type IntakePreset = {
+  id: string;
+  kind: "condition_tag" | "issue" | string;
+  label: string;
+  sort_order: number;
+  is_system: boolean;
+  is_active: boolean;
+};
+
+export function listIntakePresets(kind?: string, opts?: { includeInactive?: boolean }) {
+  const q = new URLSearchParams();
+  if (kind) q.set("kind", kind);
+  if (opts?.includeInactive) q.set("include_inactive", "true");
+  const qs = q.toString();
+  return api<{ items: IntakePreset[] }>(`/repairs/intake-presets${qs ? `?${qs}` : ""}`);
+}
+
+export function createIntakePreset(body: { kind: string; label: string }) {
+  return api<IntakePreset>("/repairs/intake-presets", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateIntakePreset(id: string, body: { label?: string; is_active?: boolean }) {
+  return api<IntakePreset>(`/repairs/intake-presets/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteIntakePreset(id: string) {
+  return api<void>(`/repairs/intake-presets/${id}`, { method: "DELETE" });
+}
+
 export function listPermissions() {
   return api<{ items: PermissionDef[] }>("/permissions");
 }

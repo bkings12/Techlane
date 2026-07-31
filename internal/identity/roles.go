@@ -107,6 +107,20 @@ func (s *Service) ensureSystemRolesForTenant(ctx context.Context, tenantID uuid.
 		if err != nil {
 			return err
 		}
+		// Top up missing defaults for existing system roles (new catalog entries).
+		if key == "owner" {
+			continue
+		}
+		for _, p := range authz.DefaultPermissions(key) {
+			if p == "*" {
+				continue
+			}
+			if _, err := s.pool.Exec(ctx, `
+				INSERT INTO identity.role_permissions (role_id, permission_code) VALUES ($1, $2)
+				ON CONFLICT DO NOTHING`, roleID, p); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

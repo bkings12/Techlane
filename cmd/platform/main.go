@@ -101,6 +101,9 @@ func main() {
 	repairSvc.SetCommissionHook(identity.RepairCommissionAdapter{Svc: idSvc})
 	repairSvc.SetCompletionHook(audit.RepairCompletionAdapter{Svc: auditSvc})
 	repairSvc.SetStockDeductor(inventory.RepairStockAdapter{Svc: invSvc})
+	if err := repairSvc.SeedSystemIntakePresets(ctx); err != nil {
+		log.Fatalf("intake presets seed: %v", err)
+	}
 	// Parts consumed on a job book their cost onto that job, whether they came from
 	// a supplier or off the shop's own shelf.
 	invSvc.SetJobCostHook(repair.PartCostAdapter{Svc: repairSvc})

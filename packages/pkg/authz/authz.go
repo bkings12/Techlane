@@ -116,6 +116,7 @@ func DefaultPermissions(role string) []string {
 			"users.read", "users.write", "roles.assign", "roles.write",
 			"repairs.create", "repairs.assign", "repairs.status.update", "repairs.collect", "repairs.close",
 			"repairs.authorize_work", "repairs.release_unverified", "repairs.passcode.read", "repairs.edit",
+			"repairs.presets.write",
 			// repairs.price.override stays owner-only via "*"; repairs.edit is manager-safe (reasoned + audited).
 			"parts.approve", "parts.collect", "parts.request", "cash.handover.confirm", "refunds.create", "refunds.approve",
 			"audit.read", "risk.read", "reports.read", "inventory.read", "inventory.adjust", "sales.create", "payments.initiate", "payments.read", "orders.confirm_paid",
