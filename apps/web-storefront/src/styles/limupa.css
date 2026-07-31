@@ -107,7 +107,7 @@
   }
 
   .header-middle-inner {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
       "logo actions"
       "search search";
@@ -289,6 +289,7 @@
   height: 50px;
   width: 100%;
   max-width: 34rem;
+  min-width: 0;
   overflow: visible;
   margin: 0 auto;
 }
@@ -1441,7 +1442,7 @@
 
   .li-side-banners {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     flex-direction: unset;
     gap: 0.65rem;
   }
@@ -1985,7 +1986,7 @@
 
 .li-static-banner .li-container {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
   gap: 1rem;
   align-items: stretch;
 }
@@ -2075,7 +2076,16 @@
 
 @media (max-width: 900px) {
   .footer-shipping {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .footer-shipping > * {
+    min-width: 0;
+  }
+
+  .shipping-text h2,
+  .shipping-text p {
+    overflow-wrap: anywhere;
   }
 }
 
@@ -2121,7 +2131,7 @@
 .limupa-footer .footer-middle {
   padding: 2.5rem 0 1.5rem;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
   gap: 1.5rem;
 }
 
@@ -2490,10 +2500,13 @@
   align-items: center;
   gap: 0.45rem;
   margin-top: 0.85rem;
+  min-width: 0;
 }
 
 .techno-shop .price-inputs input {
+  flex: 1 1 0;
   width: 100%;
+  min-width: 0;
   border: 1px solid #e5e5e5;
   border-radius: 2px;
   padding: 0.55rem 0.65rem;
@@ -2557,7 +2570,7 @@
 
 .techno-shop .best-seller-item {
   display: grid;
-  grid-template-columns: 3.5rem 1fr;
+  grid-template-columns: 3.5rem minmax(0, 1fr);
   gap: 0.75rem;
   align-items: center;
   padding: 0.55rem 0;
@@ -2614,7 +2627,7 @@
 
 .shop-banner-link {
   display: grid;
-  grid-template-columns: 1.2fr 1fr;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   min-height: 11rem;
   text-decoration: none;
   color: inherit;
@@ -2962,7 +2975,7 @@
 
 .fulfilment-options {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.55rem;
 }
 
@@ -2974,6 +2987,12 @@
   background: #fff;
   padding: 0.65rem 0.7rem;
   cursor: pointer;
+  min-width: 0;
+}
+
+.fulfilment-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .fulfilment-option.is-active {

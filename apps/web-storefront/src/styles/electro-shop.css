@@ -237,7 +237,7 @@
 
 .shop .price .price-inputs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.5rem;
   margin-top: 0.5rem;
 }
@@ -246,6 +246,7 @@
 .shop .price input[type="search"],
 .shop .shop-search input {
   width: 100%;
+  min-width: 0;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   padding: 0.55rem 0.85rem;

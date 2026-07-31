@@ -775,7 +775,7 @@ input {
 
 .account-auth-modes {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.35rem;
   padding: 0.3rem;
   margin-bottom: 1.1rem;
@@ -1653,7 +1653,11 @@ input {
 
 @media (max-width: 800px) {
   .footer-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .footer-grid > * {
+    min-width: 0;
   }
 }
 
@@ -1671,6 +1675,8 @@ input {
   text-decoration: none;
   padding: 0.25rem 0;
   opacity: 0.85;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .footer-grid a:hover {
@@ -1996,7 +2002,7 @@ input {
   padding: 0;
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
 }
 
 .locator-card {
@@ -2016,7 +2022,7 @@ input {
 
 .promo-tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
   gap: 1rem;
   padding: 1.5rem clamp(1rem, 4vw, 3rem) 0;
   max-width: 84rem;
@@ -2096,7 +2102,7 @@ input {
 
 .three-col-block {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
   gap: 2rem;
 }
 
@@ -2189,7 +2195,7 @@ input {
 
 .trust-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
   gap: 1.5rem;
   padding: 2rem clamp(1rem, 4vw, 3rem);
   border-top: 1px solid var(--line);
@@ -2530,7 +2536,7 @@ input {
   padding: 0;
   display: grid;
   gap: 1.25rem;
-  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
 }
 .locator-card {
   padding: 1.5rem;
