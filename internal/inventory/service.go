@@ -315,7 +315,8 @@ func (s *Service) ListStockLocations(ctx context.Context, tenantID uuid.UUID, br
 func (s *Service) ListPOSCatalog(ctx context.Context, tenantID uuid.UUID, locationID *uuid.UUID) ([]CatalogItem, error) {
 	q := `
 		SELECT v.id, v.product_id, p.name, p.brand, p.category, p.description, p.image_url, v.sku, v.sell_price::float8,
-		       COALESCE(b.available_qty, 0), COALESCE(b.location_id, '00000000-0000-0000-0000-000000000000'::uuid)
+		       COALESCE(b.available_qty, 0), COALESCE(b.location_id, '00000000-0000-0000-0000-000000000000'::uuid),
+		       (p.image_object_key IS NOT NULL OR p.image_bytes IS NOT NULL), p.image_updated_at
 		FROM inventory.product_variants v
 		JOIN inventory.products p ON p.id = v.product_id
 		LEFT JOIN inventory.inventory_balances b ON b.variant_id = v.id AND b.tenant_id = v.tenant_id`
@@ -338,11 +339,15 @@ func (s *Service) ListPOSCatalog(ctx context.Context, tenantID uuid.UUID, locati
 	for rows.Next() {
 		var it CatalogItem
 		var loc uuid.UUID
-		if err := rows.Scan(&it.VariantID, &it.ProductID, &it.ProductName, &it.Brand, &it.Category, &it.Description, &it.ImageURL, &it.SKU, &it.SellPrice, &it.AvailableQty, &loc); err != nil {
+		if err := rows.Scan(&it.VariantID, &it.ProductID, &it.ProductName, &it.Brand, &it.Category, &it.Description, &it.ImageURL, &it.SKU, &it.SellPrice, &it.AvailableQty, &loc, &it.HasImage, &it.ImageUpdated); err != nil {
 			return nil, err
 		}
 		if loc != uuid.Nil {
 			it.LocationID = loc
+		}
+		// Uploaded product photos take precedence over a free-text image_url.
+		if it.HasImage {
+			it.ImageURL = nil
 		}
 		items = append(items, it)
 	}

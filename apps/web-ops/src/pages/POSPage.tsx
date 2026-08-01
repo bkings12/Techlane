@@ -10,17 +10,14 @@ import {
   getPayment,
   getPaymentSettings,
   listPOSCatalog,
-  listSales,
   listStockLocations,
   listSuppliers,
   openSaleReceipt,
   posCheckout,
-  reverseSale,
   type CatalogItem,
   type PaymentProviderSettings,
   type POSCheckoutItem,
   type POSCheckoutResult,
-  type Sale,
   type StockLocation,
   type Supplier,
 } from "../lib/api";
@@ -46,13 +43,6 @@ function newLineId() {
   return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `line-${Date.now()}-${Math.random()}`;
 }
 
-function saleTone(status: string): "success" | "warning" | "danger" | "info" | "pending" {
-  if (status === "completed") return "success";
-  if (status === "reversed") return "danger";
-  if (status === "pending" || status === "awaiting_payment") return "pending";
-  return "info";
-}
-
 export function POSPage() {
   const { branchId, setBranchId, branches } = useBranch();
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
@@ -65,7 +55,6 @@ export function POSPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<POSCheckoutResult | null>(null);
-  const [sales, setSales] = useState<Sale[]>([]);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [cashReceived, setCashReceived] = useState("");
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -94,14 +83,6 @@ export function POSPage() {
     }
   }, []);
 
-  const refreshSales = useCallback(async () => {
-    const res = await listSales({
-      branch_id: branchId || undefined,
-      limit: 25,
-    });
-    setSales(res.items ?? []);
-  }, [branchId]);
-
   const refresh = useCallback(async () => {
     const [locs, pay, sup] = await Promise.all([
       listStockLocations(branchId || undefined),
@@ -116,8 +97,7 @@ export function POSPage() {
       if (prev && locs.items?.some((l) => l.id === prev)) return prev;
       return loc?.id || "";
     });
-    await refreshSales().catch(() => setSales([]));
-  }, [branchId, refreshSales]);
+  }, [branchId]);
 
   useEffect(() => {
     refresh().catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
@@ -234,7 +214,6 @@ export function POSPage() {
         const cat = await listPOSCatalog(locationId);
         setCatalog(cat.items ?? []);
       }
-      await refreshSales().catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Checkout failed");
     } finally {
@@ -274,20 +253,6 @@ export function POSPage() {
     setQStkPhone("");
   }
 
-  async function doReverse(saleId: string) {
-    if (!locationId) return;
-    setBusy(true);
-    setError("");
-    try {
-      await reverseSale(saleId, locationId);
-      await Promise.all([refreshSales(), listPOSCatalog(locationId).then((r) => setCatalog(r.items ?? []))]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Reverse failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function finishSTK() {
     if (!last?.sale || !last.payment) return;
     setBusy(true);
@@ -299,7 +264,6 @@ export function POSPage() {
       setCart([]);
       const cat = await listPOSCatalog(locationId);
       setCatalog(cat.items ?? []);
-      await refreshSales().catch(() => undefined);
       void printReceipt(sale.id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Complete failed";
@@ -333,7 +297,6 @@ export function POSPage() {
           setCart([]);
           const cat = await listPOSCatalog(locationId);
           setCatalog(cat.items ?? []);
-          await refreshSales().catch(() => undefined);
           void printReceipt(sale.id);
           setStkSuccess("Payment successful — sale complete");
           window.setTimeout(() => setStkSuccess(""), 2500);
@@ -358,7 +321,7 @@ export function POSPage() {
       pollingRef.current = false;
       setStkPolling(false);
     };
-  }, [last?.sale?.id, last?.payment?.id, last?.completed, last?.payment?.method, locationId, printReceipt, refreshSales]);
+  }, [last?.sale?.id, last?.payment?.id, last?.completed, last?.payment?.method, locationId, printReceipt]);
 
   async function finishC2B() {
     if (!last?.sale || !last.payment) return;
@@ -374,7 +337,6 @@ export function POSPage() {
       setCart([]);
       const cat = await listPOSCatalog(locationId);
       setCatalog(cat.items ?? []);
-      await refreshSales().catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Complete failed");
     } finally {
@@ -412,6 +374,7 @@ export function POSPage() {
           </label>
         </div>
         <nav className="pos-fullscreen-actions" aria-label="Counter tools">
+          <Link to="/sales" className="btn btn-ghost">Sale history</Link>
           <Link to="/counter/fix" className="btn btn-ghost">Same-day fix</Link>
           <Link to="/counter/pickup" className="btn btn-ghost">Pickup</Link>
           <Link to="/" className="btn btn-secondary">Exit to ops</Link>
@@ -712,61 +675,6 @@ export function POSPage() {
           ) : null}
         </aside>
       </div>
-
-      <section className="sales-strip">
-        <div className="panel-head">
-          <h2>Sale history</h2>
-          <Button type="button" variant="ghost" disabled={busy} onClick={() => void refreshSales()}>
-            Refresh
-          </Button>
-        </div>
-        {sales.length === 0 ? (
-          <div style={{ padding: "1rem" }}>
-            <EmptyState title="No sales yet" body="Completed and pending POS sales for this branch appear here." />
-          </div>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Sale</th>
-                <th>When</th>
-                <th>Total</th>
-                <th>Status</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {sales.map((s) => (
-                <tr key={s.id}>
-                  <td className="mono">{s.id.slice(0, 8)}…</td>
-                  <td className="muted">{s.created_at ? new Date(s.created_at).toLocaleString() : "—"}</td>
-                  <td className="mono">KES {s.total.toLocaleString()}</td>
-                  <td>
-                    <Badge tone={saleTone(s.status)}>{s.status}</Badge>
-                  </td>
-                  <td>
-                    <div className="chip-row">
-                      <Button type="button" variant="ghost" onClick={() => void printReceipt(s.id)}>
-                        Receipt
-                      </Button>
-                      {s.status === "completed" ? (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          disabled={busy || !locationId}
-                          onClick={() => void doReverse(s.id)}
-                        >
-                          Reverse
-                        </Button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
     </div>
     </div>
   );

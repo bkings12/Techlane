@@ -76,6 +76,9 @@ const InventoryPage = lazyPage(() =>
   import("./pages/InventoryPage").then((module) => ({ default: module.InventoryPage })),
 );
 const POSPage = lazyPage(() => import("./pages/POSPage").then((module) => ({ default: module.POSPage })));
+const SalesHistoryPage = lazyPage(() =>
+  import("./pages/SalesHistoryPage").then((module) => ({ default: module.SalesHistoryPage })),
+);
 const QuickFixPage = lazyPage(() =>
   import("./pages/QuickFixPage").then((module) => ({ default: module.QuickFixPage })),
 );
@@ -136,6 +139,7 @@ export default function App() {
           <Route path="orders" element={<OrdersPage />} />
           <Route path="payments" element={<PaymentsPage />} />
           <Route path="pos" element={<POSPage />} />
+          <Route path="sales" element={<SalesHistoryPage />} />
           <Route path="counter" element={<CounterHomePage />} />
           <Route path="counter/fix" element={<QuickFixPage />} />
           <Route path="counter/pickup" element={<CounterPickupPage />} />
