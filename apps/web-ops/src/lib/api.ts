@@ -1507,6 +1507,11 @@ export type CatalogItem = {
   product_id: string;
   product_name: string;
   brand?: string;
+  category?: string;
+  description?: string;
+  image_url?: string;
+  has_image?: boolean;
+  image_updated_at?: string;
   sku: string;
   sell_price: number;
   available_qty: number;
@@ -1663,6 +1668,17 @@ export async function deleteProductImage(id: string) {
 export function productImageURL(productId: string, cacheBust?: string) {
   const base = `${API_BASE}/inventory/public/products/${encodeURIComponent(productId)}/image`;
   return cacheBust ? `${base}?v=${encodeURIComponent(cacheBust)}` : base;
+}
+
+/** Prefer uploaded product photo, then any absolute/text image_url. */
+export function catalogItemImageURL(item: {
+  product_id: string;
+  image_url?: string;
+  has_image?: boolean;
+  image_updated_at?: string;
+}): string | undefined {
+  if (item.has_image) return productImageURL(item.product_id, item.image_updated_at);
+  return item.image_url || undefined;
 }
 
 export async function listVariants(productId?: string) {

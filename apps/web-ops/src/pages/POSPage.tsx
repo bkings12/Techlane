@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useBranch } from "../branch/BranchContext";
 import { Badge, Button, EmptyState, ICONS, Input, SearchInput, StkWaitOverlay, isTerminalStkError } from "../components/ui";
 import {
+  catalogItemImageURL,
   completeSale,
   confirmMpesaPayment,
   downloadSaleReceiptPDF,
@@ -510,18 +511,38 @@ export function POSPage() {
             <EmptyState title="No POS items" body="Add products under Inventory, then stock this location." icon={ICONS.pos} />
           ) : (
             <ul className="pos-catalog-grid">
-              {visibleCatalog.map((it) => (
-                <li key={it.variant_id}>
-                  <button type="button" className="pos-item" onClick={() => addToCart(it)} disabled={it.available_qty <= 0}>
-                    <strong>{it.product_name}</strong>
-                    <span className="muted">
-                      {it.sku} · {it.available_qty} left
-                    </span>
-                    <span className="pos-price">KES {it.sell_price.toLocaleString()}</span>
-                    <span className="pos-add-label">{it.available_qty > 0 ? "Add to cart" : "Out of stock"}</span>
-                  </button>
-                </li>
-              ))}
+              {visibleCatalog.map((it) => {
+                const imgUrl = catalogItemImageURL(it);
+                const stockTone = it.available_qty <= 0 ? "out" : it.available_qty <= 5 ? "low" : "ok";
+                return (
+                  <li key={it.variant_id}>
+                    <button
+                      type="button"
+                      className={`pos-card ${stockTone === "out" ? "out" : ""}`}
+                      onClick={() => addToCart(it)}
+                      disabled={it.available_qty <= 0}
+                    >
+                      <div className="pos-card-img">
+                        {imgUrl ? (
+                          <img src={imgUrl} alt="" loading="lazy" />
+                        ) : (
+                          <span className="pos-card-fallback" aria-hidden="true">
+                            {ICONS.package}
+                          </span>
+                        )}
+                      </div>
+                      <p className="pos-card-name">{it.product_name}</p>
+                      <p className="pos-card-sku">{it.sku}</p>
+                      <div className="pos-card-foot">
+                        <span className="pos-card-price">KES {it.sell_price.toLocaleString()}</span>
+                        <span className={`pos-card-stock ${stockTone}`}>
+                          {stockTone === "out" ? "Out of stock" : `${it.available_qty} left`}
+                        </span>
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
           {catalog.length > visibleCatalog.length && !catalogQuery.trim() ? (
