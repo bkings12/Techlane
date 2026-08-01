@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties, type For
 import { Link } from "react-router-dom";
 import { useBranch } from "../branch/BranchContext";
 import { Badge, Button, EmptyState, ICONS, Input, PageHeader, SearchInput } from "../components/ui";
+import { MarkdownField } from "../components/MarkdownField";
 import {
   adjustStock,
   createCategory,
   createProduct,
+  copyProduct as copyProductAPI,
   createVariant,
   deleteCategory,
   ensureStockLocations,
@@ -94,6 +96,8 @@ export function InventoryPage() {
   const [variants, setVariants] = useState<Variant[]>([]);
   const [categories, setCategories] = useState<InventoryCategory[]>([]);
   const [editProductId, setEditProductId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editBrand, setEditBrand] = useState("");
   const [editCategoryId, setEditCategoryId] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editImageUrl, setEditImageUrl] = useState("");
@@ -116,6 +120,7 @@ export function InventoryPage() {
   const [prodName, setProdName] = useState("");
   const [prodBrand, setProdBrand] = useState("");
   const [prodCategoryId, setProdCategoryId] = useState("");
+  const [prodDescription, setProdDescription] = useState("");
   const [newSku, setNewSku] = useState("");
   const [newSellPrice, setNewSellPrice] = useState("0");
   const [newCostPrice, setNewCostPrice] = useState("0");
@@ -412,6 +417,7 @@ export function InventoryPage() {
         name,
         brand: prodBrand.trim() || undefined,
         category_id: prodCategoryId || undefined,
+        description: prodDescription.trim() || undefined,
       });
       await createVariant({
         product_id: product.id,
@@ -425,6 +431,7 @@ export function InventoryPage() {
       setProdName("");
       setProdBrand("");
       setProdCategoryId("");
+      setProdDescription("");
       setNewSku("");
       setNewSellPrice("0");
       setNewCostPrice("0");
@@ -458,6 +465,30 @@ export function InventoryPage() {
       await Promise.all([refreshCatalogAdmin(), refreshOverview()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Create variant failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyProduct(source: Product) {
+    setBusy(true);
+    setError("");
+    try {
+      const created = await copyProductAPI(source.id);
+      await Promise.all([refreshCatalogAdmin(), refreshOverview()]);
+      setEditProductId(created.id);
+      setEditName(created.name);
+      setEditBrand(created.brand ?? "");
+      setEditCategoryId(created.category_id ?? "");
+      setEditDescription(created.description ?? "");
+      setEditImageUrl(created.image_url ?? "");
+      setEditFeatured(false);
+      setEditNewArrival(false);
+      setEditBestseller(false);
+      setEditSortOrder("0");
+      setCatalogQuery(created.name);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Copy product failed");
     } finally {
       setBusy(false);
     }
@@ -695,9 +726,16 @@ export function InventoryPage() {
                         className="form-grid"
                         onSubmit={(e) => {
                           e.preventDefault();
+                          const name = editName.trim();
+                          if (!name) {
+                            setError("Product name is required");
+                            return;
+                          }
                           setBusy(true);
                           setError("");
                           updateProduct(p.id, {
+                            name,
+                            brand: editBrand.trim(),
                             category_id: editCategoryId || undefined,
                             clear_category: !editCategoryId,
                             description: editDescription.trim() || undefined,
@@ -718,6 +756,23 @@ export function InventoryPage() {
                         }}
                       >
                         <label>
+                          Product name
+                          <Input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            required
+                            autoFocus
+                          />
+                        </label>
+                        <label>
+                          Brand
+                          <Input
+                            value={editBrand}
+                            onChange={(e) => setEditBrand(e.target.value)}
+                            placeholder="Optional"
+                          />
+                        </label>
+                        <label>
                           Category
                           <select
                             className="input"
@@ -732,10 +787,12 @@ export function InventoryPage() {
                             ))}
                           </select>
                         </label>
-                        <label>
-                          Description
-                          <Input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-                        </label>
+                        <MarkdownField
+                          label="Description"
+                          value={editDescription}
+                          onChange={setEditDescription}
+                          placeholder="What a customer sees on the storefront product page."
+                        />
                         <label>
                           Product photo
                           <div className="logo-row" style={{ marginTop: 8 }}>
@@ -867,8 +924,19 @@ export function InventoryPage() {
                           type="button"
                           variant="ghost"
                           disabled={busy}
+                          title="Duplicate this product so you can change category, name, or price"
+                          onClick={() => void copyProduct(p)}
+                        >
+                          Copy
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={busy}
                           onClick={() => {
                             setEditProductId(p.id);
+                            setEditName(p.name);
+                            setEditBrand(p.brand ?? "");
                             setEditCategoryId(p.category_id ?? "");
                             setEditDescription(p.description ?? "");
                             setEditImageUrl(p.image_url ?? "");
@@ -878,7 +946,7 @@ export function InventoryPage() {
                             setEditSortOrder(String(p.storefront_sort_order ?? 0));
                           }}
                         >
-                          Edit listing
+                          Edit product
                         </Button>
                         {online ? (
                           <Button
@@ -1371,6 +1439,12 @@ export function InventoryPage() {
                   ))}
                 </select>
               </label>
+              <MarkdownField
+                label="Description"
+                value={prodDescription}
+                onChange={setProdDescription}
+                placeholder="What a customer sees on the storefront product page."
+              />
               <label>
                 SKU (optional)
                 <Input

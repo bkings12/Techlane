@@ -108,6 +108,7 @@ func (s *Service) CreateEstimate(ctx context.Context, in CreateEstimateInput) (*
 		"repair_job_id": in.RepairJobID.String(),
 		"total_amount":  total,
 		"estimate_id":   id.String(),
+		"notes":         in.Notes,
 	})
 	return &RepairEstimate{
 		ID: id, RepairJobID: in.RepairJobID, LaborAmount: labor, PartsAmount: parts, TotalAmount: total,

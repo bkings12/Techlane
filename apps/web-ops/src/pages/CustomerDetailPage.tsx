@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { Badge, Button, EmptyState, ICONS, Input, PageHeader } from "../components/ui";
+import { SendSmsModal } from "../components/SendSmsModal";
 import {
   getCustomer,
   getCustomerLoyalty,
@@ -22,12 +23,15 @@ export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
   const canEdit = can(user?.permissions, "customers.write");
+  const canSms =
+    can(user?.permissions, "customers.write") || can(user?.permissions, "repairs.create");
 
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
   const [repairs, setRepairs] = useState<RepairJob[]>([]);
   const [loyalty, setLoyalty] = useState<LoyaltyAccount | null>(null);
   const [ledger, setLedger] = useState<LoyaltyLedgerEntry[]>([]);
+  const [showSms, setShowSms] = useState(false);
   const [error, setError] = useState("");
 
   const [editing, setEditing] = useState(false);
@@ -184,6 +188,16 @@ export function CustomerDetailPage() {
             <span>Contact</span>
             <strong>{customer.phone ?? "No phone"}</strong>
             <div className="muted">{customer.email ?? "No email"}</div>
+            {canSms ? (
+              <Button
+                type="button"
+                variant="secondary"
+                style={{ marginTop: "0.45rem" }}
+                onClick={() => setShowSms(true)}
+              >
+                Send SMS
+              </Button>
+            ) : null}
           </div>
           <div>
             <span>Workshop</span>
@@ -283,6 +297,14 @@ export function CustomerDetailPage() {
           )}
         </section>
       ) : null}
+
+      <SendSmsModal
+        open={showSms}
+        onClose={() => setShowSms(false)}
+        initialPhone={customer.phone ?? ""}
+        customerId={customer.id}
+        title={`SMS to ${customer.full_name}`}
+      />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, type ComponentType } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { BranchProvider } from "./branch/BranchContext";
 import { CurrencyProvider } from "./lib/currency";
@@ -43,14 +43,48 @@ import { SettingsLayout } from "./pages/settings/SettingsLayout";
 import { StaffDetailPage } from "./pages/settings/StaffDetailPage";
 import { StaffListPage } from "./pages/settings/StaffListPage";
 
-const RepairsPage = lazy(() => import("./pages/RepairsPage").then((module) => ({ default: module.RepairsPage })));
-const JobPosPage = lazy(() => import("./pages/JobPosPage").then((module) => ({ default: module.JobPosPage })));
-const RepairDetailPage = lazy(() => import("./pages/RepairDetailPage").then((module) => ({ default: module.RepairDetailPage })));
-const InventoryPage = lazy(() => import("./pages/InventoryPage").then((module) => ({ default: module.InventoryPage })));
-const POSPage = lazy(() => import("./pages/POSPage").then((module) => ({ default: module.POSPage })));
-const QuickFixPage = lazy(() => import("./pages/QuickFixPage").then((module) => ({ default: module.QuickFixPage })));
-const CounterPickupPage = lazy(() => import("./pages/CounterPickupPage").then((module) => ({ default: module.CounterPickupPage })));
-const ReportsPage = lazy(() => import("./pages/ReportsPage").then((module) => ({ default: module.ReportsPage })));
+const CHUNK_RELOAD_KEY = "techlane:chunk-reload";
+
+/** After a deploy with hashed chunks, an open tab can request a deleted file. Reload once. */
+function lazyPage<T extends ComponentType<unknown>>(loader: () => Promise<{ default: T }>) {
+  return lazy(() =>
+    loader().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isChunkError =
+        /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk \d+ failed/i.test(
+          msg,
+        );
+      if (isChunkError && typeof sessionStorage !== "undefined") {
+        const last = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) || "0");
+        if (!last || Date.now() - last > 15_000) {
+          sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()));
+          window.location.reload();
+          return new Promise<{ default: T }>(() => undefined);
+        }
+      }
+      throw err;
+    }),
+  );
+}
+
+const RepairsPage = lazyPage(() => import("./pages/RepairsPage").then((module) => ({ default: module.RepairsPage })));
+const JobPosPage = lazyPage(() => import("./pages/JobPosPage").then((module) => ({ default: module.JobPosPage })));
+const RepairDetailPage = lazyPage(() =>
+  import("./pages/RepairDetailPage").then((module) => ({ default: module.RepairDetailPage })),
+);
+const InventoryPage = lazyPage(() =>
+  import("./pages/InventoryPage").then((module) => ({ default: module.InventoryPage })),
+);
+const POSPage = lazyPage(() => import("./pages/POSPage").then((module) => ({ default: module.POSPage })));
+const QuickFixPage = lazyPage(() =>
+  import("./pages/QuickFixPage").then((module) => ({ default: module.QuickFixPage })),
+);
+const CounterPickupPage = lazyPage(() =>
+  import("./pages/CounterPickupPage").then((module) => ({ default: module.CounterPickupPage })),
+);
+const ReportsPage = lazyPage(() =>
+  import("./pages/ReportsPage").then((module) => ({ default: module.ReportsPage })),
+);
 
 /** /downloads (plural) used to fall through to the SPA with no route → blank page. */
 function DownloadsAliasRedirect() {

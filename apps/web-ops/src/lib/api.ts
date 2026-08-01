@@ -128,6 +128,13 @@ async function refreshAccessToken(): Promise<RefreshOutcome> {
   return refreshInFlight;
 }
 
+/** Proactively rotate the access token while a session is active. */
+export async function refreshSession(): Promise<boolean> {
+  if (!getRefreshToken()) return false;
+  const outcome = await refreshAccessToken();
+  return outcome === "refreshed";
+}
+
 async function parseErrorBody(res: Response) {
   return (await res.json().catch(() => ({}))) as {
     error?: { message?: string; code?: string; locked_until?: string };
@@ -613,6 +620,23 @@ export async function resendRepairIntakeSMS(id: string) {
   return api<{ status: string; template_key: string; phone: string }>(`/repairs/${id}/sms/resend-intake`, {
     method: "POST",
     body: "{}",
+  });
+}
+
+export async function sendCustomSMS(body: {
+  phone: string;
+  message: string;
+  customer_id?: string;
+  repair_job_id?: string;
+}) {
+  return api<{ id: string; status: string }>("/sms/send", {
+    method: "POST",
+    body: JSON.stringify({
+      phone: body.phone,
+      body: body.message,
+      customer_id: body.customer_id,
+      repair_job_id: body.repair_job_id,
+    }),
   });
 }
 
@@ -1597,6 +1621,10 @@ export async function createProduct(body: {
   return api<Product>("/products", { method: "POST", body: JSON.stringify(body) });
 }
 
+export async function copyProduct(id: string) {
+  return api<Product>(`/products/${id}/copy`, { method: "POST", body: "{}" });
+}
+
 export async function updateProduct(
   id: string,
   body: {
@@ -2451,18 +2479,21 @@ export type StockBalance = {
 export type JobSaleLine = {
   id: string;
   repair_job_id: string;
-  variant_id: string;
-  location_id: string;
+  variant_id?: string | null;
+  location_id?: string | null;
   description: string;
   quantity: number;
   unit_price: number;
   line_total: number;
+  is_custom?: boolean;
   created_at: string;
 };
 
 export async function addRepairSaleLine(
   repairId: string,
-  body: { variant_id: string; location_id: string; quantity: number },
+  body:
+    | { variant_id: string; location_id: string; quantity: number }
+    | { description: string; unit_price: number; quantity?: number },
 ) {
   return api<JobSaleLine>(`/repairs/${repairId}/sale-lines`, {
     method: "POST",

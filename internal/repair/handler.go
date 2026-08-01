@@ -1762,15 +1762,30 @@ func (h *Handler) addSaleLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		VariantID  uuid.UUID `json:"variant_id"`
-		LocationID uuid.UUID `json:"location_id"`
-		Quantity   int       `json:"quantity"`
+		VariantID   *uuid.UUID `json:"variant_id"`
+		LocationID  *uuid.UUID `json:"location_id"`
+		Quantity    int        `json:"quantity"`
+		Description string     `json:"description"`
+		UnitPrice   float64    `json:"unit_price"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.VariantID == uuid.Nil || req.LocationID == uuid.Nil {
-		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "variant_id and location_id required", httpx.CorrelationID(r.Context()))
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
 		return
 	}
-	line, err := h.svc.AddJobSaleLine(r.Context(), claims.TenantID, repairID, req.VariantID, req.LocationID, req.Quantity, claims.UserID, parseCorrID(r))
+
+	var line *JobSaleLine
+	if req.VariantID != nil && *req.VariantID != uuid.Nil {
+		if req.LocationID == nil || *req.LocationID == uuid.Nil {
+			apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "variant_id and location_id required", httpx.CorrelationID(r.Context()))
+			return
+		}
+		line, err = h.svc.AddJobSaleLine(r.Context(), claims.TenantID, repairID, *req.VariantID, *req.LocationID, req.Quantity, claims.UserID, parseCorrID(r))
+	} else if strings.TrimSpace(req.Description) != "" {
+		line, err = h.svc.AddCustomJobSaleLine(r.Context(), claims.TenantID, repairID, req.Description, req.UnitPrice, req.Quantity, claims.UserID, parseCorrID(r))
+	} else {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "variant_id and location_id, or description and unit_price, required", httpx.CorrelationID(r.Context()))
+		return
+	}
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {

@@ -318,15 +318,20 @@ function ProductsByCategory() {
 
     const ordered: Array<{ title: string; items: CatalogItem[] }> = [];
     const seen = new Set<string>();
+    // Prefer CMS / online category order, but never repeat the same display name
+    // (tenants can have duplicate-named categories under different parents).
     for (const c of content?.categories ?? []) {
-      const items = byName.get(c.name);
+      const title = c.name?.trim();
+      if (!title || seen.has(title)) continue;
+      const items = byName.get(title);
       if (!items?.length) continue;
-      ordered.push({ title: c.name, items });
-      seen.add(c.name);
+      ordered.push({ title, items });
+      seen.add(title);
     }
     for (const [title, items] of byName) {
       if (seen.has(title) || items.length === 0) continue;
       ordered.push({ title, items });
+      seen.add(title);
     }
     return ordered;
   }, [catalog, content?.categories]);
@@ -352,7 +357,7 @@ function ProductsByCategory() {
             </div>
             <div className="catalog limupa-catalog">
               {g.items.map((item) => (
-                <ProductCard key={item.variant_id} item={item} />
+                <ProductCard key={item.variant_id} item={item} showCategory={false} />
               ))}
             </div>
           </div>

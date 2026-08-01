@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useRealtimeEvents } from "../lib/realtime";
 import { useAuth } from "../auth/AuthContext";
-import { Badge, Button, EmptyState, Input, PageHeader, PhotoCaptureField, StkWaitOverlay, isTerminalStkError, sleep } from "../components/ui";
+import { Badge, Button, EmptyState, Input, PageHeader, PhotoCaptureField, StkWaitOverlay, Textarea, isTerminalStkError, sleep } from "../components/ui";
 import { SearchableCombobox, type ComboOption } from "../components/SearchableCombobox";
+import { SendSmsModal } from "../components/SendSmsModal";
 import {
   addRepairNote,
   assignPartRequest,
@@ -95,6 +96,8 @@ function estimateTotalAmount(e: RepairEstimate): number {
 function isCollectableStatus(status: string) {
   return status === "ready_for_pickup" || status === "completed" || isClosureStatus(status);
 }
+
+type DetailTab = "now" | "payment" | "parts" | "device" | "history";
 
 function isPickupOrHandoverCode(raw: string) {
   const v = raw.trim();
@@ -380,6 +383,8 @@ export function RepairDetailPage() {
   const [estimateTotal, setEstimateTotal] = useState("");
   const [estimateNotes, setEstimateNotes] = useState("");
   const [showEstimateModal, setShowEstimateModal] = useState(false);
+  const [showSmsModal, setShowSmsModal] = useState(false);
+  const [actionMsg, setActionMsg] = useState("");
   const [warranty, setWarranty] = useState<Warranty | null>(null);
   const [warrantyNote, setWarrantyNote] = useState("");
   const [returnReason, setReturnReason] = useState("");
@@ -394,10 +399,17 @@ export function RepairDetailPage() {
   const [closureNote, setClosureNote] = useState("");
   const [splitPay, setSplitPay] = useState(false);
   const [tenders, setTenders] = useState([{ method: "cash", amount: "", phone: "" }]);
-  const [detailLane, setDetailLane] = useState<"work" | "money" | "context">("work");
+  const [detailLane, setDetailLane] = useState<DetailTab>("now");
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
   const [handoverPrompt, setHandoverPrompt] = useState(false);
   const [saleStockId, setSaleStockId] = useState("");
   const [saleQty, setSaleQty] = useState("1");
+  const [saleAddMode, setSaleAddMode] = useState<"stock" | "custom">("stock");
+  const [customSaleDesc, setCustomSaleDesc] = useState("");
+  const [customSalePrice, setCustomSalePrice] = useState("");
+  const [customSaleQty, setCustomSaleQty] = useState("1");
+  const [diagnosisFee, setDiagnosisFee] = useState("");
   const [showFailedPays, setShowFailedPays] = useState(false);
   const [showAccessories, setShowAccessories] = useState(false);
   const [showRefund, setShowRefund] = useState(false);
@@ -416,16 +428,6 @@ export function RepairDetailPage() {
   const [editAnonymous, setEditAnonymous] = useState(false);
   const [editCustomerOptions, setEditCustomerOptions] = useState<ComboOption[]>([]);
   const [editCustomerLoading, setEditCustomerLoading] = useState(false);
-
-  useEffect(() => {
-    if (!job) return;
-    // Ready / complete jobs — staff usually need payment or handover first.
-    if (job.status === "ready_for_pickup" || job.status === "completed" || isClosureStatus(job.status)) {
-      setDetailLane("money");
-    } else {
-      setDetailLane("work");
-    }
-  }, [job?.id, job?.status]);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -529,13 +531,32 @@ export function RepairDetailPage() {
       .reduce((sum, p) => sum + p.amount, 0);
     const balance = Math.max(0, due - paid);
     if (isCollectableStatus(job.status) && balance > 0) {
-      setDetailLane("money");
+      setDetailLane("payment");
     }
   }, [job, estimates, payments]);
+
+  useEffect(() => {
+    if (!actionsMenuOpen) return;
+    function onPointerDown(e: MouseEvent) {
+      if (actionsMenuRef.current && !actionsMenuRef.current.contains(e.target as Node)) {
+        setActionsMenuOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setActionsMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [actionsMenuOpen]);
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
     setError("");
+    setActionMsg("");
     try {
       await action();
       await refresh();
@@ -546,14 +567,14 @@ export function RepairDetailPage() {
     }
   }
 
-  function paymentIdFromCreate(res: Payment | { items: Payment[] }): string | null {
-    if (res && typeof res === "object" && "items" in res && Array.isArray((res as { items: Payment[] }).items)) {
-      const items = (res as { items: Payment[] }).items;
-      const stk = items.find((p) => p.method === "mpesa_stk") ?? items[0];
+  function paymentIdFromCreate(res: Payment | { items: Payment[] } | null | undefined): string | null {
+    if (!res || typeof res !== "object") return null;
+    if ("items" in res && Array.isArray(res.items)) {
+      const stk = res.items.find((p) => p.method === "mpesa_stk") ?? res.items[0];
       return stk?.id ?? null;
     }
-    const p = res as Payment;
-    return p?.id ?? null;
+    const id = (res as Payment).id;
+    return typeof id === "string" && id ? id : null;
   }
 
   function pendingStkPaymentId(list: Payment[] = payments): string | null {
@@ -793,6 +814,10 @@ export function RepairDetailPage() {
   const balanceDue =
     typeof job.balance_due === "number" ? job.balance_due : Math.max(0, amountDue - paidTotal);
   const paymentLocked = amountDue > 0 && balanceDue <= 0;
+  const promiseOverdue =
+    Boolean(job.promised_by) &&
+    new Date(job.promised_by!).getTime() < Date.now() &&
+    !isCollectableStatus(job.status);
 
   function goTakePayment() {
     setPayAmount(String(balanceDue > 0 ? balanceDue : amountDue || ""));
@@ -802,14 +827,17 @@ export function RepairDetailPage() {
   }
 
   function goToSection(sectionId: string) {
-    const lane: "work" | "money" | "context" =
+    const tab: DetailTab =
       sectionId === "repair-payment"
-        ? "money"
-        : sectionId === "job-customer" || sectionId === "job-history"
-          ? "context"
-          : "work";
-    setDetailLane(lane);
-    // Lane content mounts after paint — wait a tick before scrolling.
+        ? "payment"
+        : sectionId === "job-parts"
+          ? "parts"
+          : sectionId === "job-customer"
+            ? "device"
+            : sectionId === "job-history"
+              ? "history"
+              : "now";
+    setDetailLane(tab);
     window.setTimeout(() => {
       document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 40);
@@ -817,7 +845,7 @@ export function RepairDetailPage() {
 
   async function advanceToHandoverAfterPayment(method: string) {
     if (!job || !isCollectableStatus(job.status) || job.handover) return;
-    setDetailLane("work");
+    setDetailLane("now");
     setHandoverPrompt(true);
     // Cash at the counter means the customer is here — text the release code now.
     if (method === "cash" || method === "mpesa_c2b" || method === "bank_paybill") {
@@ -845,67 +873,116 @@ export function RepairDetailPage() {
         subtitle={`${statusLabel(job.status)} · ${job.problem_summary}`}
         actions={
           <div className="btn-row">
-            {canEditDetails && job.status !== "collected" ? (
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={busy}
-                onClick={() => (editingDetails ? setEditingDetails(false) : openEditDetails())}
-              >
-                {editingDetails ? "Cancel edit" : "Edit details"}
-              </Button>
-            ) : null}
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  await openRepairReceipt(job.id);
-                })
-              }
-            >
-              Print receipt
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={busy}
-              onClick={() => void run(() => downloadRepairReceiptPDF(job.id))}
-            >
-              Receipt PDF
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={busy}
-              onClick={() => void run(() => downloadRepairTaxInvoicePDF(job.id))}
-            >
-              Tax invoice PDF
-            </Button>
             <Link to="/repairs" className="muted">
               All repairs
             </Link>
-            {canCloseRepair && !["completed", "collected", "cancelled", "unrepairable"].includes(job.status) ? (
+            <div className="actions-menu" ref={actionsMenuRef} style={{ position: "relative" }}>
               <Button
                 type="button"
-                variant="danger"
-                disabled={busy}
-                onClick={() => {
-                  if (!window.confirm(`Move ${job.job_code ?? "this job"} to Trashed?`)) return;
-                  void run(async () => {
-                    await trashRepair(job.id);
-                    navigate("/trash");
-                  });
-                }}
+                variant="secondary"
+                aria-haspopup="menu"
+                aria-expanded={actionsMenuOpen}
+                onClick={() => setActionsMenuOpen((open) => !open)}
               >
-                Move to trash
+                Actions
               </Button>
-            ) : null}
+              {actionsMenuOpen ? (
+                <div
+                  className="panel"
+                  role="menu"
+                  style={{
+                    position: "absolute",
+                    right: 0,
+                    top: "calc(100% + 4px)",
+                    minWidth: "12rem",
+                    padding: "0.35rem 0",
+                    zIndex: 30,
+                  }}
+                >
+                  {canEditDetails && job.status !== "collected" ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="btn btn-ghost"
+                      style={{ display: "block", width: "100%", textAlign: "left" }}
+                      disabled={busy}
+                      onClick={() => {
+                        setActionsMenuOpen(false);
+                        if (editingDetails) setEditingDetails(false);
+                        else openEditDetails();
+                      }}
+                    >
+                      {editingDetails ? "Cancel edit" : "Edit details"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="btn btn-ghost"
+                    style={{ display: "block", width: "100%", textAlign: "left" }}
+                    disabled={busy}
+                    onClick={() => {
+                      setActionsMenuOpen(false);
+                      void run(async () => {
+                        await openRepairReceipt(job.id);
+                      });
+                    }}
+                  >
+                    Print receipt
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="btn btn-ghost"
+                    style={{ display: "block", width: "100%", textAlign: "left" }}
+                    disabled={busy}
+                    onClick={() => {
+                      setActionsMenuOpen(false);
+                      void run(() => downloadRepairReceiptPDF(job.id));
+                    }}
+                  >
+                    Receipt PDF
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="btn btn-ghost"
+                    style={{ display: "block", width: "100%", textAlign: "left" }}
+                    disabled={busy}
+                    onClick={() => {
+                      setActionsMenuOpen(false);
+                      void run(() => downloadRepairTaxInvoicePDF(job.id));
+                    }}
+                  >
+                    Tax invoice PDF
+                  </button>
+                  {canCloseRepair && !["completed", "collected", "cancelled", "unrepairable"].includes(job.status) ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="btn btn-ghost"
+                      style={{ display: "block", width: "100%", textAlign: "left", color: "var(--danger, #c0392b)" }}
+                      disabled={busy}
+                      onClick={() => {
+                        setActionsMenuOpen(false);
+                        if (!window.confirm(`Move ${job.job_code ?? "this job"} to Trashed?`)) return;
+                        void run(async () => {
+                          await trashRepair(job.id);
+                          navigate("/trash");
+                        });
+                      }}
+                    >
+                      Move to trash
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
         }
       />
       {error ? <p className="form-error">{error}</p> : null}
+      {actionMsg ? <p className="form-success">{actionMsg}</p> : null}
       {editingDetails ? (
         <section className="panel" aria-label="Correct job details">
           <h2>Correct intake details</h2>
@@ -1013,36 +1090,19 @@ export function RepairDetailPage() {
           </div>
         </section>
       ) : null}
+      {finishBlockedByEstimate || promiseOverdue ? (
+        <div className="blocked-banner" role="status" style={{ marginBottom: "1rem", flexDirection: "column", alignItems: "flex-start", gap: "0.35rem" }}>
+          {finishBlockedByEstimate ? (
+            <span>A customer estimate is still pending approval.</span>
+          ) : null}
+          {promiseOverdue ? (
+            <span>
+              Promise overdue — was due {new Date(job.promised_by!).toLocaleString()}.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <StageRail status={job.status} />
-      <nav className="job-section-nav" aria-label="Job sections">
-        <button
-          type="button"
-          className={detailLane === "work" ? "active" : undefined}
-          onClick={() => goToSection("job-now")}
-        >
-          Now
-        </button>
-        <button
-          type="button"
-          className={detailLane === "money" ? "active" : undefined}
-          onClick={() => goToSection("repair-payment")}
-        >
-          Payment
-        </button>
-        <button type="button" onClick={() => goToSection("job-parts")}>
-          Parts
-        </button>
-        <button
-          type="button"
-          className={detailLane === "context" ? "active" : undefined}
-          onClick={() => goToSection("job-customer")}
-        >
-          Customer & device
-        </button>
-        <button type="button" onClick={() => goToSection("job-history")}>
-          History
-        </button>
-      </nav>
       {job.parent_job_id ? (
         <div className="rework-banner">
           <Badge tone="warning">customer return</Badge>
@@ -1052,36 +1112,6 @@ export function RepairDetailPage() {
             {job.rework_reason ? ` · ${job.rework_reason}` : ""}
           </span>
         </div>
-      ) : null}
-
-      {(job.status === "collected" || job.status === "completed") && !job.parent_job_id ? (
-        <section className="panel" style={{ marginBottom: "1rem" }}>
-          <h2>Customer returned this device?</h2>
-          <p className="hint">
-            Opens a linked follow-up job on the same customer and device (warranty return or come-back fix). The original job stays the payment record.
-          </p>
-          <form
-            className="inline-form"
-            onSubmit={(e: FormEvent) => {
-              e.preventDefault();
-              void run(async () => {
-                const returned = await createRepairRework(job.id, returnReason);
-                setReturnReason("");
-                navigate(`/repairs/${returned.id}`);
-              });
-            }}
-          >
-            <Input
-              value={returnReason}
-              onChange={(e) => setReturnReason(e.target.value)}
-              placeholder="What came back / what failed?"
-              required
-            />
-            <Button type="submit" disabled={busy || !returnReason.trim()}>
-              Open return job
-            </Button>
-          </form>
-        </section>
       ) : null}
 
       {job.closure_reason ? (
@@ -1095,48 +1125,32 @@ export function RepairDetailPage() {
         </div>
       ) : null}
 
-      {job.authorization?.authorized_at ? (
-        <div className="auth-note" role="status">
-          <Badge tone="success">price agreed</Badge>
-          <span>
-            {formatMoney(job.authorization.authorized_amount ?? 0)}
-            {job.authorization.source === "customer_estimate"
-              ? " — customer approved the estimate"
-              : job.authorization.source === "manager_override"
-                ? " — go-ahead recorded by staff"
-                : job.authorization.source === "return_rework"
-                  ? " — return / follow-up job"
-                : ""}
-            {` on ${new Date(job.authorization.authorized_at).toLocaleString()}`}
-          </span>
-          {job.authorization.variance_reason ? (
-            <span className="warn-text">Final charge varied: {job.authorization.variance_reason}</span>
-          ) : null}
-        </div>
-      ) : null}
-
       <section className="job-hero" aria-label="Job snapshot">
         <div>
           <span>Customer</span>
           <strong>{customer?.full_name ?? "Walk-in"}</strong>
           <div className="muted">{customer?.phone ?? "No phone"}</div>
           {customer?.phone ? (
-            <Button
-              type="button"
-              variant="secondary"
-              style={{ marginTop: "0.45rem" }}
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  const res = await resendRepairIntakeSMS(job.id);
-                  window.alert(
-                    `Intake SMS queued to ${res.phone} (${res.template_key === "repair.wait_bench" ? "wait bench" : "intake"}).`,
-                  );
-                })
-              }
-            >
-              Resend intake SMS
-            </Button>
+            <div className="btn-row" style={{ marginTop: "0.45rem", flexWrap: "wrap" }}>
+              <Button type="button" variant="secondary" disabled={busy} onClick={() => setShowSmsModal(true)}>
+                Send SMS
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    const res = await resendRepairIntakeSMS(job.id);
+                    window.alert(
+                      `Intake SMS queued to ${res.phone} (${res.template_key === "repair.wait_bench" ? "wait bench" : "intake"}).`,
+                    );
+                  })
+                }
+              >
+                Resend intake SMS
+              </Button>
+            </div>
           ) : null}
         </div>
         <div>
@@ -1206,7 +1220,56 @@ export function RepairDetailPage() {
       </section>
 
       <div className="detail-workspace">
-        <div className="detail-primary stack">
+        <nav className="job-section-nav" role="tablist" aria-label="Job sections">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailLane === "now"}
+            className={detailLane === "now" ? "active" : undefined}
+            onClick={() => setDetailLane("now")}
+          >
+            Now
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailLane === "payment"}
+            className={detailLane === "payment" ? "active" : undefined}
+            onClick={() => setDetailLane("payment")}
+          >
+            Payment
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailLane === "parts"}
+            className={detailLane === "parts" ? "active" : undefined}
+            onClick={() => setDetailLane("parts")}
+          >
+            Parts
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailLane === "device"}
+            className={detailLane === "device" ? "active" : undefined}
+            onClick={() => setDetailLane("device")}
+          >
+            Customer & device
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailLane === "history"}
+            className={detailLane === "history" ? "active" : undefined}
+            onClick={() => setDetailLane("history")}
+          >
+            History
+          </button>
+        </nav>
+
+        {detailLane === "now" ? (
+          <div className="lane-stack">
           <section className="panel" id="job-now">
             <h2>Now</h2>
             {paymentLocked && job.status !== "collected" && !job.handover ? (
@@ -1501,22 +1564,60 @@ export function RepairDetailPage() {
                         setError("Choose a reason before closing the job");
                         return;
                       }
-                      void run(async () => {
-                        await changeRepairStatus(job.id, {
-                          status: closureStatus,
-                          closure_reason: closureReason,
-                          note: closureNote.trim() || undefined,
-                        });
-                        setClosing(false);
-                        setClosureReason("");
-                        setClosureNote("");
-                      });
+                      void (async () => {
+                        setBusy(true);
+                        setError("");
+                        setActionMsg("");
+                        try {
+                          await changeRepairStatus(job.id, {
+                            status: closureStatus,
+                            closure_reason: closureReason,
+                            note: closureNote.trim() || undefined,
+                          });
+                          const fee = Number(diagnosisFee);
+                          if (Number.isFinite(fee) && fee > 0) {
+                            try {
+                              await addRepairSaleLine(job.id, {
+                                description: "Diagnosis fee",
+                                unit_price: fee,
+                                quantity: 1,
+                              });
+                            } catch (feeErr) {
+                              setError(
+                                feeErr instanceof Error
+                                  ? `Job closed, but diagnosis fee was not recorded: ${feeErr.message}. Add it under accessories.`
+                                  : "Job closed, but diagnosis fee was not recorded. Add it under accessories.",
+                              );
+                              await refresh();
+                              setClosing(false);
+                              setClosureReason("");
+                              setClosureNote("");
+                              setDiagnosisFee("");
+                              return;
+                            }
+                          }
+                          setClosing(false);
+                          setClosureReason("");
+                          setClosureNote("");
+                          setDiagnosisFee("");
+                          setActionMsg(
+                            Number.isFinite(fee) && fee > 0
+                              ? `Job closed — diagnosis fee ${formatMoney(fee)} added to the bill.`
+                              : "Job closed.",
+                          );
+                          await refresh();
+                        } catch (closeErr) {
+                          setError(closeErr instanceof Error ? closeErr.message : "Could not close job");
+                        } finally {
+                          setBusy(false);
+                        }
+                      })();
                     }}
                   >
                     <h3>Close without repair</h3>
                     <p className="hint">
                       No commission, warranty or loyalty points are issued. Any price quoted at intake is cleared so
-                      the device can be handed back — add a diagnostic fee as a payment afterwards if you charged one.
+                      the device can be handed back. Add an optional diagnosis fee below to put it on the same bill.
                     </p>
                     <label>
                       Outcome
@@ -1559,6 +1660,17 @@ export function RepairDetailPage() {
                         placeholder="What you told the customer"
                       />
                     </label>
+                    <label>
+                      Diagnosis fee ({currencyCode}, optional)
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={diagnosisFee}
+                        onChange={(e) => setDiagnosisFee(e.target.value)}
+                        placeholder="0"
+                      />
+                    </label>
                     <div className="btn-row">
                       <Button type="submit" variant="danger" disabled={busy || !closureReason}>
                         Close job
@@ -1572,113 +1684,11 @@ export function RepairDetailPage() {
               </div>
             ) : null}
           </section>
-        </div>
-
-        <div className="detail-lanes">
-          <div className="lane-tabs" role="tablist" aria-label="Job sections">
-            <button type="button" role="tab" aria-selected={detailLane === "work"} className={detailLane === "work" ? "active" : ""} onClick={() => setDetailLane("work")}>
-              Bench
-            </button>
-            <button type="button" role="tab" aria-selected={detailLane === "money"} className={detailLane === "money" ? "active" : ""} onClick={() => setDetailLane("money")}>
-              Money
-            </button>
-            <button type="button" role="tab" aria-selected={detailLane === "context"} className={detailLane === "context" ? "active" : ""} onClick={() => setDetailLane("context")}>
-              Context
-            </button>
           </div>
+        ) : null}
 
-          {detailLane === "work" ? (
+          {detailLane === "parts" ? (
             <div className="lane-stack">
-              <section className="panel">
-                <h2>Warranty</h2>
-                {warranty ? (
-                  <p>
-                    <Badge tone={statusTone(warranty.status)}>{warranty.status}</Badge>{" "}
-                    {warranty.duration_days} days · ends {new Date(warranty.ends_at).toLocaleDateString()}
-                    {warranty.status === "active" ? (
-                      <form
-                        className="inline-form"
-                        style={{ marginTop: "0.75rem" }}
-                        onSubmit={(e: FormEvent) => {
-                          e.preventDefault();
-                          void run(async () => {
-                            await claimRepairWarranty(job.id, warrantyNote);
-                            const rework = await createRepairRework(job.id, warrantyNote);
-                            setWarrantyNote("");
-                            navigate(`/repairs/${rework.id}`);
-                          });
-                        }}
-                      >
-                        <Input
-                          value={warrantyNote}
-                          onChange={(e) => setWarrantyNote(e.target.value)}
-                          placeholder="What failed again?"
-                          required
-                        />
-                        <Button type="submit" disabled={busy || !warrantyNote.trim()}>
-                          Claim warranty & open return
-                        </Button>
-                      </form>
-                    ) : null}
-                  </p>
-                ) : (
-                  <p className="muted">
-                    No warranty yet.{" "}
-                    {job.status === "completed" || job.status === "collected" ? (
-                      <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => createRepairWarranty(job.id))}>
-                        Create 90-day warranty
-                      </Button>
-                    ) : (
-                      "Created automatically when the job is completed or collected."
-                    )}
-                  </p>
-                )}
-              </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Customer estimates</h2>
-              {estimates.some((e) => e.status === "pending") ? (
-                <Badge tone="pending">awaiting customer</Badge>
-              ) : estimates.some((e) => e.status === "approved") ? (
-                <Badge tone="success">approved</Badge>
-              ) : null}
-            </div>
-            <p className="hint" style={{ marginBottom: "1rem" }}>
-              Customer only sees the total amount in the portal / app — not a labor/parts split.
-            </p>
-            {canRequestParts ? (
-              <div className="btn-row" style={{ marginBottom: "1rem" }}>
-                <Button type="button" disabled={busy} onClick={() => setShowEstimateModal(true)}>
-                  Send customer estimate
-                </Button>
-              </div>
-            ) : null}
-            {estimates.length === 0 ? (
-              <EmptyState title="No estimates yet" body="Send an estimate for the customer to approve or reject." />
-            ) : (
-              <ul className="part-list">
-                {estimates.map((estimate) => (
-                  <li key={estimate.id} className="part-card">
-                    <div className="part-head">
-                      <div>
-                        <strong className="estimate-total">
-                          {estimate.currency} {estimateTotalAmount(estimate).toLocaleString()}
-                        </strong>
-                        <div className="muted">{new Date(estimate.created_at).toLocaleString()}</div>
-                      </div>
-                      <Badge tone={statusTone(estimate.status)}>{estimate.status}</Badge>
-                    </div>
-                    {estimate.notes ? <p>{estimate.notes}</p> : null}
-                    {estimate.expires_at && estimate.status === "pending" ? (
-                      <p className="hint">Expires {new Date(estimate.expires_at).toLocaleString()}</p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
           <section className="panel" id="job-parts">
             <h2>Parts (anti-leakage)</h2>
             {outstandingParts.length > 0 ? (
@@ -1921,8 +1931,27 @@ export function RepairDetailPage() {
             </div>
           ) : null}
 
-          {detailLane === "money" ? (
+          {detailLane === "payment" ? (
             <div className="lane-stack">
+            {job.authorization?.authorized_at ? (
+              <div className="auth-note" role="status">
+                <Badge tone="success">price agreed</Badge>
+                <span>
+                  {formatMoney(job.authorization.authorized_amount ?? 0)}
+                  {job.authorization.source === "customer_estimate"
+                    ? " — customer approved the estimate"
+                    : job.authorization.source === "manager_override"
+                      ? " — go-ahead recorded by staff"
+                      : job.authorization.source === "return_rework"
+                        ? " — return / follow-up job"
+                      : ""}
+                  {` on ${new Date(job.authorization.authorized_at).toLocaleString()}`}
+                </span>
+                {job.authorization.variance_reason ? (
+                  <span className="warn-text">Final charge varied: {job.authorization.variance_reason}</span>
+                ) : null}
+              </div>
+            ) : null}
           <section className="panel" id="repair-payment">
             <h2>Payment</h2>
             {balanceDue > 0.009 ? (
@@ -1993,7 +2022,13 @@ export function RepairDetailPage() {
                   setPayAmount("");
                   if (payMethod === "mpesa_stk") {
                     const id = paymentIdFromCreate(created);
-                    if (id) void pollStkPayment(id);
+                    if (id) {
+                      void pollStkPayment(id);
+                    } else {
+                      setError(
+                        "STK push sent, but we couldn't track its status here — check Payments for confirmation.",
+                      );
+                    }
                   }
                   if (willClear && payMethod === "cash") {
                     await advanceToHandoverAfterPayment("cash");
@@ -2031,8 +2066,14 @@ export function RepairDetailPage() {
                   />
                 </label>
               ) : null}
-              <Button type="submit" disabled={busy || !(Number(payAmount) > 0)}>
-                {payMethod === "mpesa_stk" ? "Send STK push" : payMethod === "mpesa_c2b" ? "Await paybill" : "Record payment"}
+              <Button type="submit" disabled={busy || stkPolling || !(Number(payAmount) > 0)}>
+                {busy || stkPolling
+                  ? "Processing…"
+                  : payMethod === "mpesa_stk"
+                    ? "Send STK push"
+                    : payMethod === "mpesa_c2b"
+                      ? "Await paybill"
+                      : "Record payment"}
               </Button>
             </form>
             ) : (
@@ -2066,7 +2107,13 @@ export function RepairDetailPage() {
                     }
                     if (lines.some((t) => t.method === "mpesa_stk")) {
                       const id = paymentIdFromCreate(created);
-                      if (id) void pollStkPayment(id);
+                      if (id) {
+                        void pollStkPayment(id);
+                      } else {
+                        setError(
+                          "STK push sent, but we couldn't track its status here — check Payments for confirmation.",
+                        );
+                      }
                     }
                   });
                 }}
@@ -2126,8 +2173,8 @@ export function RepairDetailPage() {
                   >
                     Add tender line
                   </Button>
-                  <Button type="submit" disabled={busy}>
-                    Record split payment
+                  <Button type="submit" disabled={busy || stkPolling}>
+                    {busy || stkPolling ? "Processing…" : "Record split payment"}
                   </Button>
                 </div>
               </form>
@@ -2270,8 +2317,8 @@ export function RepairDetailPage() {
                 {saleLines.length === 0 ? (
                   <p className="hint">
                     {stock.filter((b) => b.available_qty > 0 && b.sell_price > 0).length === 0
-                      ? "No sellable stock on the shelf yet — add items under Inventory first."
-                      : "Cases, chargers, glass — added here so one payment covers the job."}
+                      ? "No sellable stock yet — use Custom for one-off charges, or add items under Inventory."
+                      : "Cases, chargers, glass, or a custom charge — added here so one payment covers the job."}
                   </p>
                 ) : (
                   <ul className="list">
@@ -2279,6 +2326,9 @@ export function RepairDetailPage() {
                       <li key={line.id}>
                         <span>
                           {line.description} · ×{line.quantity} · {formatMoney(line.line_total)}
+                          {line.is_custom ? (
+                            <span className="muted"> · custom</span>
+                          ) : null}
                         </span>
                         {!paymentLocked && job.status !== "collected" ? (
                           <Button
@@ -2295,46 +2345,130 @@ export function RepairDetailPage() {
                   </ul>
                 )}
                 {!paymentLocked && job.status !== "collected" && showAccessories ? (
-                  <form
-                    className="inline-form"
-                    style={{ marginTop: "0.75rem" }}
-                    onSubmit={(e: FormEvent) => {
-                      e.preventDefault();
-                      if (!saleStockId) return;
-                      const [variantId, locationId] = saleStockId.split(":");
-                      if (!variantId || !locationId) return;
-                      void run(async () => {
-                        await addRepairSaleLine(job.id, {
-                          variant_id: variantId,
-                          location_id: locationId,
-                          quantity: Math.max(1, Number(saleQty) || 1),
-                        });
-                        setSaleQty("1");
-                      });
-                    }}
-                  >
-                    <label>
-                      Stock item
-                      <select className="input" value={saleStockId} onChange={(e) => setSaleStockId(e.target.value)}>
-                        <option value="">Select…</option>
-                        {stock
-                          .filter((b) => b.available_qty > 0 && b.sell_price > 0)
-                          .map((b) => (
-                            <option key={`${b.variant_id}:${b.location_id}`} value={`${b.variant_id}:${b.location_id}`}>
-                              {b.product_name} ({b.sku}) · {formatMoney(b.sell_price)} · {b.available_qty} at{" "}
-                              {b.location_name}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <label>
-                      Qty
-                      <Input type="number" min={1} value={saleQty} onChange={(e) => setSaleQty(e.target.value)} />
-                    </label>
-                    <Button type="submit" disabled={busy || !saleStockId}>
-                      Add to bill
-                    </Button>
-                  </form>
+                  <div style={{ marginTop: "0.75rem" }}>
+                    <div className="chip-row" style={{ marginBottom: "0.55rem" }}>
+                      <button
+                        type="button"
+                        className={saleAddMode === "stock" ? "chip chip-active" : "chip"}
+                        onClick={() => setSaleAddMode("stock")}
+                      >
+                        From stock
+                      </button>
+                      <button
+                        type="button"
+                        className={saleAddMode === "custom" ? "chip chip-active" : "chip"}
+                        onClick={() => setSaleAddMode("custom")}
+                      >
+                        Custom item
+                      </button>
+                    </div>
+                    {saleAddMode === "stock" ? (
+                      <form
+                        className="inline-form"
+                        onSubmit={(e: FormEvent) => {
+                          e.preventDefault();
+                          if (!saleStockId) return;
+                          const [variantId, locationId] = saleStockId.split(":");
+                          if (!variantId || !locationId) return;
+                          void run(async () => {
+                            await addRepairSaleLine(job.id, {
+                              variant_id: variantId,
+                              location_id: locationId,
+                              quantity: Math.max(1, Number(saleQty) || 1),
+                            });
+                            setSaleQty("1");
+                          });
+                        }}
+                      >
+                        <label>
+                          Stock item
+                          <select className="input" value={saleStockId} onChange={(e) => setSaleStockId(e.target.value)}>
+                            <option value="">Select…</option>
+                            {stock
+                              .filter((b) => b.available_qty > 0 && b.sell_price > 0)
+                              .map((b) => (
+                                <option
+                                  key={`${b.variant_id}:${b.location_id}`}
+                                  value={`${b.variant_id}:${b.location_id}`}
+                                >
+                                  {b.product_name} ({b.sku}) · {formatMoney(b.sell_price)} · {b.available_qty} at{" "}
+                                  {b.location_name}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                        <label>
+                          Qty
+                          <Input type="number" min={1} value={saleQty} onChange={(e) => setSaleQty(e.target.value)} />
+                        </label>
+                        <Button type="submit" disabled={busy || !saleStockId}>
+                          Add to bill
+                        </Button>
+                      </form>
+                    ) : (
+                      <form
+                        className="inline-form"
+                        onSubmit={(e: FormEvent) => {
+                          e.preventDefault();
+                          const desc = customSaleDesc.trim();
+                          const price = Number(customSalePrice);
+                          if (!desc || !Number.isFinite(price) || price < 0) {
+                            setError("Enter a description and a price for the custom item");
+                            return;
+                          }
+                          void run(async () => {
+                            await addRepairSaleLine(job.id, {
+                              description: desc,
+                              unit_price: price,
+                              quantity: Math.max(1, Number(customSaleQty) || 1),
+                            });
+                            setCustomSaleDesc("");
+                            setCustomSalePrice("");
+                            setCustomSaleQty("1");
+                          });
+                        }}
+                      >
+                        <label>
+                          Description
+                          <Input
+                            value={customSaleDesc}
+                            onChange={(e) => setCustomSaleDesc(e.target.value)}
+                            placeholder="e.g. Screen protector fit"
+                            required
+                          />
+                        </label>
+                        <label>
+                          Unit price ({currencyCode})
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={customSalePrice}
+                            onChange={(e) => setCustomSalePrice(e.target.value)}
+                            required
+                          />
+                        </label>
+                        <label>
+                          Qty
+                          <Input
+                            type="number"
+                            min={1}
+                            value={customSaleQty}
+                            onChange={(e) => setCustomSaleQty(e.target.value)}
+                          />
+                        </label>
+                        <Button
+                          type="submit"
+                          disabled={busy || !customSaleDesc.trim() || customSalePrice === ""}
+                        >
+                          Add to bill
+                        </Button>
+                        <p className="hint" style={{ margin: 0, flexBasis: "100%" }}>
+                          For items not tracked in inventory — won’t affect stock counts.
+                        </p>
+                      </form>
+                    )}
+                  </div>
                 ) : null}
               </div>
             ) : null}
@@ -2401,11 +2535,130 @@ export function RepairDetailPage() {
               ) : null}
             </section>
           ) : null}
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Customer estimates</h2>
+              {estimates.some((e) => e.status === "pending") ? (
+                <Badge tone="pending">awaiting customer</Badge>
+              ) : estimates.some((e) => e.status === "approved") ? (
+                <Badge tone="success">approved</Badge>
+              ) : null}
+            </div>
+            <p className="hint" style={{ marginBottom: "1rem" }}>
+              Customer only sees the total amount in the portal / app — not a labor/parts split.
+            </p>
+            {canRequestParts ? (
+              <div className="btn-row" style={{ marginBottom: "1rem" }}>
+                <Button type="button" disabled={busy} onClick={() => setShowEstimateModal(true)}>
+                  Send customer estimate
+                </Button>
+              </div>
+            ) : null}
+            {estimates.length === 0 ? (
+              <EmptyState title="No estimates yet" body="Send an estimate for the customer to approve or reject." />
+            ) : (
+              <ul className="part-list">
+                {estimates.map((estimate) => (
+                  <li key={estimate.id} className="part-card">
+                    <div className="part-head">
+                      <div>
+                        <strong className="estimate-total">
+                          {estimate.currency} {estimateTotalAmount(estimate).toLocaleString()}
+                        </strong>
+                        <div className="muted">{new Date(estimate.created_at).toLocaleString()}</div>
+                      </div>
+                      <Badge tone={statusTone(estimate.status)}>{estimate.status}</Badge>
+                    </div>
+                    {estimate.notes ? <p>{estimate.notes}</p> : null}
+                    {estimate.expires_at && estimate.status === "pending" ? (
+                      <p className="hint">Expires {new Date(estimate.expires_at).toLocaleString()}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="panel">
+            <h2>Warranty</h2>
+            {warranty ? (
+              <p>
+                <Badge tone={statusTone(warranty.status)}>{warranty.status}</Badge>{" "}
+                {warranty.duration_days} days · ends {new Date(warranty.ends_at).toLocaleDateString()}
+                {warranty.status === "active" ? (
+                  <form
+                    className="inline-form"
+                    style={{ marginTop: "0.75rem" }}
+                    onSubmit={(e: FormEvent) => {
+                      e.preventDefault();
+                      void run(async () => {
+                        await claimRepairWarranty(job.id, warrantyNote);
+                        const rework = await createRepairRework(job.id, warrantyNote);
+                        setWarrantyNote("");
+                        navigate(`/repairs/${rework.id}`);
+                      });
+                    }}
+                  >
+                    <Input
+                      value={warrantyNote}
+                      onChange={(e) => setWarrantyNote(e.target.value)}
+                      placeholder="What failed again?"
+                      required
+                    />
+                    <Button type="submit" disabled={busy || !warrantyNote.trim()}>
+                      Claim warranty & open return
+                    </Button>
+                  </form>
+                ) : null}
+              </p>
+            ) : (
+              <p className="muted">
+                No warranty yet.{" "}
+                {job.status === "completed" || job.status === "collected" ? (
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => createRepairWarranty(job.id))}>
+                    Create 90-day warranty
+                  </Button>
+                ) : (
+                  "Created automatically when the job is completed or collected."
+                )}
+              </p>
+            )}
+          </section>
             </div>
           ) : null}
 
-          {detailLane === "context" ? (
+          {detailLane === "device" ? (
             <div className="lane-stack">
+          {(job.status === "collected" || job.status === "completed") && !job.parent_job_id ? (
+            <section className="panel">
+              <h2>Customer returned this device?</h2>
+              <p className="hint">
+                Opens a linked follow-up job on the same customer and device (warranty return or come-back fix). The original job stays the payment record.
+              </p>
+              <form
+                className="inline-form"
+                onSubmit={(e: FormEvent) => {
+                  e.preventDefault();
+                  void run(async () => {
+                    const returned = await createRepairRework(job.id, returnReason);
+                    setReturnReason("");
+                    navigate(`/repairs/${returned.id}`);
+                  });
+                }}
+              >
+                <Input
+                  value={returnReason}
+                  onChange={(e) => setReturnReason(e.target.value)}
+                  placeholder="What came back / what failed?"
+                  required
+                />
+                <Button type="submit" disabled={busy || !returnReason.trim()}>
+                  Open return job
+                </Button>
+              </form>
+            </section>
+          ) : null}
           <section className="panel" id="job-customer">
             <h2>Customer & device</h2>
             <dl className="meta-dl">
@@ -2524,6 +2777,11 @@ export function RepairDetailPage() {
             </div>
           </section>
 
+            </div>
+          ) : null}
+
+          {detailLane === "history" ? (
+            <div className="lane-stack">
           <section className="panel">
             <h2>Notes</h2>
             <form
@@ -2704,7 +2962,6 @@ export function RepairDetailPage() {
           </section>
             </div>
           ) : null}
-        </div>
       </div>
 
       {showEstimateModal ? (
@@ -2740,6 +2997,12 @@ export function RepairDetailPage() {
                     total_amount: total,
                     notes: estimateNotes.trim() || undefined,
                   });
+                  const phone = customer?.phone?.trim();
+                  setActionMsg(
+                    phone
+                      ? `Estimate sent — SMS sent to ${phone}.`
+                      : "Estimate saved — no phone on file to text it to.",
+                  );
                   setEstimateTotal("");
                   setEstimateNotes("");
                   setShowEstimateModal(false);
@@ -2747,7 +3010,7 @@ export function RepairDetailPage() {
               }}
             >
               <p className="hint">
-                Customer only sees this total — labor and parts stay internal.
+                Customer only sees this total — labor and parts stay internal. Diagnosis text below is included in the SMS.
               </p>
               <label>
                 Total amount ({currencyCode})
@@ -2762,9 +3025,15 @@ export function RepairDetailPage() {
                 />
               </label>
               <label>
-                Notes (optional)
-                <Input value={estimateNotes} onChange={(e) => setEstimateNotes(e.target.value)} />
+                Diagnosis / recommendation
+                <Textarea
+                  rows={3}
+                  value={estimateNotes}
+                  onChange={(e) => setEstimateNotes(e.target.value)}
+                  placeholder="What you found and why this is the price — this gets included in the SMS sent to the customer."
+                />
               </label>
+              <p className="hint">Keep it brief — long text may split into multiple SMS segments.</p>
               <div className="btn-row">
                 <Button type="submit" disabled={busy || !estimateTotal}>
                   Send estimate
@@ -2782,6 +3051,15 @@ export function RepairDetailPage() {
           </div>
         </div>
       ) : null}
+
+      <SendSmsModal
+        open={showSmsModal}
+        onClose={() => setShowSmsModal(false)}
+        initialPhone={customer?.phone ?? ""}
+        customerId={customer?.id}
+        repairJobId={job.id}
+        title={customer?.full_name ? `SMS to ${customer.full_name}` : "Send SMS"}
+      />
     </div>
   );
 }

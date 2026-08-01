@@ -13,6 +13,8 @@ import {
   getMe,
   login as apiLogin,
   onSessionExpired,
+  refreshSession,
+  SessionExpiredError,
   signup as apiSignup,
   verifyMfaLogin,
   type LoginResult,
@@ -40,19 +42,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionExpired, setSessionExpired] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const token = getAccessToken();
     if (!token) {
       setLoading(false);
       return;
     }
-    getMe()
-      .then(setUser)
-      .catch(() => {
-        clearSession();
-        setUser(null);
-      })
-      .finally(() => setLoading(false));
+    (async () => {
+      try {
+        const me = await getMe();
+        if (!cancelled) setUser(me);
+      } catch (err) {
+        if (err instanceof SessionExpiredError) {
+          clearSession();
+          if (!cancelled) {
+            setUser(null);
+            setSessionExpired(true);
+          }
+          return;
+        }
+        // Deploy blip / brief 502: keep refresh token, try one rotation, then me.
+        try {
+          if (await refreshSession()) {
+            const me = await getMe();
+            if (!cancelled) setUser(me);
+            return;
+          }
+        } catch {
+          /* fall through */
+        }
+        if (!cancelled) setUser(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  // Keep the short-lived access token fresh while the tab is open so a brief
+  // API restart does not strand the cashier on a wave of 401s.
+  useEffect(() => {
+    if (!user) return;
+    const id = window.setInterval(() => {
+      void refreshSession().catch(() => undefined);
+    }, 10 * 60 * 1000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void refreshSession().catch(() => undefined);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [user]);
 
   useEffect(
     () =>

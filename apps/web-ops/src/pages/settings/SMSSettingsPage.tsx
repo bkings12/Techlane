@@ -221,7 +221,9 @@ export function SMSSettingsPage() {
         </div>
         <p className="hint">
           Click a helper chip to insert it into the message. Empty save / Reset restores the built-in default. Use{" "}
-          <code>{"{{helper}}"}</code> placeholders — they are replaced when the SMS is sent.
+          <code>{"{{helper}}"}</code> placeholders — they are replaced when the SMS is sent. Customized templates keep
+          your wording until you insert new helpers (e.g. <code>{"{{recommendation_line}}"}</code> on Estimate ready) or
+          reset to default.
         </p>
 
         <div className="template-list">

@@ -114,6 +114,32 @@ func (s *Service) Enqueue(ctx context.Context, in EnqueueInput) (uuid.UUID, erro
 	return id, err
 }
 
+// SendCustomSMS queues a one-off SMS whose body is taken as-is (no template rendering).
+func (s *Service) SendCustomSMS(ctx context.Context, tenantID uuid.UUID, phone, body string, repairID, customerID *uuid.UUID) (uuid.UUID, error) {
+	phone = strings.TrimSpace(phone)
+	body = strings.TrimSpace(body)
+	if phone == "" {
+		return uuid.Nil, fmt.Errorf("phone number required")
+	}
+	if body == "" {
+		return uuid.Nil, fmt.Errorf("message cannot be empty")
+	}
+	payload := map[string]any{"body": body}
+	if repairID != nil {
+		payload["repair_job_id"] = repairID.String()
+	}
+	if customerID != nil {
+		payload["customer_id"] = customerID.String()
+	}
+	return s.Enqueue(ctx, EnqueueInput{
+		TenantID:    tenantID,
+		Channel:     ChannelSMS,
+		Recipient:   phone,
+		TemplateKey: "custom",
+		Payload:     payload,
+	})
+}
+
 func (s *Service) PostStaffInbox(ctx context.Context, tenantID uuid.UUID, branchID *uuid.UUID, title, body, templateKey string, payload map[string]any) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -264,6 +290,20 @@ func (s *Service) DrainPending(ctx context.Context) (processed, sent, failed int
 func (s *Service) deliver(ctx context.Context, tenantID uuid.UUID, channel, recipient, templateKey string, payload map[string]any) error {
 	switch channel {
 	case ChannelSMS:
+		if templateKey == "custom" {
+			body, _ := payload["body"].(string)
+			if strings.TrimSpace(body) == "" {
+				return fmt.Errorf("empty message body")
+			}
+			if s.resolveSMS == nil {
+				return fmt.Errorf("SMS resolver not configured")
+			}
+			sender := s.resolveSMS(ctx, tenantID)
+			if sender == nil {
+				return fmt.Errorf("SMS provider not configured")
+			}
+			return sender.SendMessage(ctx, recipient, body)
+		}
 		custom, _ := s.loadTemplateBody(ctx, tenantID, templateKey)
 		message, err := RenderTemplateWithOverride(templateKey, custom, payload)
 		if err != nil {
@@ -634,6 +674,14 @@ func (s *Service) onEstimatePending(ctx context.Context, e events.Envelope, look
 	if eid := parseUUIDPayload(e.Payload, "estimate_id"); eid != uuid.Nil {
 		payload["estimate_id"] = eid.String()
 	}
+	recommendationLine := ""
+	if notes, ok := e.Payload["notes"].(string); ok {
+		notes = strings.TrimSpace(notes)
+		if notes != "" {
+			recommendationLine = " Note: " + notes + "."
+		}
+	}
+	payload["recommendation_line"] = recommendationLine
 	s.enqueueReachable(ctx, e.TenantID, "customer", info.Phone, "estimate.pending", payload)
 	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
 		fmt.Sprintf("Estimate pending · %s", info.JobCode),

@@ -48,6 +48,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("DELETE /categories/{id}", auth(http.HandlerFunc(h.deleteCategory)))
 	mux.Handle("GET /products", auth(http.HandlerFunc(h.listProducts)))
 	mux.Handle("POST /products", auth(http.HandlerFunc(h.createProduct)))
+	mux.Handle("POST /products/{id}/copy", auth(http.HandlerFunc(h.copyProduct)))
 	mux.Handle("PATCH /products/{id}", auth(http.HandlerFunc(h.updateProduct)))
 	mux.Handle("POST /products/{id}/image", auth(http.HandlerFunc(h.uploadProductImage)))
 	mux.Handle("DELETE /products/{id}/image", auth(http.HandlerFunc(h.deleteProductImage)))
@@ -435,6 +436,25 @@ func (h *Handler) createProduct(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
 			status = http.StatusBadRequest
+		}
+		apierrors.Write(w, status, "PRODUCT_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, p)
+}
+
+func (h *Handler) copyProduct(w http.ResponseWriter, r *http.Request) {
+	claims, _ := authz.FromContext(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	p, err := h.svc.CopyProduct(r.Context(), claims.TenantID, id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
 		}
 		apierrors.Write(w, status, "PRODUCT_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
 		return

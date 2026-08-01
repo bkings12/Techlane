@@ -2587,6 +2587,33 @@ input {
 .pdp-info .section-title {
   font-size: clamp(1.5rem, 3vw, 2rem);
 }
+.pdp-description {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 0.5px solid var(--li-line);
+}
+.pdp-description h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--li-muted);
+  margin: 0 0 0.5rem;
+}
+.pdp-description p {
+  color: var(--li-dark);
+  line-height: 1.7;
+  margin: 0 0 0.75rem;
+}
+.pdp-description strong {
+  font-weight: 600;
+}
+.pdp-description ul,
+.pdp-description ol {
+  color: var(--li-dark);
+  line-height: 1.7;
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+}
 .product-detail .reviews-section {
   border-top: 1px solid var(--line);
   padding-top: 2rem;

@@ -96,7 +96,6 @@ const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
       { to: "/repairs", label: "Jobs", short: "Jobs", roles: ["owner", "manager", "technician", "cashier"], end: true },
       { to: "/repairs/pos", label: "Job POS", short: "Job POS", roles: ["owner", "manager", "technician", "cashier"] },
       { to: "/customers", label: "Customers", short: "Clients", roles: ["owner", "manager", "technician", "cashier"] },
-      { to: "/counter", label: "Counter", short: "Counter", roles: ["owner", "manager", "cashier", "technician"] },
     ],
   },
   {

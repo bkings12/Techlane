@@ -301,7 +301,11 @@ export function POSPage() {
       await refreshSales().catch(() => undefined);
       void printReceipt(sale.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Complete failed");
+      const msg = err instanceof Error ? err.message : "Complete failed";
+      setError(msg);
+      if (isTerminalStkError(msg)) {
+        setLast((prev) => (prev ? { ...prev, payment: { ...prev.payment, status: "failed" } } : prev));
+      }
     } finally {
       setBusy(false);
     }
@@ -337,6 +341,9 @@ export function POSPage() {
           const msg = err instanceof Error ? err.message : "";
           if (isTerminalStkError(msg)) {
             setError(msg || "STK failed or cancelled");
+            setLast((prev) =>
+              prev ? { ...prev, payment: { ...prev.payment, status: "failed" } } : prev,
+            );
             break;
           }
           // keep polling until timeout
@@ -657,10 +664,15 @@ export function POSPage() {
                   </>
                 ) : null}
               </dl>
-              {!last.completed && last.payment.method === "mpesa_stk" ? (
+              {!last.completed && last.payment.method === "mpesa_stk" && last.payment.status !== "failed" ? (
                 <Button type="button" disabled={busy || stkPolling} onClick={() => void finishSTK()}>
                   Check payment now
                 </Button>
+              ) : null}
+              {!last.completed && last.payment.method === "mpesa_stk" && last.payment.status === "failed" ? (
+                <p className="form-error" style={{ marginTop: "0.5rem" }}>
+                  Customer cancelled or STK timed out — start a new charge if they still want to pay.
+                </p>
               ) : null}
               {!last.completed && last.payment.method === "mpesa_c2b" ? (
                 <Button type="button" disabled={busy} onClick={() => void finishC2B()}>

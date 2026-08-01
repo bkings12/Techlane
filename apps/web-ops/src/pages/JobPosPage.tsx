@@ -60,7 +60,6 @@ const RECENT_DEVICES: ComboOption[] = [
 ];
 
 const DEVICE_KINDS = ["phone", "laptop", "tablet", "other"] as const;
-const QUICK_PICK_CAP = 5;
 
 type DeviceKind = (typeof DEVICE_KINDS)[number];
 type PendingPhoto = { file: File; preview: string };
@@ -119,6 +118,19 @@ export function JobPosPage() {
       <PageHeader
         title="Job POS"
         subtitle="Take a device in — customer, device, issue, then create the job."
+        actions={
+          <nav className="job-pos-quick" aria-label="Quick actions">
+            <Link to="/pos" className="btn btn-secondary">
+              Sell
+            </Link>
+            <Link to="/counter/fix" className="btn btn-ghost">
+              Same-day fix
+            </Link>
+            <Link to="/counter/pickup" className="btn btn-ghost">
+              Pickup
+            </Link>
+          </nav>
+        }
       />
       <QuickIntake
         branchId={branchId}
@@ -139,10 +151,6 @@ function QuickIntake({
   onCreated: (job: RepairJob) => void;
 }) {
   const { formatMoney } = useCurrency();
-  const [recentCustomers, setRecentCustomers] = useState<Customer[]>([]);
-  const [expandCustomers, setExpandCustomers] = useState(false);
-  const [expandDevices, setExpandDevices] = useState(false);
-  const [expandIssues, setExpandIssues] = useState(false);
 
   const [customerValue, setCustomerValue] = useState("");
   const [customerOptions, setCustomerOptions] = useState<ComboOption[]>([
@@ -162,6 +170,7 @@ function QuickIntake({
   const [issueValue, setIssueValue] = useState("");
   const [issueOptions, setIssueOptions] = useState<ComboOption[]>(FALLBACK_ISSUES);
   const [conditionCatalog, setConditionCatalog] = useState<string[]>(FALLBACK_CONDITION_TAGS);
+  const [conditionPickKey, setConditionPickKey] = useState(0);
   const [problem, setProblem] = useState("");
 
   const [toDiagnose, setToDiagnose] = useState(true);
@@ -176,13 +185,6 @@ function QuickIntake({
   const [actionMsg, setActionMsg] = useState("");
 
   useEffect(() => {
-    // TODO: order by last-visit date once available
-    listCustomers()
-      .then((r) => setRecentCustomers((r.items ?? []).slice(0, 12)))
-      .catch(() => setRecentCustomers([]));
-  }, []);
-
-  useEffect(() => {
     let cancelled = false;
     Promise.all([
       listIntakePresets("issue"),
@@ -190,7 +192,6 @@ function QuickIntake({
     ])
       .then(([issues, tags]) => {
         if (cancelled) return;
-        // API already orders by sort_order — keep that ranking for quick picks.
         const issueItems = (issues.items ?? []).map((p) => ({ value: p.label, label: p.label }));
         const tagItems = (tags.items ?? []).map((p) => p.label);
         if (issueItems.length) setIssueOptions(issueItems);
@@ -204,43 +205,17 @@ function QuickIntake({
     };
   }, []);
 
-  useEffect(() => {
-    setExpandDevices(false);
-  }, [deviceKind]);
-
   const deviceOptions = useMemo(() => {
     return RECENT_DEVICES.filter((d) => !d.sublabel || d.sublabel === deviceKind || deviceKind === "other");
   }, [deviceKind]);
 
-  const quickCustomers = useMemo(() => {
-    const walkIn = { id: WALK_IN_VALUE, full_name: "Walk-in", phone: "No record" };
-    const rest = recentCustomers.map((c) => ({
-      id: c.id,
-      full_name: c.full_name,
-      phone: c.phone || "No phone",
-    }));
-    const capped = rest.slice(0, QUICK_PICK_CAP);
-    return {
-      items: [walkIn, ...(expandCustomers ? rest : capped)],
-      more: rest.length > QUICK_PICK_CAP,
-    };
-  }, [recentCustomers, expandCustomers]);
-
-  const quickDevices = useMemo(() => {
-    const capped = deviceOptions.slice(0, QUICK_PICK_CAP);
-    return {
-      items: expandDevices ? deviceOptions : capped,
-      more: deviceOptions.length > QUICK_PICK_CAP,
-    };
-  }, [deviceOptions, expandDevices]);
-
-  const quickIssues = useMemo(() => {
-    const capped = issueOptions.slice(0, QUICK_PICK_CAP);
-    return {
-      items: expandIssues ? issueOptions : capped,
-      more: issueOptions.length > QUICK_PICK_CAP,
-    };
-  }, [issueOptions, expandIssues]);
+  const conditionOptions = useMemo(
+    () =>
+      conditionCatalog
+        .filter((tag) => !conditionTags.includes(tag))
+        .map((tag) => ({ value: tag, label: tag })),
+    [conditionCatalog, conditionTags],
+  );
 
   const canSubmit =
     Boolean(branchId) &&
@@ -303,21 +278,6 @@ function QuickIntake({
     setCustomerPhone(opt.sublabel && opt.sublabel !== "No phone" ? opt.sublabel : "");
   }
 
-  function pickCustomer(id: string, name: string, phone: string) {
-    onCustomerSelect({
-      value: id,
-      label: name,
-      sublabel: phone,
-    });
-    if (id !== WALK_IN_VALUE) {
-      setCustomerOptions((prev) => {
-        const walk = prev[0] ?? { value: WALK_IN_VALUE, label: "Walk-in (no record)", sublabel: "Anonymous check-in" };
-        const opt = { value: id, label: name, sublabel: phone };
-        return [walk, opt, ...prev.slice(1).filter((p) => p.value !== id)];
-      });
-    }
-  }
-
   function onDeviceSelect(opt: ComboOption) {
     setDeviceValue(opt.value);
     setLast(null);
@@ -337,8 +297,17 @@ function QuickIntake({
     setLast(null);
   }
 
-  function toggleTag(tag: string) {
-    setConditionTags((cur) => (cur.includes(tag) ? cur.filter((t) => t !== tag) : [...cur, tag]));
+  function addConditionTag(tag: string) {
+    const label = tag.trim();
+    if (!label) return;
+    setConditionTags((cur) => (cur.includes(label) ? cur : [...cur, label]));
+    setConditionCatalog((cur) => (cur.includes(label) ? cur : [...cur, label]));
+    setConditionPickKey((k) => k + 1);
+    setLast(null);
+  }
+
+  function removeConditionTag(tag: string) {
+    setConditionTags((cur) => cur.filter((t) => t !== tag));
     setLast(null);
   }
 
@@ -499,7 +468,7 @@ function QuickIntake({
         <div className="panel-head">
           <div>
             <h2>Quick pick</h2>
-            <span className="muted">Search or tap a shortcut</span>
+            <span className="muted">Search to fill the ticket</span>
           </div>
         </div>
 
@@ -527,7 +496,7 @@ function QuickIntake({
           </fieldset>
         </div>
 
-        <h3 className="intake-pick-heading">Customers</h3>
+        <h3 className="intake-pick-heading">Customer</h3>
         <SearchableCombobox
           label="Search customer"
           placeholder="Search name or phone…"
@@ -547,33 +516,12 @@ function QuickIntake({
             setCustomerName(c.full_name);
             setCustomerPhone(c.phone ?? "");
             setAnonymous(false);
-            setRecentCustomers((prev) => [c, ...prev.filter((x) => x.id !== c.id)].slice(0, 12));
             setLast(null);
             return opt;
           }}
         />
-        <ul className="pos-catalog-grid" style={{ marginTop: "0.65rem" }}>
-          {quickCustomers.items.map((c) => (
-            <li key={c.id}>
-              <button
-                type="button"
-                className={`pos-item${customerValue === c.id ? " is-selected" : ""}`}
-                onClick={() => pickCustomer(c.id, c.full_name, c.phone)}
-              >
-                <strong>{c.full_name}</strong>
-                <span className="muted">{c.phone}</span>
-                <span className="pos-add-label">{customerValue === c.id ? "On ticket" : "Use customer"}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-        {quickCustomers.more ? (
-          <button type="button" className="linkish" onClick={() => setExpandCustomers((v) => !v)}>
-            {expandCustomers ? "Show fewer" : "More customers"}
-          </button>
-        ) : null}
 
-        <h3 className="intake-pick-heading">Devices</h3>
+        <h3 className="intake-pick-heading">Device</h3>
         <SearchableCombobox
           label="Search device"
           placeholder="Brand and model…"
@@ -595,34 +543,8 @@ function QuickIntake({
             return opt;
           }}
         />
-        {quickDevices.items.length === 0 ? (
-          <p className="muted" style={{ marginTop: "0.65rem" }}>
-            No device presets for this kind — search or add above.
-          </p>
-        ) : (
-          <ul className="pos-catalog-grid" style={{ marginTop: "0.65rem" }}>
-            {quickDevices.items.map((d) => (
-              <li key={d.value}>
-                <button
-                  type="button"
-                  className={`pos-item${deviceValue === d.value ? " is-selected" : ""}`}
-                  onClick={() => onDeviceSelect(d)}
-                >
-                  <strong>{d.label}</strong>
-                  <span className="muted">{d.sublabel ?? deviceKind}</span>
-                  <span className="pos-add-label">{deviceValue === d.value ? "On ticket" : "Use device"}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {quickDevices.more ? (
-          <button type="button" className="linkish" onClick={() => setExpandDevices((v) => !v)}>
-            {expandDevices ? "Show fewer" : "More devices"}
-          </button>
-        ) : null}
 
-        <h3 className="intake-pick-heading">Common issues</h3>
+        <h3 className="intake-pick-heading">Issue</h3>
         <SearchableCombobox
           label="Search issue"
           placeholder="What’s wrong?"
@@ -638,25 +560,6 @@ function QuickIntake({
             return opt;
           }}
         />
-        <ul className="pos-catalog-grid" style={{ marginTop: "0.65rem" }}>
-          {quickIssues.items.map((issue) => (
-            <li key={issue.value}>
-              <button
-                type="button"
-                className={`pos-item${issueValue === issue.value ? " is-selected" : ""}`}
-                onClick={() => onIssueSelect(issue)}
-              >
-                <strong>{issue.label}</strong>
-                <span className="pos-add-label">{issueValue === issue.value ? "On ticket" : "Use issue"}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-        {quickIssues.more ? (
-          <button type="button" className="linkish" onClick={() => setExpandIssues((v) => !v)}>
-            {expandIssues ? "Show fewer" : "More issues"}
-          </button>
-        ) : null}
       </section>
 
       <aside className="stack">
@@ -676,63 +579,65 @@ function QuickIntake({
           </div>
 
           <form className="stack-form" onSubmit={(e) => void submit(e)}>
-            <div className="ticket-line">
-              <span className="ticket-line-label">Customer</span>
-              <span className="ticket-line-value">{customerTicketLabel || "Not set"}</span>
-              {customerValue ? (
-                <button
-                  type="button"
-                  className="linkish"
-                  onClick={() => {
-                    setCustomerValue("");
-                    setCustomerName("");
-                    setCustomerPhone("");
-                    setAnonymous(false);
-                    setLast(null);
-                  }}
-                >
-                  Change
-                </button>
-              ) : null}
-            </div>
+            <div className="ticket-summary">
+              <div className="ticket-line">
+                <span className="ticket-line-label">Customer</span>
+                <span className="ticket-line-value">{customerTicketLabel || "Not set"}</span>
+                {customerValue ? (
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => {
+                      setCustomerValue("");
+                      setCustomerName("");
+                      setCustomerPhone("");
+                      setAnonymous(false);
+                      setLast(null);
+                    }}
+                  >
+                    Change
+                  </button>
+                ) : null}
+              </div>
 
-            <div className="ticket-line">
-              <span className="ticket-line-label">Device</span>
-              <span className="ticket-line-value">
-                {deviceTicketLabel ? `${deviceTicketLabel} · ${deviceKind}` : "Not set"}
-              </span>
-              {deviceTicketLabel || deviceValue ? (
-                <button
-                  type="button"
-                  className="linkish"
-                  onClick={() => {
-                    setDeviceValue("");
-                    setBrand("");
-                    setModel("");
-                    setLast(null);
-                  }}
-                >
-                  Change
-                </button>
-              ) : null}
-            </div>
+              <div className="ticket-line">
+                <span className="ticket-line-label">Device</span>
+                <span className="ticket-line-value">
+                  {deviceTicketLabel ? `${deviceTicketLabel} · ${deviceKind}` : "Not set"}
+                </span>
+                {deviceTicketLabel || deviceValue ? (
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => {
+                      setDeviceValue("");
+                      setBrand("");
+                      setModel("");
+                      setLast(null);
+                    }}
+                  >
+                    Change
+                  </button>
+                ) : null}
+              </div>
 
-            <div className="ticket-line">
-              <span className="ticket-line-label">Issue</span>
-              <span className="ticket-line-value">{issueTicketLabel || "Not set"}</span>
-              {issueTicketLabel || issueValue ? (
-                <button
-                  type="button"
-                  className="linkish"
-                  onClick={() => {
-                    setIssueValue("");
-                    setProblem("");
-                    setLast(null);
-                  }}
-                >
-                  Change
-                </button>
-              ) : null}
+              <div className="ticket-line">
+                <span className="ticket-line-label">Issue</span>
+                <span className="ticket-line-value">{issueTicketLabel || "Not set"}</span>
+                {issueTicketLabel || issueValue ? (
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => {
+                      setIssueValue("");
+                      setProblem("");
+                      setLast(null);
+                    }}
+                  >
+                    Change
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             <label>
@@ -748,50 +653,77 @@ function QuickIntake({
               />
             </label>
 
-            <PhotoCaptureField
-              label={deviceKind === "phone" ? "IMEI / serial photo" : "Serial photo"}
-              hint="Photo of the sticker or barcode — scans when the browser can."
-              previewUrl={imeiPhoto?.preview}
-              onFile={(file) => void onImeiPhoto(file)}
-              onClear={() =>
-                setImeiPhoto((prev) => {
-                  if (prev) URL.revokeObjectURL(prev.preview);
-                  return null;
-                })
-              }
-            />
-            <PhotoCaptureField
-              label="Device condition photo"
-              hint="Cracks, missing parts, water marks."
-              previewUrl={devicePhoto?.preview}
-              onFile={(file) => void onDevicePhoto(file)}
-              onClear={() =>
-                setDevicePhoto((prev) => {
-                  if (prev) URL.revokeObjectURL(prev.preview);
-                  return null;
-                })
-              }
-            />
+            <details className="ticket-photos">
+              <summary>
+                Photos
+                <span className="muted">
+                  {imeiPhoto || devicePhoto
+                    ? ` · ${(imeiPhoto ? 1 : 0) + (devicePhoto ? 1 : 0)} attached`
+                    : " · optional"}
+                </span>
+              </summary>
+              <div className="ticket-photos-body">
+                <PhotoCaptureField
+                  label={deviceKind === "phone" ? "IMEI / serial photo" : "Serial photo"}
+                  hint="Photo of the sticker or barcode — scans when the browser can."
+                  previewUrl={imeiPhoto?.preview}
+                  onFile={(file) => void onImeiPhoto(file)}
+                  onClear={() =>
+                    setImeiPhoto((prev) => {
+                      if (prev) URL.revokeObjectURL(prev.preview);
+                      return null;
+                    })
+                  }
+                />
+                <PhotoCaptureField
+                  label="Device condition photo"
+                  hint="Cracks, missing parts, water marks."
+                  previewUrl={devicePhoto?.preview}
+                  onFile={(file) => void onDevicePhoto(file)}
+                  onClear={() =>
+                    setDevicePhoto((prev) => {
+                      if (prev) URL.revokeObjectURL(prev.preview);
+                      return null;
+                    })
+                  }
+                />
+              </div>
+            </details>
 
-            <fieldset className="intake-checklist">
-              <legend>Condition tags</legend>
-              <div className="intake-tag-row">
-                {conditionCatalog.map((tag) => {
-                  const on = conditionTags.includes(tag);
-                  return (
+            <div className="stack-form" style={{ gap: "0.45rem" }}>
+              <SearchableCombobox
+                key={conditionPickKey}
+                label="Condition tags"
+                placeholder="Search condition…"
+                options={conditionOptions}
+                value=""
+                onSelect={(opt) => addConditionTag(opt.value || opt.label)}
+                addNewFields={{ primary: "Condition note" }}
+                onAddNew={async ({ primary }) => {
+                  addConditionTag(primary);
+                  return { value: primary.trim(), label: primary.trim() };
+                }}
+              />
+              {conditionTags.length > 0 ? (
+                <div className="intake-tag-row">
+                  {conditionTags.map((tag) => (
                     <button
                       key={tag}
                       type="button"
-                      className={`intake-tag${on ? " is-on" : ""}`}
-                      aria-pressed={on}
-                      onClick={() => toggleTag(tag)}
+                      className="intake-tag is-on"
+                      onClick={() => removeConditionTag(tag)}
+                      title="Remove"
                     >
                       {tag}
                     </button>
-                  );
-                })}
-              </div>
-            </fieldset>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted" style={{ margin: 0 }}>
+                  None yet — search or add above. Tap a selected tag to remove it.
+                </p>
+              )}
+            </div>
 
             <div className="intake-amount-block">
               <label className="checkbox-row">

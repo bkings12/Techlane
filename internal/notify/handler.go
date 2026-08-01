@@ -30,6 +30,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("POST /notifications/{id}/ack", auth(http.HandlerFunc(h.ackNotification)))
 	mux.Handle("GET /sms/templates", auth(http.HandlerFunc(h.listSMSTemplates)))
 	mux.Handle("PUT /sms/templates/{key}", auth(http.HandlerFunc(h.putSMSTemplate)))
+	mux.Handle("POST /sms/send", auth(http.HandlerFunc(h.sendCustomSMS)))
 	mux.Handle("POST /repairs/{id}/sms/resend-intake", auth(http.HandlerFunc(h.resendIntakeSMS)))
 }
 
@@ -170,4 +171,37 @@ func (h *Handler) resendIntakeSMS(w http.ResponseWriter, r *http.Request) {
 		"template_key": templateKey,
 		"phone":        phone,
 	})
+}
+
+func (h *Handler) sendCustomSMS(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if !claims.HasPermission("customers.write") && !claims.HasPermission("repairs.create") && !claims.HasPermission("*") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "customers.write or repairs.create required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		Phone        string     `json:"phone"`
+		Body         string     `json:"body"`
+		RepairJobID  *uuid.UUID `json:"repair_job_id"`
+		CustomerID   *uuid.UUID `json:"customer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	id, err := h.svc.SendCustomSMS(r.Context(), claims.TenantID, req.Phone, req.Body, req.RepairJobID, req.CustomerID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		msg := err.Error()
+		if strings.Contains(msg, "phone") || strings.Contains(msg, "message") || strings.Contains(msg, "empty") {
+			status = http.StatusBadRequest
+		}
+		apierrors.Write(w, status, "NOTIFY_FAILED", msg, httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"id": id.String(), "status": "queued"})
 }

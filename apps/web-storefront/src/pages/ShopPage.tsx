@@ -90,14 +90,26 @@ export function ShopPage() {
   const catalogRef = useRef<HTMLDivElement>(null);
 
   const brands = useMemo(() => {
+    // Facet counts ignore the active brand so staff can switch brands without
+    // the list collapsing to a single option. Still respect category/price/q.
+    const q = query.trim().toLowerCase();
+    const min = minPrice ? Number(minPrice) : undefined;
+    const max = maxPrice ? Number(maxPrice) : undefined;
     const counts = new Map<string, number>();
     for (const item of catalog) {
+      if (categoryFilter && (item.category ?? "") !== categoryFilter) continue;
+      if (min != null && !Number.isNaN(min) && item.sell_price < min) continue;
+      if (max != null && !Number.isNaN(max) && item.sell_price > max) continue;
+      if (q) {
+        const hay = `${item.product_name} ${item.brand ?? ""} ${item.category ?? ""} ${item.sku}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
       const b = item.brand?.trim();
       if (!b) continue;
       counts.set(b, (counts.get(b) ?? 0) + 1);
     }
     return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [catalog]);
+  }, [catalog, query, categoryFilter, minPrice, maxPrice]);
 
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -110,9 +122,11 @@ export function ShopPage() {
   }, [catalog]);
 
   const categoryTree = useMemo(() => {
-    const fromCms = content?.categories ?? [];
-    if (fromCms.length > 0) return buildShopCategoryTree(fromCms, categoryCounts);
-    return [...categoryCounts.entries()]
+    // Prefer a unique name list driven by products that are actually for sale.
+    // CMS can contain duplicate display names (same leaf under different parents)
+    // which would otherwise render twice with inflated shared counts.
+    const fromCatalog = [...categoryCounts.entries()]
+      .filter(([, count]) => count > 0)
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([name, count]) => ({
         id: name,
@@ -122,6 +136,39 @@ export function ShopPage() {
         count,
         children: [] as CatNode[],
       }));
+
+    const fromCms = content?.categories ?? [];
+    if (fromCms.length === 0) return fromCatalog;
+
+    const tree = buildShopCategoryTree(fromCms, categoryCounts);
+    const deduped: CatNode[] = [];
+    const seen = new Set<string>();
+
+    function walk(nodes: CatNode[]) {
+      for (const node of nodes) {
+        const name = node.name.trim();
+        const kids = node.children.filter((c) => (categoryCounts.get(c.name) ?? 0) > 0);
+        const count = categoryCounts.get(name) ?? 0;
+        if (count <= 0 && kids.length === 0) continue;
+        if (seen.has(name)) {
+          // Already listed — still walk children under the first occurrence.
+          walk(kids);
+          continue;
+        }
+        seen.add(name);
+        deduped.push({ ...node, count, children: [] });
+        // Flatten children into the top-level list by name so duplicate parents
+        // don't create a second "Phone Chargers" row.
+        walk(kids);
+      }
+    }
+    walk(tree);
+
+    // Any catalog categories missing from CMS still appear.
+    for (const row of fromCatalog) {
+      if (!seen.has(row.name)) deduped.push(row);
+    }
+    return deduped;
   }, [content?.categories, categoryCounts]);
 
   const shopBanners = useMemo(() => {

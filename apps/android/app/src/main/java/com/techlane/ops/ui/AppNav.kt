@@ -78,6 +78,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -1432,7 +1437,26 @@ fun IntakeScreen(onBack: () -> Unit, onOpenPos: () -> Unit = {}, onCreated: (Str
     var customerWaiting by rememberSaveable { mutableStateOf(false) }
     var waitMinutes by rememberSaveable { mutableStateOf("45") }
     var accessoriesText by rememberSaveable { mutableStateOf("") }
-    var conditionNotes by rememberSaveable { mutableStateOf("") }
+    var conditionTags by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var conditionOther by rememberSaveable { mutableStateOf("") }
+    var issuePresets by remember {
+        mutableStateOf(
+            listOf("Broken screen", "Not charging", "No power", "Battery", "Water damage", "Software"),
+        )
+    }
+    var conditionPresets by remember {
+        mutableStateOf(
+            listOf(
+                "Back cover missing",
+                "Screen scratches",
+                "Powers on",
+                "Does not power on",
+                "Liquid marks",
+                "Bent frame",
+                "Missing screws",
+            ),
+        )
+    }
     var devicePasscode by rememberSaveable { mutableStateOf("") }
     var devicePasscodeVisible by remember { mutableStateOf(false) }
     var assignToMe by rememberSaveable { mutableStateOf(true) }
@@ -1461,7 +1485,8 @@ fun IntakeScreen(onBack: () -> Unit, onOpenPos: () -> Unit = {}, onCreated: (Str
     val stepLabels = if (serviceType == "quick_replacement") listOf("Customer", "Device", "Replacement") else listOf("Customer", "Device", "Service", "Confirm")
     val hasDraft = customerName.isNotBlank() || customerPhone.isNotBlank() || brand.isNotBlank() ||
         model.isNotBlank() || imei.isNotBlank() || problem.isNotBlank() || chargeAmount.isNotBlank() ||
-        promisedDate.isNotBlank() || accessoriesText.isNotBlank() || conditionNotes.isNotBlank() ||
+        promisedDate.isNotBlank() || accessoriesText.isNotBlank() || conditionTags.isNotEmpty() ||
+        conditionOther.isNotBlank() ||
         devicePasscode.isNotBlank() || imeiPhoto != null || devicePhoto != null || anonymous
 
     fun navigateBack() {
@@ -1483,6 +1508,25 @@ fun IntakeScreen(onBack: () -> Unit, onOpenPos: () -> Unit = {}, onCreated: (Str
             customerPhone.trim().length >= 3 -> customerPhone.trim()
             customerName.trim().length >= 2 -> customerName.trim()
             else -> ""
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val issues = runCatching {
+            withContext(Dispatchers.IO) { ApiClient.listIntakePresets("issue") }
+        }.getOrNull()
+        if (issues != null && issues.length() > 0) {
+            issuePresets = (0 until issues.length()).mapNotNull { i ->
+                issues.getJSONObject(i).optString("label").takeIf { it.isNotBlank() && it != "null" }
+            }
+        }
+        val tags = runCatching {
+            withContext(Dispatchers.IO) { ApiClient.listIntakePresets("condition_tag") }
+        }.getOrNull()
+        if (tags != null && tags.length() > 0) {
+            conditionPresets = (0 until tags.length()).mapNotNull { i ->
+                tags.getJSONObject(i).optString("label").takeIf { it.isNotBlank() && it != "null" }
+            }
         }
     }
 
@@ -1877,8 +1921,17 @@ fun IntakeScreen(onBack: () -> Unit, onOpenPos: () -> Unit = {}, onCreated: (Str
         )
         Text("Common issues", style = MaterialTheme.typography.labelMedium, color = Brand.TextSecondary)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            (if (serviceType == "quick_replacement") listOf("Battery replacement", "Screen replacement", "Charging port", "Camera", "Speaker", "Back cover") else listOf("Broken screen", "Not charging", "No power", "Battery", "Water damage", "Software")).forEach { issue ->
-                FilterChip(selected = problem == issue, onClick = { problem = issue }, label = { Text(issue) })
+            val chips = if (serviceType == "quick_replacement") {
+                listOf("Battery replacement", "Screen replacement", "Charging port", "Camera", "Speaker", "Back cover")
+            } else {
+                issuePresets
+            }
+            chips.forEach { issue ->
+                FilterChip(
+                    selected = problem == issue,
+                    onClick = { problem = if (problem == issue) "" else issue },
+                    label = { Text(issue) },
+                )
             }
         }
         // Whether the price is known at intake changes the whole shape of the job:
@@ -2111,10 +2164,29 @@ fun IntakeScreen(onBack: () -> Unit, onOpenPos: () -> Unit = {}, onCreated: (Str
             supportingText = { Text("Example: charger, case, SIM card") },
             modifier = Modifier.fillMaxWidth(),
         )
+        SectionLabel("Condition tags")
+        Text(
+            "Tap what you can see on the device. Add anything else below.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Brand.TextSecondary,
+        )
+        Row(modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            conditionPresets.forEach { tag ->
+                val on = tag in conditionTags
+                FilterChip(
+                    selected = on,
+                    onClick = {
+                        conditionTags = if (on) conditionTags - tag else conditionTags + tag
+                    },
+                    label = { Text(tag) },
+                )
+            }
+        }
         OutlinedTextField(
-            value = conditionNotes,
-            onValueChange = { conditionNotes = it },
-            label = { Text("Existing condition") },
+            value = conditionOther,
+            onValueChange = { conditionOther = it },
+            label = { Text("Something else (optional)") },
+            supportingText = { Text("Freeform note if none of the tags fit") },
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
@@ -2284,7 +2356,8 @@ fun IntakeScreen(onBack: () -> Unit, onOpenPos: () -> Unit = {}, onCreated: (Str
                                 customerCredit = customerCredit,
                                 creditDueDate = creditDueDate.takeIf { customerCredit }?.let { "${it}T00:00:00Z" },
                                 intakeAccessories = accessoriesText.split(",").map { it.trim() }.filter { it.isNotBlank() },
-                                intakeCondition = conditionNotes.trim().ifBlank { null },
+                                intakeCondition = conditionOther.trim().ifBlank { null },
+                                conditionTags = conditionTags,
                                 devicePasscode = devicePasscode.trim().ifBlank { null },
                             )
                             val id = created.getString("id")
@@ -2389,7 +2462,8 @@ fun IntakeScreen(onBack: () -> Unit, onOpenPos: () -> Unit = {}, onCreated: (Str
                             .put("promised_date", promisedDate)
                             .put("promised_time", promisedTime)
                             .put("intake_accessories", accessoriesText)
-                            .put("intake_condition", conditionNotes)
+                            .put("intake_condition", conditionOther)
+                            .put("condition_tags", org.json.JSONArray(conditionTags))
                             .put("device_passcode", devicePasscode)
                         if (assignToMe) payload.put("technician_id", me.optString("id"))
                         if (branchId != null) payload.put("branch_id", branchId)
@@ -2560,17 +2634,12 @@ fun JobDetailScreen(
     var saleStockQuery by rememberSaveable { mutableStateOf("") }
     var saleStockKey by rememberSaveable { mutableStateOf("") }
     var saleQty by rememberSaveable { mutableStateOf("1") }
-    var showWorkDetails by remember { mutableStateOf(false) }
+    var detailTab by rememberSaveable { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     val snackbarHostState = LocalSnackbarHost.current
     val context = LocalContext.current
     val jobScroll = rememberScrollState()
     val handoverBringIntoView = remember { BringIntoViewRequester() }
-    val overviewBringIntoView = remember { BringIntoViewRequester() }
-    val workBringIntoView = remember { BringIntoViewRequester() }
-    val partsBringIntoView = remember { BringIntoViewRequester() }
-    val paymentBringIntoView = remember { BringIntoViewRequester() }
-    val historyBringIntoView = remember { BringIntoViewRequester() }
 
     fun refresh() {
         scope.launch {
@@ -2685,6 +2754,30 @@ fun JobDetailScreen(
         }
     }
 
+    LaunchedEffect(job, payments) {
+        val jobObj = job ?: return@LaunchedEffect
+        val status = jobObj.optString("status")
+        val collectableForPay = status == "ready_for_pickup" || status == "completed" ||
+            status == "cancelled" || status == "unrepairable"
+        if (!collectableForPay) return@LaunchedEffect
+        val paid = payments
+            .filter { it.optString("status") in setOf("allocated", "confirmed", "pending_handover", "provisional") }
+            .sumOf { it.optDouble("amount", 0.0) }
+        val due = when {
+            jobObj.has("balance_due") && !jobObj.isNull("balance_due") -> jobObj.optDouble("balance_due", 0.0)
+            else -> {
+                val approvedEst = jobObj.optDouble("approved_estimate_total", Double.NaN)
+                val charge = if (!approvedEst.isNaN() && approvedEst > 0) approvedEst else jobObj.optDouble("labor_amount", 0.0)
+                val amountDue = charge + jobObj.optDouble("sale_lines_total", 0.0)
+                (amountDue - paid).coerceAtLeast(0.0)
+            }
+        }
+        if (due > 0.009) {
+            detailTab = 1
+        }
+    }
+
+
     val j = job
     val detailTitle = j?.optString("job_code")?.ifBlank { null }
         ?: j?.getString("id")?.take(8)
@@ -2730,222 +2823,42 @@ fun JobDetailScreen(
             )
         }
         FeedbackBanner(message = message, error = error)
-        Spacer(Modifier.height(1.dp).bringIntoViewRequester(overviewBringIntoView))
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(
-                "Overview" to overviewBringIntoView, "Work" to workBringIntoView, "Parts" to partsBringIntoView,
-                "Payment" to paymentBringIntoView, "History" to historyBringIntoView,
-            ).forEach { (label, target) ->
-                FilterChip(selected = false, onClick = { scope.launch { target.bringIntoView() } }, label = { Text(label) })
-            }
-        }
-        RepairStageRail(j.optString("status"))
-        if (j.optBoolean("has_device_passcode")) {
-            BrandCard {
-                BrandSectionTitle("Device access")
-                Text(
-                    if (revealedPasscode.isBlank()) "Passcode captured and encrypted" else "Passcode: $revealedPasscode",
-                    color = Brand.TextPrimary,
-                )
-                TextButton(
-                    onClick = {
-                        busy = true
-                        scope.launch {
-                            try {
-                                revealedPasscode = withContext(Dispatchers.IO) { ApiClient.revealRepairPasscode(jobId) }
-                                message = "Passcode reveal recorded on the timeline"
-                            } catch (e: Exception) {
-                                error = e.message
-                            } finally {
-                                busy = false
-                            }
-                        }
-                    },
-                    enabled = !busy,
-                ) {
-                    Text(if (revealedPasscode.isBlank()) "Reveal passcode (audited)" else "Reveal again")
-                }
-            }
-        }
-        val parentJobId = j.optString("parent_job_id").takeIf { it.isNotBlank() && it != "null" }
-        val parentJobCode = j.optString("parent_job_code").takeIf { it.isNotBlank() && it != "null" }
-        val reworkReason = j.optString("rework_reason").takeIf { it.isNotBlank() && it != "null" }
-        if (parentJobId != null) {
+        val jobStatus = j.optString("status")
+        val pendingEstimates = estimates.filter { it.optString("status") == "pending" }
+        val promisedInstant = runCatching { Instant.parse(j.optString("promised_by")) }.getOrNull()
+        val promiseOverdue = promisedInstant?.isBefore(Instant.now()) == true &&
+            jobStatus !in setOf("completed", "collected", "ready_for_pickup", "cancelled", "unrepairable")
+        RepairStageRail(jobStatus)
+        if (pendingEstimates.isNotEmpty()) {
             Surface(color = Brand.GoldTint, shape = RoundedCornerShape(8.dp)) {
                 Text(
-                    buildString {
-                        append("Customer return of ")
-                        append(parentJobCode ?: parentJobId.take(8))
-                        if (reworkReason != null) append(" · $reworkReason")
-                    },
+                    "Customer estimate still pending — wait for approval or cancel it before finishing.",
                     modifier = Modifier.padding(12.dp),
                     color = Brand.NavyDark,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        if (promiseOverdue) {
+            Surface(color = Brand.Danger.copy(alpha = 0.12f), shape = RoundedCornerShape(8.dp)) {
+                Text(
+                    "Overdue promise · action required",
+                    modifier = Modifier.padding(12.dp),
+                    color = Brand.Danger,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
         }
-        val canOpenReturn = j.optString("status") in setOf("completed", "collected") && parentJobId == null
-        if (canOpenReturn) {
-            BrandCard {
-                Text("Customer returned this device?", fontWeight = FontWeight.SemiBold, color = Brand.NavyDark)
-                Text(
-                    "Opens a linked follow-up job on the same customer and device.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Brand.TextSecondary,
-                )
-                OutlinedTextField(
-                    value = returnReason,
-                    onValueChange = { returnReason = it },
-                    label = { Text("What came back / what failed?") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                GoldButton(
-                    text = if (busy) "Opening…" else "Open return job",
-                    onClick = {
-                        val reason = returnReason.trim()
-                        if (reason.isBlank()) {
-                            error = "Enter why the device came back"
-                            return@GoldButton
-                        }
-                        busy = true
-                        error = null
-                        scope.launch {
-                            try {
-                                val created = withContext(Dispatchers.IO) {
-                                    ApiClient.createRepairRework(jobId, reason)
-                                }
-                                returnReason = ""
-                                message = "Return job opened"
-                                onOpenRelatedJob(created.getString("id"))
-                            } catch (e: Exception) {
-                                error = e.message ?: "Could not open return job"
-                            } finally {
-                                busy = false
-                            }
-                        }
-                    },
-                    enabled = !busy && returnReason.isNotBlank(),
-                    loading = busy,
-                    modifier = Modifier.fillMaxWidth(),
+        val detailTabs = listOf("Now", "Pay", "Parts", "Device", "History")
+        ScrollableTabRow(selectedTabIndex = detailTab, edgePadding = 0.dp) {
+            detailTabs.forEachIndexed { i, title ->
+                Tab(
+                    selected = detailTab == i,
+                    onClick = { detailTab = i },
+                    text = { Text(title) },
                 )
             }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            GoldButton(
-                text = "Print intake slip",
-                onClick = {
-                    busy = true
-                    scope.launch {
-                        try {
-                            val html = withContext(Dispatchers.IO) {
-                                PrintSupport.fetchText(
-                                    "${com.techlane.ops.BuildConfig.API_BASE}/repairs/$jobId/intake-slip.html",
-                                    TechLaneApp.instance.tokenStore.accessToken,
-                                )
-                            }
-                            PrintSupport.printHtml(context, html, "Intake slip")
-                            message = "Printer sheet opened — tap your printer"
-                        } catch (e: Exception) {
-                            error = e.message ?: "Could not print intake slip"
-                        } finally {
-                            busy = false
-                        }
-                    }
-                },
-                enabled = !busy,
-                loading = busy,
-                modifier = Modifier.weight(1f),
-            )
-            OutlinedButton(
-                onClick = {
-                    busy = true
-                    scope.launch {
-                        try {
-                            val html = withContext(Dispatchers.IO) {
-                                PrintSupport.fetchText(
-                                    "${com.techlane.ops.BuildConfig.API_BASE}/repairs/$jobId/receipt.html",
-                                    TechLaneApp.instance.tokenStore.accessToken,
-                                )
-                            }
-                            PrintSupport.printHtml(context, html, "Repair receipt")
-                            message = "Printer sheet opened — tap your printer"
-                        } catch (e: Exception) {
-                            error = e.message ?: "Could not print receipt"
-                        } finally {
-                            busy = false
-                        }
-                    }
-                },
-                enabled = !busy,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Print receipt")
-            }
-        }
-        j.optString("pickup_code").takeIf { it.isNotBlank() && it != "null" }?.let { pickup ->
-            BrandCard {
-                BrandSectionTitle("Pickup code")
-                Text(pickup, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Brand.Navy)
-                Text(
-                    "Printed as QR on the intake slip; the code itself is sent by intake SMS. Scanning or typing this releases the device only after payment.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Brand.TextSecondary,
-                )
-            }
-        }
-
-        BrandCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                val customer = j.optJSONObject("customer")
-                val device = j.optJSONObject("device")
-                Text(customer?.optString("full_name")?.ifBlank { null } ?: "Walk-in customer", style = MaterialTheme.typography.titleSmall)
-                customer?.optString("phone")?.takeIf { it.isNotBlank() }?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall)
-                }
-                if (device != null) {
-                    val desc = listOf(device.optString("kind"), device.optString("brand"), device.optString("model"))
-                        .filter { it.isNotBlank() }.joinToString(" ")
-                    Text(desc.ifBlank { "Unknown device" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    device.optString("imei").takeIf { it.isNotBlank() }?.let {
-                        Text("IMEI $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
-        RepairAttachmentsPanel(jobId)
-        if (isTechnician) {
-            Text(
-                "Bench workflow — claim, update status, note diagnosis, request parts",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        val assignedTo = j.optString("technician_id")
-        if (myId.isNotBlank() && assignedTo != myId) {
-            GoldButton(
-                text = if (assignedTo.isBlank() || assignedTo == "null") "Claim this job" else "Reassign to me",
-                onClick = {
-                    busy = true
-                    error = null
-                    scope.launch {
-                        try {
-                            withContext(Dispatchers.IO) { ApiClient.assignRepair(jobId, myId) }
-                            message = "Job assigned to you"
-                            refresh()
-                        } catch (e: Exception) {
-                            error = e.message
-                        } finally {
-                            busy = false
-                        }
-                    }
-                },
-                enabled = !busy,
-                loading = busy,
-                modifier = Modifier.fillMaxWidth(),
-            )
         }
 
         val nextArr = j.optJSONArray("next_statuses")
@@ -2973,7 +2886,6 @@ fun JobDetailScreen(
             (0 until arr.length()).map { arr.getJSONObject(it) }
         } ?: emptyList()
 
-        Spacer(Modifier.height(1.dp).bringIntoViewRequester(workBringIntoView))
         val authObj = j.optJSONObject("authorization")
         val authorizedAt = authObj?.optString("authorized_at").orEmpty()
         val hasAuthorization = authorizedAt.isNotBlank() && authorizedAt != "null"
@@ -2982,73 +2894,57 @@ fun JobDetailScreen(
         } else {
             null
         }
-        val jobStatus = j.optString("status")
         val needsAuthorization = !hasAuthorization && (jobStatus == "intake" || jobStatus == "diagnosed")
         val canRequestParts = jobStatus in setOf("intake", "diagnosed", "waiting_parts", "in_progress")
         val notesEditable = canRequestParts
 
-        if (hasAuthorization) {
+        val overrun = if (authorizedAmount != null) {
+            ((labor.toDoubleOrNull() ?: 0.0) - authorizedAmount).coerceAtLeast(0.0)
+        } else {
+            0.0
+        }
+        val outstandingParts = parts.filter {
+            it.optString("status") in setOf("pending", "approved")
+        }
+        val forwardStatuses = nextList.filter { it != "collected" }
+
+        val handover = j.optJSONObject("handover")
+        val collectable = jobStatus == "ready_for_pickup" || jobStatus == "completed" ||
+            jobStatus == "cancelled" || jobStatus == "unrepairable"
+
+        when (detailTab) {
+            0 -> {
+        if (isTechnician) {
             Text(
-                "Price agreed: KES ${(authorizedAmount ?: 0.0).toInt()}" +
-                    when (authObj?.optString("source")) {
-                        "customer_estimate" -> " (customer approved the estimate)"
-                        "manager_override" -> " (go-ahead recorded by staff)"
-                        else -> ""
-                    },
-                style = MaterialTheme.typography.bodySmall,
-                color = Brand.TextSecondary,
+                "Bench workflow — claim, update status, note diagnosis, request parts",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-
-        if (hasAuthorization && canAuthorize && jobStatus != "collected") {
-            if (paidTotal <= 0.009) {
-                TextButton(onClick = {
-                    showEditAgreedAmount = !showEditAgreedAmount
-                    if (showEditAgreedAmount) authAmount = (authorizedAmount ?: j.optDouble("labor_amount", 0.0)).toInt().toString()
-                }) { Text(if (showEditAgreedAmount) "Cancel amount correction" else "Edit agreed amount") }
-                if (showEditAgreedAmount) {
-                    Surface(color = Brand.GoldTint, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Correct agreed amount", fontWeight = FontWeight.SemiBold, color = Brand.NavyDark)
-                            Text("The old amount remains visible in the audit timeline.", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
-                            OutlinedTextField(
-                                value = authAmount,
-                                onValueChange = { authAmount = it.filter { ch -> ch.isDigit() || ch == '.' } },
-                                label = { Text("Correct amount (KES)") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            )
-                            OutlinedTextField(
-                                value = authNote, onValueChange = { authNote = it },
-                                label = { Text("Reason for correction") },
-                                supportingText = { Text("Required for audit") },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            GoldButton(
-                                text = if (busy) "Saving…" else "Save corrected amount",
-                                onClick = {
-                                    val corrected = authAmount.toDoubleOrNull()
-                                    if (corrected == null || corrected <= 0) { error = "Enter a valid corrected amount"; return@GoldButton }
-                                    if (authNote.isBlank()) { error = "Enter why the amount is being corrected"; return@GoldButton }
-                                    busy = true; error = null
-                                    scope.launch {
-                                        try {
-                                            withContext(Dispatchers.IO) { ApiClient.authorizeRepairWork(jobId, corrected, authNote.trim()) }
-                                            message = "Agreed amount corrected"
-                                            authAmount = ""; authNote = ""; showEditAgreedAmount = false; refresh()
-                                        } catch (e: Exception) { error = e.message } finally { busy = false }
-                                    }
-                                },
-                                enabled = !busy, modifier = Modifier.fillMaxWidth(),
-                            )
+        val assignedTo = j.optString("technician_id")
+        if (myId.isNotBlank() && assignedTo != myId) {
+            GoldButton(
+                text = if (assignedTo.isBlank() || assignedTo == "null") "Claim this job" else "Reassign to me",
+                onClick = {
+                    busy = true
+                    error = null
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) { ApiClient.assignRepair(jobId, myId) }
+                            message = "Job assigned to you"
+                            refresh()
+                        } catch (e: Exception) {
+                            error = e.message
+                        } finally {
+                            busy = false
                         }
                     }
-                }
-            } else {
-                Text("Agreed amount is locked because payment has started.", style = MaterialTheme.typography.bodySmall, color = Brand.TextMuted)
-            }
+                },
+                enabled = !busy,
+                loading = busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
-
         if (needsAuthorization) {
             BrandSectionTitle("Authorize work")
             Text(
@@ -3113,32 +3009,10 @@ fun JobDetailScreen(
                 )
             }
         }
-
-        val overrun = if (authorizedAmount != null) {
-            ((labor.toDoubleOrNull() ?: 0.0) - authorizedAmount).coerceAtLeast(0.0)
-        } else {
-            0.0
-        }
-        val outstandingParts = parts.filter {
-            it.optString("status") in setOf("pending", "approved")
-        }
-        val pendingEstimates = estimates.filter { it.optString("status") == "pending" }
-
-        val forwardStatuses = nextList.filter { it != "collected" }
         if (outstandingParts.isNotEmpty()) {
             Surface(color = Brand.GoldTint, shape = RoundedCornerShape(8.dp)) {
                 Text(
                     "Waiting on ${outstandingParts.size} part(s) from supplier — finish or cancel them before marking ready/complete.",
-                    modifier = Modifier.padding(12.dp),
-                    color = Brand.NavyDark,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-        if (pendingEstimates.isNotEmpty()) {
-            Surface(color = Brand.GoldTint, shape = RoundedCornerShape(8.dp)) {
-                Text(
-                    "Customer estimate still pending — wait for approval or cancel it before finishing.",
                     modifier = Modifier.padding(12.dp),
                     color = Brand.NavyDark,
                     style = MaterialTheme.typography.bodySmall,
@@ -3298,7 +3172,6 @@ fun JobDetailScreen(
                 }
             }
         }
-
         val closureReason = j.optString("closure_reason")
         if (closureReason.isNotBlank() && closureReason != "null") {
             BrandCard {
@@ -3317,134 +3190,125 @@ fun JobDetailScreen(
                 }
             }
         }
-
-        // Accessories sold onto the job join the same balance as the repair.
-        if (canTakePayment && jobStatus != "collected") {
-            Spacer(Modifier.height(1.dp).bringIntoViewRequester(partsBringIntoView))
-            BrandSectionTitle("Accessories & extras")
-            Text(
-                "Add cases, chargers, glass — they join this job’s bill for one cash/STK payment.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
+        val handover = j.optJSONObject("handover")
+        val collectable = jobStatus == "ready_for_pickup" || jobStatus == "completed" ||
+            jobStatus == "cancelled" || jobStatus == "unrepairable"
+        if (handover != null) {
+            BrandSectionTitle("Handed over")
+            BrandCard {
+                val who = handover.optString("collected_by_name")
+                val rel = handover.optString("relationship")
+                Text(
+                    if (rel.isNotBlank() && rel != "self") "$who ($rel) collected this device" else "$who collected this device",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                val method = handover.optString("verification_method")
+                Text(
+                    when (method) {
+                        "otp" -> "Confirmed by a code on the owner's phone"
+                        "pickup_code" -> "Confirmed by intake slip / QR"
+                        else -> "Released by staff without a code"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (method == "otp" || method == "pickup_code") Brand.TextSecondary else Brand.Danger,
+                )
+                handover.optString("id_number").takeIf { it.isNotBlank() && it != "null" }?.let {
+                    Text("ID recorded: $it", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
+                }
+            }
+        } else if (collectable && canCollect) {
+            if (!canTakePayment && balanceDue > 0.009) {
+                Text(
+                    "KES ${balanceDue.toInt()} is still owed. A cashier or owner needs to take Cash / STK payment before release.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Brand.Danger,
+                )
+            }
+            HandoverSection(
+                jobId = jobId,
+                defaultName = j.optJSONObject("customer")?.optString("full_name") ?: "",
+                balanceDue = balanceDue,
+                canVouch = canReleaseUnverified,
+                busy = busy,
+                setBusy = { busy = it },
+                onError = { error = it },
+                onMessage = { message = it },
+                refresh = { refresh() },
+                scope = scope,
+                startRelease = promptHandover && balanceDue <= 0.009,
+                bringIntoViewRequester = handoverBringIntoView,
             )
-            saleLines.forEach { line ->
-                BrandCard {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(line.optString("description"), fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "Reserved to this job · ×${line.optInt("quantity", 1)} · KES ${line.optDouble("line_total", 0.0).toInt()}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Brand.TextSecondary,
+        }
+
+        if (closureOptions.isNotEmpty() && canClose) {
+            TextButton(onClick = { showCloseDialog = true }, enabled = !busy) {
+                Text("Close without repairing", color = Brand.Danger)
+            }
+        }
+            }
+            1 -> {
+        if (hasAuthorization) {
+            Text(
+                "Price agreed: KES ${(authorizedAmount ?: 0.0).toInt()}" +
+                    when (authObj?.optString("source")) {
+                        "customer_estimate" -> " (customer approved the estimate)"
+                        "manager_override" -> " (go-ahead recorded by staff)"
+                        else -> ""
+                    },
+                style = MaterialTheme.typography.bodySmall,
+                color = Brand.TextSecondary,
+            )
+        }
+
+        if (hasAuthorization && canAuthorize && jobStatus != "collected") {
+            if (paidTotal <= 0.009) {
+                TextButton(onClick = {
+                    showEditAgreedAmount = !showEditAgreedAmount
+                    if (showEditAgreedAmount) authAmount = (authorizedAmount ?: j.optDouble("labor_amount", 0.0)).toInt().toString()
+                }) { Text(if (showEditAgreedAmount) "Cancel amount correction" else "Edit agreed amount") }
+                if (showEditAgreedAmount) {
+                    Surface(color = Brand.GoldTint, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("Correct agreed amount", fontWeight = FontWeight.SemiBold, color = Brand.NavyDark)
+                            Text("The old amount remains visible in the audit timeline.", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
+                            OutlinedTextField(
+                                value = authAmount,
+                                onValueChange = { authAmount = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                                label = { Text("Correct amount (KES)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                modifier = Modifier.fillMaxWidth(), singleLine = true,
                             )
-                        }
-                        if (!paymentLocked) {
-                            TextButton(
+                            OutlinedTextField(
+                                value = authNote, onValueChange = { authNote = it },
+                                label = { Text("Reason for correction") },
+                                supportingText = { Text("Required for audit") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            GoldButton(
+                                text = if (busy) "Saving…" else "Save corrected amount",
                                 onClick = {
-                                    busy = true
+                                    val corrected = authAmount.toDoubleOrNull()
+                                    if (corrected == null || corrected <= 0) { error = "Enter a valid corrected amount"; return@GoldButton }
+                                    if (authNote.isBlank()) { error = "Enter why the amount is being corrected"; return@GoldButton }
+                                    busy = true; error = null
                                     scope.launch {
                                         try {
-                                            withContext(Dispatchers.IO) {
-                                                ApiClient.removeRepairSaleLine(jobId, line.getString("id"))
-                                            }
-                                            message = "Accessory removed"
-                                            refresh()
-                                        } catch (e: Exception) {
-                                            error = e.message
-                                        } finally {
-                                            busy = false
-                                        }
+                                            withContext(Dispatchers.IO) { ApiClient.authorizeRepairWork(jobId, corrected, authNote.trim()) }
+                                            message = "Agreed amount corrected"
+                                            authAmount = ""; authNote = ""; showEditAgreedAmount = false; refresh()
+                                        } catch (e: Exception) { error = e.message } finally { busy = false }
                                     }
                                 },
-                                enabled = !busy,
-                            ) { Text("Remove") }
+                                enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                            )
                         }
                     }
                 }
-            }
-            if (!paymentLocked && stockBalances.isNotEmpty()) {
-                val normalizedQuery = saleStockQuery.trim()
-                val matchingStock = if (normalizedQuery.length < 2) emptyList() else stockBalances.filter { item ->
-                    listOf(item.optString("product_name"), item.optString("variant_name"), item.optString("sku"), item.optString("barcode"))
-                        .any { it.contains(normalizedQuery, ignoreCase = true) }
-                }.take(8)
-                val labels = matchingStock.map {
-                    val key = "${it.optString("variant_id")}:${it.optString("location_id")}"
-                    key to "${it.optString("product_name")} · KES ${it.optDouble("sell_price", 0.0).toInt()} · ${it.optInt("available_qty")} left"
-                }
-                SectionLabel("Add from stock")
-                OutlinedTextField(
-                    value = saleStockQuery,
-                    onValueChange = { saleStockQuery = it; saleStockKey = "" },
-                    label = { Text("Search stock") },
-                    placeholder = { Text("Product, SKU or barcode") },
-                    supportingText = { Text(if (normalizedQuery.length < 2) "Type at least 2 characters" else "${labels.size} result${if (labels.size == 1) "" else "s"}") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                if (normalizedQuery.length >= 2 && labels.isEmpty()) {
-                    Text("No available stock matches ‘$normalizedQuery’.", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
-                }
-                labels.forEach { (key, label) ->
-                    FilterChip(
-                        selected = saleStockKey == key,
-                        onClick = { saleStockKey = key },
-                        label = { Text(label, maxLines = 1) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                OutlinedTextField(
-                    value = saleQty,
-                    onValueChange = { saleQty = it },
-                    label = { Text("Qty") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                GoldButton(
-                    text = if (busy) "Adding…" else "Add to bill",
-                    onClick = {
-                        val parts = saleStockKey.split(":")
-                        val qty = saleQty.toIntOrNull() ?: 1
-                        if (parts.size != 2) {
-                            error = "Select a stock item"
-                            return@GoldButton
-                        }
-                        busy = true
-                        error = null
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    ApiClient.addRepairSaleLine(jobId, parts[0], parts[1], qty.coerceAtLeast(1))
-                                }
-                                message = "Stock reserved and added to this job"
-                                saleQty = "1"
-                                saleStockQuery = ""
-                                saleStockKey = ""
-                                refresh()
-                            } catch (e: Exception) {
-                                error = e.message
-                            } finally {
-                                busy = false
-                            }
-                        }
-                    },
-                    enabled = !busy && saleStockKey.isNotBlank(),
-                    loading = busy,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            if (j.optDouble("sale_lines_total", 0.0) > 0.009) {
-                Text(
-                    "Accessories subtotal: KES ${j.optDouble("sale_lines_total", 0.0).toInt()}",
-                    fontWeight = FontWeight.SemiBold,
-                )
+            } else {
+                Text("Agreed amount is locked because payment has started.", style = MaterialTheme.typography.bodySmall, color = Brand.TextMuted)
             }
         }
-
-        Spacer(Modifier.height(1.dp).bringIntoViewRequester(paymentBringIntoView))
         // Payment must sit above handover — otherwise staff only see "take payment first" with nowhere to pay.
         if (canTakePayment && (balanceDue > 0.009 || jobStatus in setOf("completed", "ready_for_pickup", "in_progress", "diagnosed"))) {
             BrandSectionTitle(if (balanceDue > 0.009) "Take payment" else "Payment")
@@ -3575,7 +3439,7 @@ fun JobDetailScreen(
                             }
                             refresh()
                             if (willClear && method == "cash") {
-                                handoverBringIntoView.bringIntoView()
+                                detailTab = 0
                             }
                             if (method == "mpesa_stk" && created != null) {
                                 paymentIdFromCreate(created)?.let { pollStkPayment(it) }
@@ -3618,199 +3482,160 @@ fun JobDetailScreen(
                 }
             }
         }
-
-        val handover = j.optJSONObject("handover")
-        val collectable = jobStatus == "ready_for_pickup" || jobStatus == "completed" ||
-            jobStatus == "cancelled" || jobStatus == "unrepairable"
-        if (handover != null) {
-            BrandSectionTitle("Handed over")
+        BrandSectionTitle("Customer estimates")
+        if (canRequestParts) {
+            OutlinedButton(
+                onClick = { showEstimateDialog = true },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Send customer estimate")
+            }
+        }
+        if (estimates.isEmpty()) {
+            Text(
+                "No estimates yet",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        estimates.forEach { estimate ->
             BrandCard {
-                val who = handover.optString("collected_by_name")
-                val rel = handover.optString("relationship")
-                Text(
-                    if (rel.isNotBlank() && rel != "self") "$who ($rel) collected this device" else "$who collected this device",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                val method = handover.optString("verification_method")
-                Text(
-                    when (method) {
-                        "otp" -> "Confirmed by a code on the owner's phone"
-                        "pickup_code" -> "Confirmed by intake slip / QR"
-                        else -> "Released by staff without a code"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (method == "otp" || method == "pickup_code") Brand.TextSecondary else Brand.Danger,
-                )
-                handover.optString("id_number").takeIf { it.isNotBlank() && it != "null" }?.let {
-                    Text("ID recorded: $it", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        val total = if (estimate.has("total_amount")) {
+                            estimate.optDouble("total_amount")
+                        } else {
+                            estimate.optDouble("labor_amount") + estimate.optDouble("parts_amount")
+                        }
+                        Text(
+                            "KES ${total.toInt()}",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        StatusChip(estimate.optString("status"))
+                    }
+                    estimate.optString("notes").takeIf { it.isNotBlank() && it != "null" }?.let { Text(it) }
+                    estimate.optString("expires_at")
+                        .takeIf { estimate.optString("status") == "pending" && it.isNotBlank() && it != "null" }
+                        ?.let {
+                            Text(
+                                "Expires ${it.take(10)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                 }
             }
-        } else if (collectable && canCollect) {
-            if (!canTakePayment && balanceDue > 0.009) {
-                Text(
-                    "KES ${balanceDue.toInt()} is still owed. A cashier or owner needs to take Cash / STK payment before release.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Brand.Danger,
-                )
+        }
             }
-            HandoverSection(
-                jobId = jobId,
-                defaultName = j.optJSONObject("customer")?.optString("full_name") ?: "",
-                balanceDue = balanceDue,
-                canVouch = canReleaseUnverified,
-                busy = busy,
-                setBusy = { busy = it },
-                onError = { error = it },
-                onMessage = { message = it },
-                refresh = { refresh() },
-                scope = scope,
-                startRelease = promptHandover && balanceDue <= 0.009,
-                bringIntoViewRequester = handoverBringIntoView,
+            2 -> {
+        // Accessories sold onto the job join the same balance as the repair.
+        if (canTakePayment && jobStatus != "collected") {
+            BrandSectionTitle("Accessories & extras")
+            Text(
+                "Add cases, chargers, glass — they join this job’s bill for one cash/STK payment.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
             )
-        }
-
-        if (closureOptions.isNotEmpty() && canClose) {
-            TextButton(onClick = { showCloseDialog = true }, enabled = !busy) {
-                Text("Close without repairing", color = Brand.Danger)
-            }
-        }
-
-        if (showCloseDialog) {
-            CloseJobDialog(
-                options = closureOptions,
-                reasonsByStatus = j.optJSONObject("closure_reasons"),
-                busy = busy,
-                onDismiss = { showCloseDialog = false },
-                onConfirm = { status, reason, note ->
-                    busy = true
-                    error = null
-                    message = null
-                    scope.launch {
-                        try {
-                            withContext(Dispatchers.IO) {
-                                ApiClient.updateRepairStatus(jobId, status, closureReason = reason, note = note)
-                            }
-                            showCloseDialog = false
-                            message = "Job closed as ${status.replace('_', ' ')}"
-                            refresh()
-                        } catch (e: Exception) {
-                            error = e.message
-                        } finally {
-                            busy = false
+            saleLines.forEach { line ->
+                BrandCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(line.optString("description"), fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Reserved to this job · ×${line.optInt("quantity", 1)} · KES ${line.optDouble("line_total", 0.0).toInt()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Brand.TextSecondary,
+                            )
+                        }
+                        if (!paymentLocked) {
+                            TextButton(
+                                onClick = {
+                                    busy = true
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) {
+                                                ApiClient.removeRepairSaleLine(jobId, line.getString("id"))
+                                            }
+                                            message = "Accessory removed"
+                                            refresh()
+                                        } catch (e: Exception) {
+                                            error = e.message
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                            ) { Text("Remove") }
                         }
                     }
-                },
-            )
-        }
-
-        if (showEstimateDialog) {
-            AlertDialog(
-                onDismissRequest = { if (!busy) showEstimateDialog = false },
-                title = { Text("Customer estimate") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(
-                            "Customer only sees this total — not labor or parts breakdown.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Brand.TextSecondary,
-                        )
-                        OutlinedTextField(
-                            value = estimateTotal,
-                            onValueChange = { estimateTotal = it },
-                            label = { Text("Total amount (KES)") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        OutlinedTextField(
-                            value = estimateNotes,
-                            onValueChange = { estimateNotes = it },
-                            label = { Text("Notes (optional)") },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            val total = estimateTotal.toDoubleOrNull()
-                            if (total == null || total <= 0) {
-                                error = "Enter a total greater than zero"
-                                return@Button
-                            }
-                            busy = true
-                            error = null
-                            message = null
-                            scope.launch {
-                                try {
-                                    withContext(Dispatchers.IO) {
-                                        ApiClient.createRepairEstimate(
-                                            jobId,
-                                            total,
-                                            estimateNotes.trim().ifBlank { null },
-                                        )
-                                    }
-                                    estimateTotal = ""
-                                    estimateNotes = ""
-                                    showEstimateDialog = false
-                                    message = "Estimate sent to customer"
-                                    refresh()
-                                } catch (e: Exception) {
-                                    error = e.message
-                                } finally {
-                                    busy = false
-                                }
-                            }
-                        },
-                        enabled = !busy && estimateTotal.isNotBlank(),
-                    ) {
-                        Text(if (busy) "Sending…" else "Send estimate")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showEstimateDialog = false }, enabled = !busy) {
-                        Text("Cancel")
-                    }
-                },
-            )
-        }
-
-        Spacer(Modifier.height(1.dp).bringIntoViewRequester(historyBringIntoView))
-        OutlinedButton(
-            onClick = { showWorkDetails = !showWorkDetails },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (showWorkDetails) "Hide notes, parts & estimates" else "Show notes, parts & estimates") }
-        if (showWorkDetails) {
-        BrandSectionTitle("Notes")
-        if (notesEditable) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                }
+            }
+            if (!paymentLocked && stockBalances.isNotEmpty()) {
+                val normalizedQuery = saleStockQuery.trim()
+                val matchingStock = if (normalizedQuery.length < 2) emptyList() else stockBalances.filter { item ->
+                    listOf(item.optString("product_name"), item.optString("variant_name"), item.optString("sku"), item.optString("barcode"))
+                        .any { it.contains(normalizedQuery, ignoreCase = true) }
+                }.take(8)
+                val labels = matchingStock.map {
+                    val key = "${it.optString("variant_id")}:${it.optString("location_id")}"
+                    key to "${it.optString("product_name")} · KES ${it.optDouble("sell_price", 0.0).toInt()} · ${it.optInt("available_qty")} left"
+                }
+                SectionLabel("Add from stock")
                 OutlinedTextField(
-                    value = newNote,
-                    onValueChange = { newNote = it },
-                    label = { Text("Diagnosis / work done") },
-                    modifier = Modifier.weight(1f),
+                    value = saleStockQuery,
+                    onValueChange = { saleStockQuery = it; saleStockKey = "" },
+                    label = { Text("Search stock") },
+                    placeholder = { Text("Product, SKU or barcode") },
+                    supportingText = { Text(if (normalizedQuery.length < 2) "Type at least 2 characters" else "${labels.size} result${if (labels.size == 1) "" else "s"}") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
                 )
-                Button(
+                if (normalizedQuery.length >= 2 && labels.isEmpty()) {
+                    Text("No available stock matches ‘$normalizedQuery’.", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
+                }
+                labels.forEach { (key, label) ->
+                    FilterChip(
+                        selected = saleStockKey == key,
+                        onClick = { saleStockKey = key },
+                        label = { Text(label, maxLines = 1) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                OutlinedTextField(
+                    value = saleQty,
+                    onValueChange = { saleQty = it },
+                    label = { Text("Qty") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                GoldButton(
+                    text = if (busy) "Adding…" else "Add to bill",
                     onClick = {
-                        if (newNote.isBlank()) return@Button
+                        val parts = saleStockKey.split(":")
+                        val qty = saleQty.toIntOrNull() ?: 1
+                        if (parts.size != 2) {
+                            error = "Select a stock item"
+                            return@GoldButton
+                        }
                         busy = true
+                        error = null
                         scope.launch {
                             try {
                                 withContext(Dispatchers.IO) {
-                                    try {
-                                        ApiClient.addRepairNote(jobId, newNote.trim())
-                                    } catch (_: Exception) {
-                                        OutboxRepository.enqueue(
-                                            SyncCommandTypes.REPAIR_ADD_NOTE,
-                                            org.json.JSONObject()
-                                                .put("repair_job_id", jobId)
-                                                .put("note", newNote.trim())
-                                                .put("note_id", java.util.UUID.randomUUID().toString()),
-                                        )
-                                    }
+                                    ApiClient.addRepairSaleLine(jobId, parts[0], parts[1], qty.coerceAtLeast(1))
                                 }
-                                newNote = ""
-                                message = "Note saved (synced or queued offline)"
+                                message = "Stock reserved and added to this job"
+                                saleQty = "1"
+                                saleStockQuery = ""
+                                saleStockKey = ""
                                 refresh()
                             } catch (e: Exception) {
                                 error = e.message
@@ -3819,32 +3644,18 @@ fun JobDetailScreen(
                             }
                         }
                     },
-                    enabled = !busy && newNote.isNotBlank(),
-                ) {
-                    Text("Add")
-                }
+                    enabled = !busy && saleStockKey.isNotBlank(),
+                    loading = busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
-        } else if (notes.isEmpty()) {
-            Text(
-                "No notes on this job.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Brand.TextMuted,
-            )
-        }
-        notes.forEach { n ->
-            BrandCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(n.optString("note"))
-                    Text(
-                        listOf(n.optString("author_name"), timeAgo(n.optString("created_at")))
-                            .filter { it.isNotBlank() && it != "null" }.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            if (j.optDouble("sale_lines_total", 0.0) > 0.009) {
+                Text(
+                    "Accessories subtotal: KES ${j.optDouble("sale_lines_total", 0.0).toInt()}",
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
         }
-
         BrandSectionTitle("Parts")
         if (canRequestParts) {
         OutlinedTextField(
@@ -4054,56 +3865,391 @@ fun JobDetailScreen(
                 }
             }
         }
-
-        BrandSectionTitle("Customer estimates")
-        if (canRequestParts) {
-            OutlinedButton(
-                onClick = { showEstimateDialog = true },
-                enabled = !busy,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Send customer estimate")
+            }
+            3 -> {
+                var deviceMenuOpen by remember { mutableStateOf(false) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Box {
+                        IconButton(onClick = { deviceMenuOpen = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More actions")
+                        }
+                        DropdownMenu(expanded = deviceMenuOpen, onDismissRequest = { deviceMenuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Print intake slip") },
+                                onClick = {
+                                    deviceMenuOpen = false
+                                    busy = true
+                                    scope.launch {
+                                        try {
+                                            val html = withContext(Dispatchers.IO) {
+                                                PrintSupport.fetchText(
+                                                    "${com.techlane.ops.BuildConfig.API_BASE}/repairs/$jobId/intake-slip.html",
+                                                    TechLaneApp.instance.tokenStore.accessToken,
+                                                )
+                                            }
+                                            PrintSupport.printHtml(context, html, "Intake slip")
+                                            message = "Printer sheet opened — tap your printer"
+                                        } catch (e: Exception) {
+                                            error = e.message ?: "Could not print intake slip"
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Print receipt") },
+                                onClick = {
+                                    deviceMenuOpen = false
+                                    busy = true
+                                    scope.launch {
+                                        try {
+                                            val html = withContext(Dispatchers.IO) {
+                                                PrintSupport.fetchText(
+                                                    "${com.techlane.ops.BuildConfig.API_BASE}/repairs/$jobId/receipt.html",
+                                                    TechLaneApp.instance.tokenStore.accessToken,
+                                                )
+                                            }
+                                            PrintSupport.printHtml(context, html, "Repair receipt")
+                                            message = "Printer sheet opened — tap your printer"
+                                        } catch (e: Exception) {
+                                            error = e.message ?: "Could not print receipt"
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
+                                enabled = !busy,
+                            )
+                        }
+                    }
+                }
+        if (j.optBoolean("has_device_passcode")) {
+            BrandCard {
+                BrandSectionTitle("Device access")
+                Text(
+                    if (revealedPasscode.isBlank()) "Passcode captured and encrypted" else "Passcode: $revealedPasscode",
+                    color = Brand.TextPrimary,
+                )
+                TextButton(
+                    onClick = {
+                        busy = true
+                        scope.launch {
+                            try {
+                                revealedPasscode = withContext(Dispatchers.IO) { ApiClient.revealRepairPasscode(jobId) }
+                                message = "Passcode reveal recorded on the timeline"
+                            } catch (e: Exception) {
+                                error = e.message
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                    enabled = !busy,
+                ) {
+                    Text(if (revealedPasscode.isBlank()) "Reveal passcode (audited)" else "Reveal again")
+                }
             }
         }
-        if (estimates.isEmpty()) {
+        val parentJobId = j.optString("parent_job_id").takeIf { it.isNotBlank() && it != "null" }
+        val parentJobCode = j.optString("parent_job_code").takeIf { it.isNotBlank() && it != "null" }
+        val reworkReason = j.optString("rework_reason").takeIf { it.isNotBlank() && it != "null" }
+        if (parentJobId != null) {
+            Surface(color = Brand.GoldTint, shape = RoundedCornerShape(8.dp)) {
+                Text(
+                    buildString {
+                        append("Customer return of ")
+                        append(parentJobCode ?: parentJobId.take(8))
+                        if (reworkReason != null) append(" · $reworkReason")
+                    },
+                    modifier = Modifier.padding(12.dp),
+                    color = Brand.NavyDark,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+        val canOpenReturn = j.optString("status") in setOf("completed", "collected") && parentJobId == null
+        if (canOpenReturn) {
+            BrandCard {
+                Text("Customer returned this device?", fontWeight = FontWeight.SemiBold, color = Brand.NavyDark)
+                Text(
+                    "Opens a linked follow-up job on the same customer and device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Brand.TextSecondary,
+                )
+                OutlinedTextField(
+                    value = returnReason,
+                    onValueChange = { returnReason = it },
+                    label = { Text("What came back / what failed?") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                GoldButton(
+                    text = if (busy) "Opening…" else "Open return job",
+                    onClick = {
+                        val reason = returnReason.trim()
+                        if (reason.isBlank()) {
+                            error = "Enter why the device came back"
+                            return@GoldButton
+                        }
+                        busy = true
+                        error = null
+                        scope.launch {
+                            try {
+                                val created = withContext(Dispatchers.IO) {
+                                    ApiClient.createRepairRework(jobId, reason)
+                                }
+                                returnReason = ""
+                                message = "Return job opened"
+                                onOpenRelatedJob(created.getString("id"))
+                            } catch (e: Exception) {
+                                error = e.message ?: "Could not open return job"
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                    enabled = !busy && returnReason.isNotBlank(),
+                    loading = busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+                j.optString("promised_by").takeIf { it.isNotBlank() && it != "null" }?.let { promisedBy ->
+                    val promisedInstant = runCatching { Instant.parse(promisedBy) }.getOrNull()
+                    val overdue = promisedInstant?.isBefore(Instant.now()) == true &&
+                        jobStatus !in setOf("completed", "collected", "ready_for_pickup", "cancelled", "unrepairable")
+                    Text(
+                        if (overdue) "Overdue promise · action required" else "Promised ${timeAgo(promisedBy).removeSuffix(" ago")}",
+                        color = if (overdue) Brand.Danger else Brand.TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = if (overdue) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                }
+        j.optString("pickup_code").takeIf { it.isNotBlank() && it != "null" }?.let { pickup ->
+            BrandCard {
+                BrandSectionTitle("Pickup code")
+                Text(pickup, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Brand.Navy)
+                Text(
+                    "Printed as QR on the intake slip; the code itself is sent by intake SMS. Scanning or typing this releases the device only after payment.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Brand.TextSecondary,
+                )
+            }
+        }
+        BrandCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val customer = j.optJSONObject("customer")
+                val device = j.optJSONObject("device")
+                Text(customer?.optString("full_name")?.ifBlank { null } ?: "Walk-in customer", style = MaterialTheme.typography.titleSmall)
+                customer?.optString("phone")?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+                if (device != null) {
+                    val desc = listOf(device.optString("kind"), device.optString("brand"), device.optString("model"))
+                        .filter { it.isNotBlank() }.joinToString(" ")
+                    Text(desc.ifBlank { "Unknown device" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    device.optString("imei").takeIf { it.isNotBlank() }?.let {
+                        Text("IMEI $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        RepairAttachmentsPanel(jobId)
+            }
+            4 -> {
+        BrandSectionTitle("Notes")
+        if (notesEditable) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = newNote,
+                    onValueChange = { newNote = it },
+                    label = { Text("Diagnosis / work done") },
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = {
+                        if (newNote.isBlank()) return@Button
+                        busy = true
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        ApiClient.addRepairNote(jobId, newNote.trim())
+                                    } catch (_: Exception) {
+                                        OutboxRepository.enqueue(
+                                            SyncCommandTypes.REPAIR_ADD_NOTE,
+                                            org.json.JSONObject()
+                                                .put("repair_job_id", jobId)
+                                                .put("note", newNote.trim())
+                                                .put("note_id", java.util.UUID.randomUUID().toString()),
+                                        )
+                                    }
+                                }
+                                newNote = ""
+                                message = "Note saved (synced or queued offline)"
+                                refresh()
+                            } catch (e: Exception) {
+                                error = e.message
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                    enabled = !busy && newNote.isNotBlank(),
+                ) {
+                    Text("Add")
+                }
+            }
+        } else if (notes.isEmpty()) {
             Text(
-                "No estimates yet",
+                "No notes on this job.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = Brand.TextMuted,
             )
         }
-        estimates.forEach { estimate ->
+        notes.forEach { n ->
             BrandCard {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(n.optString("note"))
+                    Text(
+                        listOf(n.optString("author_name"), timeAgo(n.optString("created_at")))
+                            .filter { it.isNotBlank() && it != "null" }.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        val timeline = j.optJSONArray("timeline")
+        if (timeline != null && timeline.length() > 0) {
+            BrandSectionTitle("History")
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (i in timeline.length() - 1 downTo 0) {
+                    val ev = timeline.getJSONObject(i)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        val total = if (estimate.has("total_amount")) {
-                            estimate.optDouble("total_amount")
-                        } else {
-                            estimate.optDouble("labor_amount") + estimate.optDouble("parts_amount")
-                        }
+                        Text(statusLabel(ev.optString("status")), style = MaterialTheme.typography.bodySmall)
                         Text(
-                            "KES ${total.toInt()}",
-                            style = MaterialTheme.typography.titleSmall,
+                            timeAgo(ev.optString("at")),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        StatusChip(estimate.optString("status"))
                     }
-                    estimate.optString("notes").takeIf { it.isNotBlank() && it != "null" }?.let { Text(it) }
-                    estimate.optString("expires_at")
-                        .takeIf { estimate.optString("status") == "pending" && it.isNotBlank() && it != "null" }
-                        ?.let {
-                            Text(
-                                "Expires ${it.take(10)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                    ev.optString("note").takeIf { it.isNotBlank() && it != "null" }?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
+            }
+        }
 
+        if (showCloseDialog) {
+            CloseJobDialog(
+                options = closureOptions,
+                reasonsByStatus = j.optJSONObject("closure_reasons"),
+                busy = busy,
+                onDismiss = { showCloseDialog = false },
+                onConfirm = { status, reason, note ->
+                    busy = true
+                    error = null
+                    message = null
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                ApiClient.updateRepairStatus(jobId, status, closureReason = reason, note = note)
+                            }
+                            showCloseDialog = false
+                            message = "Job closed as ${status.replace('_', ' ')}"
+                            refresh()
+                        } catch (e: Exception) {
+                            error = e.message
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            )
+        }
+
+        if (showEstimateDialog) {
+            AlertDialog(
+                onDismissRequest = { if (!busy) showEstimateDialog = false },
+                title = { Text("Customer estimate") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "Customer only sees this total — not labor or parts breakdown.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Brand.TextSecondary,
+                        )
+                        OutlinedTextField(
+                            value = estimateTotal,
+                            onValueChange = { estimateTotal = it },
+                            label = { Text("Total amount (KES)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = estimateNotes,
+                            onValueChange = { estimateNotes = it },
+                            label = { Text("Notes (optional)") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val total = estimateTotal.toDoubleOrNull()
+                            if (total == null || total <= 0) {
+                                error = "Enter a total greater than zero"
+                                return@Button
+                            }
+                            busy = true
+                            error = null
+                            message = null
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        ApiClient.createRepairEstimate(
+                                            jobId,
+                                            total,
+                                            estimateNotes.trim().ifBlank { null },
+                                        )
+                                    }
+                                    estimateTotal = ""
+                                    estimateNotes = ""
+                                    showEstimateDialog = false
+                                    message = "Estimate sent to customer"
+                                    refresh()
+                                } catch (e: Exception) {
+                                    error = e.message
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        },
+                        enabled = !busy && estimateTotal.isNotBlank(),
+                    ) {
+                        Text(if (busy) "Sending…" else "Send estimate")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showEstimateDialog = false }, enabled = !busy) {
+                        Text("Cancel")
+                    }
+                },
+            )
         }
         FeedbackBanner(message = null, error = error)
         message?.let { Text(it, color = Brand.Navy) }

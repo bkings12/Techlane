@@ -256,6 +256,7 @@ object ApiClient {
         creditDueDate: String? = null,
         intakeAccessories: List<String> = emptyList(),
         intakeCondition: String? = null,
+        conditionTags: List<String> = emptyList(),
         devicePasscode: String? = null,
     ): JSONObject {
         val payload = JSONObject()
@@ -281,6 +282,9 @@ object ApiClient {
             payload.put("intake_accessories", org.json.JSONArray(intakeAccessories))
         }
         if (!intakeCondition.isNullOrBlank()) payload.put("intake_condition", intakeCondition)
+        if (conditionTags.isNotEmpty()) {
+            payload.put("condition_tags", org.json.JSONArray(conditionTags))
+        }
         if (!devicePasscode.isNullOrBlank()) payload.put("device_passcode", devicePasscode)
         return post("/repairs", payload)
     }
@@ -291,6 +295,11 @@ object ApiClient {
 
     fun revealRepairPasscode(id: String): String {
         return post("/repairs/$id/passcode/reveal", JSONObject()).getString("passcode")
+    }
+
+    fun listIntakePresets(kind: String): org.json.JSONArray {
+        val q = java.net.URLEncoder.encode(kind, Charsets.UTF_8.name())
+        return get("/intake-presets?kind=$q").optJSONArray("items") ?: org.json.JSONArray()
     }
 
     fun listRepairNotes(id: String): org.json.JSONArray {

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
 import { useStorefront } from "../store/StorefrontContext";
 import { StarRating, StarRatingInput } from "../components/StarRating";
 import { listProductReviews, recordProductView, submitProductReview, catalogItemImageURL, type ProductReview } from "../lib/api";
@@ -159,9 +160,6 @@ export function ProductPage() {
             )}
           </div>
           <div className="pdp-info">
-            <h2 className="section-title" style={{ marginTop: 0 }}>
-              {selected.product_name}
-            </h2>
             <p className="muted">
               {selected.brand ? `${selected.brand} · ` : ""}
               SKU {selected.sku}
@@ -174,7 +172,12 @@ export function ProductPage() {
             <p className="muted">
               {selected.available_qty} in stock at {pickup?.location_name ?? "counter"}
             </p>
-            {selected.description ? <p className="muted">{selected.description}</p> : null}
+            {selected.description ? (
+              <div className="pdp-description">
+                <h3>Description</h3>
+                <ReactMarkdown>{selected.description}</ReactMarkdown>
+              </div>
+            ) : null}
             <div className="qty-row">
               <button
                 type="button"

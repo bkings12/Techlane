@@ -87,9 +87,9 @@ func DefaultTemplateDefs() []TemplateDef {
 			Audience:    "customer",
 			Helpers: []string{
 				"shop_name", "customer_name", "job_code", "device_label",
-				"total_amount", "currency",
+				"total_amount", "currency", "recommendation_line",
 			},
-			DefaultBody: "{{shop_name}}: Estimate for {{job_code}} ({{device_label}}): {{currency}} {{total_amount}}. Approve in the customer portal/app to start work.",
+			DefaultBody: "{{shop_name}}: Estimate for {{job_code}} ({{device_label}}): {{currency}} {{total_amount}}.{{recommendation_line}} Approve in the customer portal/app to start work.",
 		},
 		{
 			Key:         "payment.confirmed",
@@ -133,7 +133,7 @@ func DefaultTemplateDefs() []TemplateDef {
 func DefaultWhatsAppBody(key string) (string, bool) {
 	switch key {
 	case "estimate.pending":
-		return "{{shop_name}}: Hi {{customer_name}}. Estimate for {{job_code}} ({{device_label}}): {{currency}} {{total_amount}}. Reply YES to approve or NO to decline.", true
+		return "{{shop_name}}: Hi {{customer_name}}. Estimate for {{job_code}} ({{device_label}}): {{currency}} {{total_amount}}.{{recommendation_line}} Reply YES to approve or NO to decline.", true
 	case "part_request.created":
 		return "{{shop_name}}: Part needed for {{job_code}} ({{device_label}}) — {{description}} x{{quantity}}. Reply QUOTE 2500 (your price) or DECLINE.", true
 	case "repair.created":
@@ -218,6 +218,8 @@ func fallbackFor(key string) string {
 		return ""
 	case "wait_line":
 		return "Please wait at the wait bench."
+	case "recommendation_line":
+		return ""
 	case "collected_by":
 		return "the customer"
 	case "method":

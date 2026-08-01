@@ -43,6 +43,41 @@ func TestRenderTemplateRepairCreated(t *testing.T) {
 	}
 }
 
+func TestRenderTemplateEstimatePendingRecommendation(t *testing.T) {
+	withNote, err := RenderTemplate("estimate.pending", map[string]any{
+		"shop_name":           "Acme",
+		"customer_name":       "Asha",
+		"job_code":            "JOB-3",
+		"device_label":        "Samsung A14",
+		"currency":            "KES",
+		"total_amount":        4500,
+		"recommendation_line": " Note: Screen cracked — glass + digitizer.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"JOB-3", "4500", "Screen cracked", "Approve"} {
+		if !contains(withNote, want) {
+			t.Fatalf("missing %q in %q", want, withNote)
+		}
+	}
+
+	blank, err := RenderTemplate("estimate.pending", map[string]any{
+		"shop_name":           "Acme",
+		"job_code":            "JOB-3",
+		"device_label":        "Samsung A14",
+		"currency":            "KES",
+		"total_amount":        4500,
+		"recommendation_line": "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(blank, "Note:") {
+		t.Fatalf("empty recommendation should not leave Note: in %q", blank)
+	}
+}
+
 func TestRenderTemplateWaitBench(t *testing.T) {
 	msg, err := RenderTemplate("repair.wait_bench", map[string]any{
 		"shop_name":       "Acme",

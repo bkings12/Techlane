@@ -11,16 +11,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// JobSaleLine is an accessory (or other stock item) sold with a repair job.
+// JobSaleLine is an accessory or custom charge sold with a repair job.
 type JobSaleLine struct {
 	ID          uuid.UUID  `json:"id"`
 	RepairJobID uuid.UUID  `json:"repair_job_id"`
-	VariantID   uuid.UUID  `json:"variant_id"`
-	LocationID  uuid.UUID  `json:"location_id"`
+	VariantID   *uuid.UUID `json:"variant_id,omitempty"`
+	LocationID  *uuid.UUID `json:"location_id,omitempty"`
 	Description string     `json:"description"`
 	Quantity    int        `json:"quantity"`
 	UnitPrice   float64    `json:"unit_price"`
 	LineTotal   float64    `json:"line_total"`
+	IsCustom    bool       `json:"is_custom"`
 	CreatedAt   time.Time  `json:"created_at"`
 	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
 }
@@ -102,8 +103,8 @@ func (s *Service) AddJobSaleLine(
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO repair.job_sale_lines
 			(id, tenant_id, repair_job_id, variant_id, location_id, description,
-			 quantity, unit_price, line_total, unit_cost, created_by, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())`,
+			 quantity, unit_price, line_total, unit_cost, is_custom, created_by, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,$11,now())`,
 		id, tenantID, repairID, variantID, locationID, label,
 		quantity, sellPrice, lineTotal, costPrice, actorID)
 	if err != nil {
@@ -126,19 +127,82 @@ func (s *Service) AddJobSaleLine(
 		fmt.Sprintf("Sold accessory: %s × %d @ %.0f", label, quantity, sellPrice),
 		actorID, corrID, tenantID, repairID)
 
+	vid, lid := variantID, locationID
 	out := &JobSaleLine{
-		ID: id, RepairJobID: repairID, VariantID: variantID, LocationID: locationID,
+		ID: id, RepairJobID: repairID, VariantID: &vid, LocationID: &lid,
 		Description: label, Quantity: quantity, UnitPrice: sellPrice, LineTotal: lineTotal,
-		CreatedAt: time.Now().UTC(), CreatedBy: &actorID,
+		IsCustom: false, CreatedAt: time.Now().UTC(), CreatedBy: &actorID,
 	}
 	return out, nil
 }
 
-// ListJobSaleLines returns accessories sold onto a repair.
+// AddCustomJobSaleLine bills an ad-hoc charge (diagnosis fee, one-off item) with no stock move.
+func (s *Service) AddCustomJobSaleLine(
+	ctx context.Context,
+	tenantID, repairID uuid.UUID,
+	description string,
+	unitPrice float64,
+	quantity int,
+	actorID, corrID uuid.UUID,
+) (*JobSaleLine, error) {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return nil, fmt.Errorf("description is required")
+	}
+	if unitPrice < 0 {
+		return nil, fmt.Errorf("unit_price cannot be negative")
+	}
+	if quantity <= 0 {
+		quantity = 1
+	}
+
+	var status string
+	err := s.pool.QueryRow(ctx, `
+		SELECT status FROM repair.repair_jobs
+		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, repairID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("repair not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status == StatusCollected {
+		return nil, fmt.Errorf("device already collected — cannot add accessories")
+	}
+
+	lineTotal := unitPrice * float64(quantity)
+	id := uuid.New()
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO repair.job_sale_lines
+			(id, tenant_id, repair_job_id, variant_id, location_id, description,
+			 quantity, unit_price, line_total, unit_cost, is_custom, created_by, created_at)
+		VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$7,0,true,$8,now())`,
+		id, tenantID, repairID, description, quantity, unitPrice, lineTotal, actorID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, _ = s.pool.Exec(ctx, `
+		INSERT INTO repair.repair_status_events
+			(id, tenant_id, repair_job_id, status, note, created_by, correlation_id)
+		SELECT $1, tenant_id, id, status, $2, $3, $4
+		FROM repair.repair_jobs WHERE tenant_id = $5 AND id = $6`,
+		uuid.New(),
+		fmt.Sprintf("Custom charge: %s × %d @ %.0f", description, quantity, unitPrice),
+		actorID, corrID, tenantID, repairID)
+
+	return &JobSaleLine{
+		ID: id, RepairJobID: repairID, Description: description, Quantity: quantity,
+		UnitPrice: unitPrice, LineTotal: lineTotal, IsCustom: true,
+		CreatedAt: time.Now().UTC(), CreatedBy: &actorID,
+	}, nil
+}
+
+// ListJobSaleLines returns accessories and custom charges sold onto a repair.
 func (s *Service) ListJobSaleLines(ctx context.Context, tenantID, repairID uuid.UUID) ([]JobSaleLine, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, repair_job_id, variant_id, location_id, description, quantity,
-		       unit_price::float8, line_total::float8, created_at, created_by
+		       unit_price::float8, line_total::float8, COALESCE(is_custom, false), created_at, created_by
 		FROM repair.job_sale_lines
 		WHERE tenant_id = $1 AND repair_job_id = $2
 		ORDER BY created_at`, tenantID, repairID)
@@ -151,7 +215,7 @@ func (s *Service) ListJobSaleLines(ctx context.Context, tenantID, repairID uuid.
 		var line JobSaleLine
 		if err := rows.Scan(&line.ID, &line.RepairJobID, &line.VariantID, &line.LocationID,
 			&line.Description, &line.Quantity, &line.UnitPrice, &line.LineTotal,
-			&line.CreatedAt, &line.CreatedBy); err != nil {
+			&line.IsCustom, &line.CreatedAt, &line.CreatedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, line)
@@ -159,7 +223,7 @@ func (s *Service) ListJobSaleLines(ctx context.Context, tenantID, repairID uuid.
 	return out, rows.Err()
 }
 
-// RemoveJobSaleLine voids an accessory sale and puts stock back (before collection).
+// RemoveJobSaleLine voids an accessory / custom sale (and restocks when inventory was deducted).
 func (s *Service) RemoveJobSaleLine(ctx context.Context, tenantID, repairID, lineID, actorID, corrID uuid.UUID) error {
 	var status string
 	err := s.pool.QueryRow(ctx, `
@@ -175,15 +239,16 @@ func (s *Service) RemoveJobSaleLine(ctx context.Context, tenantID, repairID, lin
 		return fmt.Errorf("device already collected — cannot remove accessories")
 	}
 
-	var variantID, locationID uuid.UUID
+	var variantID, locationID *uuid.UUID
 	var qty int
 	var description string
 	var unitCost float64
+	var isCustom bool
 	err = s.pool.QueryRow(ctx, `
-		SELECT variant_id, location_id, quantity, description, unit_cost::float8
+		SELECT variant_id, location_id, quantity, description, unit_cost::float8, COALESCE(is_custom, false)
 		FROM repair.job_sale_lines
 		WHERE tenant_id = $1 AND repair_job_id = $2 AND id = $3`,
-		tenantID, repairID, lineID).Scan(&variantID, &locationID, &qty, &description, &unitCost)
+		tenantID, repairID, lineID).Scan(&variantID, &locationID, &qty, &description, &unitCost, &isCustom)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("sale line not found")
 	}
@@ -201,8 +266,8 @@ func (s *Service) RemoveJobSaleLine(ctx context.Context, tenantID, repairID, lin
 		return fmt.Errorf("sale line not found")
 	}
 
-	if s.stock != nil {
-		_ = s.stock.Restock(ctx, tenantID, variantID, locationID, qty,
+	if s.stock != nil && !isCustom && variantID != nil && locationID != nil {
+		_ = s.stock.Restock(ctx, tenantID, *variantID, *locationID, qty,
 			"repair_sale_void", "job_sale_line", lineID, actorID, corrID)
 	}
 	costAmount := unitCost * float64(qty)
@@ -217,12 +282,16 @@ func (s *Service) RemoveJobSaleLine(ctx context.Context, tenantID, repairID, lin
 			WHERE tenant_id = $2 AND id = $3`, costAmount, tenantID, repairID)
 	}
 
+	note := "Removed accessory sale: " + description
+	if isCustom {
+		note = "Removed custom charge: " + description
+	}
 	_, _ = s.pool.Exec(ctx, `
 		INSERT INTO repair.repair_status_events
 			(id, tenant_id, repair_job_id, status, note, created_by, correlation_id)
 		SELECT $1, tenant_id, id, status, $2, $3, $4
 		FROM repair.repair_jobs WHERE tenant_id = $5 AND id = $6`,
-		uuid.New(), "Removed accessory sale: "+description, actorID, corrID, tenantID, repairID)
+		uuid.New(), note, actorID, corrID, tenantID, repairID)
 	return nil
 }
 

@@ -102,17 +102,24 @@ func (s *Service) QuerySTKStatus(ctx context.Context, tenantID uuid.UUID, checko
 // ReconcileSTKPayment queries Daraja and confirms only when ResultCode is success.
 // Typed provider refs from staff are not accepted as proof of payment.
 func (s *Service) ReconcileSTKPayment(ctx context.Context, tenantID, paymentID uuid.UUID) (*Payment, error) {
-	var checkoutID, status string
+	var checkoutID, status, resultCode, resultDesc string
 	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(checkout_request_id, ''), status
+		SELECT COALESCE(checkout_request_id, ''), status,
+		       COALESCE(result_code, ''), COALESCE(result_desc, '')
 		FROM payments.mpesa_stk_transactions
 		WHERE tenant_id = $1 AND payment_id = $2
-		ORDER BY created_at DESC LIMIT 1`, tenantID, paymentID).Scan(&checkoutID, &status)
+		ORDER BY created_at DESC LIMIT 1`, tenantID, paymentID).Scan(&checkoutID, &status, &resultCode, &resultDesc)
 	if err != nil {
 		return nil, fmt.Errorf("stk transaction not found")
 	}
 	if status == "confirmed" {
 		return s.GetPayment(ctx, tenantID, paymentID)
+	}
+	if status == "failed" {
+		if resultCode == "" && resultDesc == "" {
+			return nil, fmt.Errorf("STK not paid: request failed or cancelled")
+		}
+		return nil, fmt.Errorf("STK not paid: %s %s", resultCode, resultDesc)
 	}
 	if checkoutID == "" {
 		return nil, fmt.Errorf("checkout_request_id missing; cannot reconcile")

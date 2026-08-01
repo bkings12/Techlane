@@ -29,6 +29,10 @@ app.techlane.co.ke {
 	}
 	handle {
 		root * /opt/techlane/web-dist/web-ops
+		@html path / /index.html
+		header @html Cache-Control "no-store"
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
 		try_files {path} {path}/index.html /index.html
 		file_server
 	}
@@ -53,6 +57,10 @@ portal.techlane.co.ke {
 	}
 	handle {
 		root * /opt/techlane/web-dist/web-portal
+		@html path / /index.html
+		header @html Cache-Control "no-store"
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
 		try_files {path} {path}/index.html /index.html
 		file_server
 	}
@@ -77,6 +85,10 @@ supplier.techlane.co.ke {
 	}
 	handle {
 		root * /opt/techlane/web-dist/web-supplier
+		@html path / /index.html
+		header @html Cache-Control "no-store"
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
 		try_files {path} {path}/index.html /index.html
 		file_server
 	}
@@ -101,6 +113,10 @@ techlane.co.ke, www.techlane.co.ke {
 	}
 	handle {
 		root * /opt/techlane/web-dist/web-storefront
+		@html path / /index.html
+		header @html Cache-Control "no-store"
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
 		try_files {path} {path}/index.html /index.html
 		file_server
 	}

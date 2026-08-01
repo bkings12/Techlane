@@ -19,7 +19,7 @@ import (
 const (
 	defaultTenantName = "TechLane"
 	refreshTokenTTL   = 7 * 24 * time.Hour
-	accessTokenTTL    = 15 * time.Minute
+	accessTokenTTL    = 60 * time.Minute
 
 	maxFailedLoginAttempts = 5
 	baseLockoutDuration    = 5 * time.Minute

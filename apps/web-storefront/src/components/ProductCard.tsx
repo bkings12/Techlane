@@ -4,7 +4,14 @@ import { useStorefront } from "../store/StorefrontContext";
 import { catalogItemImageURL, type CatalogItem } from "../lib/api";
 import { loadWishlist, toggleWishlist } from "../lib/wishlist";
 
-export function ProductCard({ item }: { item: CatalogItem }) {
+export function ProductCard({
+  item,
+  showCategory = true,
+}: {
+  item: CatalogItem;
+  /** Hide when the parent section already labels the category. */
+  showCategory?: boolean;
+}) {
   const { cart, setQty, addOne, formatPrice } = useStorefront();
   const navigate = useNavigate();
   const qty = cart[item.variant_id] ?? 0;
@@ -35,13 +42,15 @@ export function ProductCard({ item }: { item: CatalogItem }) {
       </div>
 
       <div className="product_desc">
-        {category ? (
-          <Link className="cat-name" to={`/shop?category=${encodeURIComponent(category)}`}>
-            {category}
-          </Link>
-        ) : (
-          <span className="cat-name">&nbsp;</span>
-        )}
+        {showCategory ? (
+          category ? (
+            <Link className="cat-name" to={`/shop?category=${encodeURIComponent(category)}`}>
+              {category}
+            </Link>
+          ) : (
+            <span className="cat-name">&nbsp;</span>
+          )
+        ) : null}
 
         <h4>
           <Link className="product_name" to={`/product/${item.variant_id}`}>

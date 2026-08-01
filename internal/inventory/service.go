@@ -1213,6 +1213,89 @@ func (s *Service) CreateProduct(
 	return s.getProduct(ctx, tenantID, id)
 }
 
+// CopyProduct duplicates a product (details, SKUs/prices, and photo) for quick
+// variants like "USB-C charger" vs "USB-B charger" — staff then tweak category/price.
+func (s *Service) CopyProduct(ctx context.Context, tenantID, sourceID uuid.UUID) (*Product, error) {
+	source, err := s.getProduct(ctx, tenantID, sourceID)
+	if err != nil {
+		return nil, err
+	}
+
+	baseName := stripCopySuffix(source.Name)
+	if baseName == "" {
+		baseName = strings.TrimSpace(source.Name)
+	}
+
+	existing, err := s.ListProducts(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	siblings := 0
+	for _, p := range existing {
+		n := strings.TrimSpace(p.Name)
+		if n == baseName || strings.HasPrefix(strings.ToLower(n), strings.ToLower(baseName)+" (copy") {
+			siblings++
+		}
+	}
+	copyName := baseName + " (copy)"
+	if siblings > 1 || existingHasName(existing, copyName) {
+		copyName = fmt.Sprintf("%s (copy %d)", baseName, siblings)
+	}
+
+	created, err := s.CreateProduct(ctx, tenantID, copyName, source.Brand, source.CategoryID, nil, source.Description, source.ImageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	variants, err := s.ListVariants(ctx, tenantID, &sourceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range variants {
+		sku := fmt.Sprintf("%s-%s", sanitizeSKUPrefix(v.SKU), strings.ToUpper(uuid.New().String()[:4]))
+		if _, err := s.CreateVariant(ctx, tenantID, created.ID, sku, v.SellPrice, v.CostPrice); err != nil {
+			return nil, err
+		}
+	}
+
+	if source.HasImage {
+		if body, contentType, imgErr := s.ProductImage(ctx, sourceID); imgErr == nil && len(body) > 0 {
+			_ = s.SaveProductImage(ctx, tenantID, created.ID, body, contentType)
+		}
+	}
+
+	return s.getProduct(ctx, tenantID, created.ID)
+}
+
+func stripCopySuffix(name string) string {
+	name = strings.TrimSpace(name)
+	lower := strings.ToLower(name)
+	if idx := strings.LastIndex(lower, " (copy"); idx >= 0 && strings.HasSuffix(lower, ")") {
+		return strings.TrimSpace(name[:idx])
+	}
+	return name
+}
+
+func existingHasName(items []Product, name string) bool {
+	for _, p := range items {
+		if strings.EqualFold(strings.TrimSpace(p.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeSKUPrefix(sku string) string {
+	sku = strings.TrimSpace(sku)
+	if sku == "" {
+		return "ITEM"
+	}
+	if len(sku) > 24 {
+		return sku[:24]
+	}
+	return sku
+}
+
 func (s *Service) findRootCategoryByName(ctx context.Context, tenantID uuid.UUID, name string) (*Category, error) {
 	var c Category
 	err := s.pool.QueryRow(ctx, `
