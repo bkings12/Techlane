@@ -8,6 +8,7 @@ import com.techlane.pos.data.remote.OfflineException
 import com.techlane.pos.data.remote.TechLaneApi
 import com.techlane.pos.data.remote.dto.CheckoutRequest
 import com.techlane.pos.data.remote.dto.CompleteSaleRequest
+import com.techlane.pos.data.remote.dto.CreatePaymentRequest
 import com.techlane.pos.data.remote.dto.PaymentDto
 import com.techlane.pos.data.remote.dto.SaleItemInputDto
 import com.techlane.pos.data.printer.PrinterRepository
@@ -116,6 +117,107 @@ class ChargeRepository @Inject constructor(
                 saleId = saleId,
                 locationId = request.locationId,
                 fallbackAmount = request.amount,
+            ),
+        )
+    }
+
+    /**
+     * Settles a repair job's balance.
+     *
+     * Deliberately does *not* go through `/pos/checkout`: the job already exists
+     * and already carries its own total, so creating a sale for it would mint a
+     * second document for the same money and double-count the day's takings.
+     * `POST /payments` hangs the payment off the job instead, which is what the
+     * web console does and what the handover check reads to decide whether a
+     * device can be released.
+     *
+     * Everything after the prompt is sent is shared with a till charge — the
+     * polling, the Daraja nudge, and the "not confirmed yet" handling are the
+     * same problem regardless of what is being paid for.
+     */
+    fun chargeRepair(
+        repairId: String,
+        branchId: String,
+        amount: Double,
+        method: PaymentMethod,
+        phone: String?,
+        label: String,
+        idempotencyKey: String,
+    ): Flow<StkStage> = flow {
+        emit(StkStage.Sending)
+
+        val normalised = phone?.let(Msisdn::normalise)
+        if (method == PaymentMethod.MpesaStk && normalised == null) {
+            emit(failure(StkFailure.InvalidNumber, "Enter a valid M-Pesa number before sending the prompt.", null))
+            return@flow
+        }
+
+        val request = ChargeRequest(
+            branchId = branchId,
+            // A job payment touches no stock, so there is no location to post
+            // against; the record keeps the same shape as a till charge purely
+            // so Activity can show both in one list.
+            locationId = "",
+            amount = amount,
+            method = method,
+            phone = normalised,
+            target = ChargeTarget.Service(id = null, name = label, price = amount),
+            idempotencyKey = idempotencyKey,
+        )
+        writeRecord(request, idempotencyKey, status = "sent", paymentId = null, saleId = null)
+
+        val payment = try {
+            api.createPayment(
+                body = CreatePaymentRequest(
+                    method = method.wire,
+                    amount = amount,
+                    payableType = "repair",
+                    payableId = repairId,
+                    branchId = branchId,
+                    phone = normalised,
+                ),
+                idempotencyKey = idempotencyKey,
+            )
+        } catch (e: Exception) {
+            val mapped = e.toAppException()
+            val (reason, message) = when (mapped) {
+                is OfflineException -> StkFailure.NetworkError to mapped.message
+                else -> MpesaResult.classify(null, mapped.message)
+            }
+            markRecord(idempotencyKey, "failed", null, message)
+            emit(failure(reason, message, null))
+            return@flow
+        }
+
+        markRecordIds(idempotencyKey, payment.id, null)
+
+        // Cash against a job is settled server-side the moment it is recorded.
+        if (method == PaymentMethod.Cash) {
+            markRecord(idempotencyKey, "paid", null, null)
+            emit(StkStage.Paid(amount, null, null))
+            return@flow
+        }
+
+        if (payment.isSettled) {
+            emitSettled(idempotencyKey, payment, saleId = null, locationId = "", fallbackAmount = amount)
+            return@flow
+        }
+        if (payment.isFailed) {
+            val (reason, message) = MpesaResult.classify(null, payment.status)
+            markRecord(idempotencyKey, "failed", null, message)
+            emit(failure(reason, message, payment.id))
+            return@flow
+        }
+
+        emitAll(
+            pollUntilResolved(
+                recordId = idempotencyKey,
+                paymentId = payment.id,
+                // No sale to complete or auto-print; the job's own receipt is
+                // reprinted from Job Details instead.
+                saleId = null,
+                locationId = "",
+                fallbackAmount = amount,
             ),
         )
     }

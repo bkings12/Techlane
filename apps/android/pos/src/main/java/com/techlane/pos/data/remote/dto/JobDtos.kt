@@ -168,3 +168,36 @@ data class SendSmsRequest(
     @SerialName("repair_job_id") val repairJobId: String? = null,
     @SerialName("customer_id") val customerId: String? = null,
 )
+
+// ---------------------------------------------------------------- intake
+
+/**
+ * Mirrors the anonymous request struct on `POST /repairs/intake`. Nulls are
+ * omitted by the serializer's explicitNulls=false, so an absent optional stays
+ * absent on the wire rather than becoming an explicit null the backend has to
+ * distinguish from "not supplied".
+ */
+@Serializable
+data class IntakeRequest(
+    @SerialName("branch_id") val branchId: String,
+    @SerialName("problem_summary") val problemSummary: String,
+    @SerialName("device_kind") val deviceKind: String,
+    val anonymous: Boolean = false,
+    @SerialName("customer_id") val customerId: String? = null,
+    @SerialName("customer_name") val customerName: String? = null,
+    @SerialName("customer_phone") val customerPhone: String? = null,
+    val brand: String? = null,
+    val model: String? = null,
+    val imei: String? = null,
+    @SerialName("serial_number") val serialNumber: String? = null,
+    @SerialName("condition_tags") val conditionTags: List<String> = emptyList(),
+    @SerialName("estimate_labor_amount") val estimateLaborAmount: Double? = null,
+    @SerialName("estimate_parts_amount") val estimatePartsAmount: Double? = null,
+    @SerialName("technician_id") val technicianId: String? = null,
+)
+
+/** `POST /repairs/intake` creates customer, device, job and estimate in one go. */
+@Serializable
+data class IntakeResultDto(
+    val repair: RepairJobDto? = null,
+)

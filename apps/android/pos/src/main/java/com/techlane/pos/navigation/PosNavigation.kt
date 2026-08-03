@@ -32,12 +32,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -55,6 +61,7 @@ import com.techlane.pos.feature.auth.LoginScreen
 import com.techlane.pos.feature.camera.JobCameraScreen
 import com.techlane.pos.feature.charge.QuickChargeScreen
 import com.techlane.pos.feature.dashboard.DashboardScreen
+import com.techlane.pos.feature.intake.IntakeScreen
 import com.techlane.pos.feature.jobs.JobDetailsScreen
 import com.techlane.pos.feature.jobs.JobDetailsViewModel
 import com.techlane.pos.feature.jobs.JobsScreen
@@ -62,6 +69,8 @@ import com.techlane.pos.feature.more.MoreScreen
 import com.techlane.pos.feature.scan.ScanScreen
 import com.techlane.pos.feature.settings.SettingsScreen
 import com.techlane.pos.feature.settings.printer.PrinterSettingsScreen
+import com.techlane.pos.feature.update.AppUpdateViewModel
+import com.techlane.pos.feature.update.UpdatePrompt
 
 object Routes {
     const val LOGIN = "login"
@@ -74,6 +83,7 @@ object Routes {
     const val HISTORY = "history"
     const val SETTINGS = "settings"
     const val PRINTER_SETTINGS = "settings/printer"
+    const val INTAKE = "intake"
     const val JOB_DETAILS = "job/{jobId}"
     const val JOB_CAMERA = "job/{jobId}/camera/{kind}"
 
@@ -100,6 +110,11 @@ private enum class ShellTab(val route: String, val label: String, val icon: Imag
 fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
     val navController = rememberNavController()
 
+    // Sits above the whole graph so a mandatory update cannot be walked around
+    // by being on some other screen when it lands. Only checked while signed
+    // in — an update nag over the login form helps nobody.
+    if (signedIn) AppUpdateHost()
+
     NavHost(
         navController = navController,
         startDestination = if (signedIn) Routes.SHELL else Routes.LOGIN,
@@ -123,6 +138,22 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
             AppShell(
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenJob = { navController.navigate(Routes.jobDetails(it)) },
+                onNewIntake = { navController.navigate(Routes.INTAKE) },
+            )
+        }
+
+        composable(Routes.INTAKE) {
+            IntakeScreen(
+                onBack = { navController.popBackStack() },
+                onJobCreated = { jobId ->
+                    // The booked job replaces the form in the stack: Back from
+                    // Job Details returns to the board, never to a filled-in
+                    // intake form that would book a duplicate if re-submitted.
+                    navController.navigate(Routes.jobDetails(jobId)) {
+                        popUpTo(Routes.INTAKE) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 
@@ -182,7 +213,11 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AppShell(onOpenSettings: () -> Unit, onOpenJob: (String) -> Unit) {
+private fun AppShell(
+    onOpenSettings: () -> Unit,
+    onOpenJob: (String) -> Unit,
+    onNewIntake: () -> Unit,
+) {
     val tabController = rememberNavController()
     val backStack by tabController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination
@@ -218,6 +253,7 @@ private fun AppShell(onOpenSettings: () -> Unit, onOpenJob: (String) -> Unit) {
                         onOpenJob = onOpenJob,
                         onScan = { tabController.navigateTab(Routes.SCAN) },
                         onNewSale = { tabController.navigateTab(Routes.SALES) },
+                        onNewIntake = onNewIntake,
                         onOpenSettings = onOpenSettings,
                     )
                 }
@@ -230,6 +266,7 @@ private fun AppShell(onOpenSettings: () -> Unit, onOpenJob: (String) -> Unit) {
                     JobsScreen(
                         onOpenJob = onOpenJob,
                         onScan = { tabController.navigateTab(Routes.SCAN) },
+                        onNewIntake = onNewIntake,
                     )
                 }
                 composable(Routes.SCAN) { ScanScreen(onJobResolved = onOpenJob) }
@@ -252,6 +289,33 @@ private fun AppShell(onOpenSettings: () -> Unit, onOpenJob: (String) -> Unit) {
                 },
             )
         }
+    }
+}
+
+/**
+ * Checks for a newer APK on launch and whenever the app is brought back to the
+ * foreground; the repository throttles the actual request, so resuming all day
+ * costs one call.
+ */
+@Composable
+private fun AppUpdateHost(viewModel: AppUpdateViewModel = hiltViewModel()) {
+    val update by viewModel.prompt.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.checkOnResume()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    update?.let { available ->
+        UpdatePrompt(
+            update = available,
+            installedVersionName = viewModel.installedVersionName,
+            onDismiss = { viewModel.dismiss(available.versionCode) },
+        )
     }
 }
 

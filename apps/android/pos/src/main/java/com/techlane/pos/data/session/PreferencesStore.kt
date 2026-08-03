@@ -104,4 +104,11 @@ data class PosPreferences(
 
     /** Reconcile is owner/manager-gated server-side; used to soften the UI copy. */
     val canForceReconcile: Boolean get() = roles.any { it == "owner" || it == "manager" }
+
+    /**
+     * Intake creation is permissioned server-side; this only decides whether to
+     * offer the shortcut, so a technician isn't shown a button that will 403.
+     */
+    val canCreateIntake: Boolean
+        get() = roles.any { it == "owner" || it == "manager" || it == "cashier" || it == "technician" }
 }

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Storefront
+import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -22,16 +23,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.techlane.pos.core.designsystem.component.TlBanner
+import com.techlane.pos.core.designsystem.component.TlButton
 import com.techlane.pos.core.designsystem.component.TlCard
 import com.techlane.pos.core.designsystem.component.TlDangerButton
 import com.techlane.pos.core.designsystem.component.TlListRow
 import com.techlane.pos.core.designsystem.component.TlScreen
 import com.techlane.pos.core.designsystem.component.TlSecondaryButton
 import com.techlane.pos.core.designsystem.component.TlSectionHeader
+import com.techlane.pos.core.designsystem.component.TlStatusPill
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.TlTheme
 import com.techlane.pos.feature.auth.findFragmentActivity
@@ -47,6 +51,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current.findFragmentActivity()
+    val uriHandler = LocalUriHandler.current
 
     TlScreen(
         title = "Settings",
@@ -129,6 +134,37 @@ fun SettingsScreen(
                 leadingIcon = Icons.Outlined.Print,
                 onClick = onOpenPrinterSettings,
             )
+        }
+
+        TlSectionHeader(title = "App")
+        TlCard(contentPadding = PaddingValues(0.dp)) {
+            val update = state.availableUpdate
+            TlListRow(
+                title = "App update",
+                subtitle = when {
+                    update != null -> "TechLane ${update.versionName} available"
+                    state.updateCheckedUpToDate -> "You're on the latest version"
+                    else -> "Installed ${viewModel.installedVersion}"
+                },
+                leadingIcon = Icons.Outlined.SystemUpdateAlt,
+                // A quiet badge rather than a repeat prompt: the operator has
+                // already been asked once and said later.
+                trailing = update?.let { { TlStatusPill(text = "NEW", tone = TlTone.Info, leadingDot = false) } },
+            )
+            if (update?.downloadUrl != null) {
+                TlButton(
+                    text = "Update now",
+                    onClick = { runCatching { uriHandler.openUri(update.downloadUrl) } },
+                    modifier = Modifier.fillMaxWidth().padding(TlTheme.spacing.lg),
+                )
+            } else {
+                TlSecondaryButton(
+                    text = if (state.checkingUpdate) "Checking…" else "Check for updates",
+                    onClick = viewModel::checkForUpdate,
+                    loading = state.checkingUpdate,
+                    modifier = Modifier.fillMaxWidth().padding(TlTheme.spacing.lg),
+                )
+            }
         }
 
         TlSectionHeader(title = "Security")

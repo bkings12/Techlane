@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.techlane.pos.data.local.CatalogItemEntity
 import com.techlane.pos.data.local.TechnicianEntity
 import com.techlane.pos.data.printer.PrinterRepository
+import com.techlane.pos.data.repository.ChargeRepository
 import com.techlane.pos.data.repository.JobRepository
 import com.techlane.pos.data.repository.ShopRepository
 import com.techlane.pos.data.session.PreferencesStore
@@ -18,12 +19,15 @@ import com.techlane.pos.domain.model.JobDetail
 import com.techlane.pos.domain.model.JobPart
 import com.techlane.pos.domain.model.JobPhoto
 import com.techlane.pos.domain.model.JobStatus
+import com.techlane.pos.domain.model.PaymentMethod
 import com.techlane.pos.domain.model.PhotoKind
+import com.techlane.pos.domain.model.StkStage
 import com.techlane.pos.domain.model.VerbalApprovalChannel
 import com.techlane.pos.sync.JobSyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +40,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 
 /** Which secondary surface, if any, is open over the detail screen. */
@@ -53,6 +58,11 @@ data class JobDetailsUiState(
     val partsQuery: String = "",
     val pendingPhotoKind: PhotoKind = PhotoKind.Progress,
     val printingReceipt: Boolean = false,
+    /** Non-null while a job payment is in flight or resolved — drives the STK sheet. */
+    val paymentStage: StkStage? = null,
+    val paymentMethod: PaymentMethod = PaymentMethod.MpesaStk,
+    val branchId: String? = null,
+    val canForceReconcile: Boolean = false,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -63,10 +73,13 @@ class JobDetailsViewModel @Inject constructor(
     private val shop: ShopRepository,
     private val prefs: PreferencesStore,
     private val printers: PrinterRepository,
+    private val charges: ChargeRepository,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     val jobId: String = checkNotNull(savedStateHandle["jobId"]) { "jobId is required" }
+
+    private var paymentJob: Job? = null
 
     private val _state = MutableStateFlow(JobDetailsUiState())
     val state: StateFlow<JobDetailsUiState> = _state.asStateFlow()
@@ -91,9 +104,71 @@ class JobDetailsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             val preferences = prefs.preferences.first()
-            _state.update { it.copy(meId = preferences.userId, locationId = preferences.locationId) }
+            _state.update {
+                it.copy(
+                    meId = preferences.userId,
+                    locationId = preferences.locationId,
+                    branchId = preferences.branchId,
+                    canForceReconcile = preferences.canForceReconcile,
+                )
+            }
         }
         refresh(initial = true)
+    }
+
+    // ------------------------------------------------------------- payment
+    //
+    // Settles the job's balance against the job itself rather than creating a
+    // sale — see ChargeRepository.chargeRepair. The job is refreshed on success
+    // so the balance the screen shows is the server's, never a local guess.
+
+    fun takePayment(method: PaymentMethod) {
+        val detail = job.value ?: return
+        val branchId = _state.value.branchId
+        if (branchId == null) {
+            _state.update { it.copy(error = "Pick a branch in Settings before taking payment.") }
+            return
+        }
+        if (detail.balanceDue <= 0.0) return
+        if (_state.value.paymentStage != null) return
+
+        _state.update { it.copy(paymentMethod = method, error = null, message = null) }
+        paymentJob?.cancel()
+        paymentJob = viewModelScope.launch {
+            charges.chargeRepair(
+                repairId = jobId,
+                branchId = branchId,
+                amount = detail.balanceDue,
+                method = method,
+                phone = detail.customer.phone,
+                label = "${detail.jobCode} · ${detail.device.label}",
+                idempotencyKey = UUID.randomUUID().toString(),
+            ).collect { stage ->
+                _state.update { it.copy(paymentStage = stage) }
+                // A settled payment changes the balance and can move the job's
+                // own state server-side, so re-read rather than patching locally.
+                if (stage is StkStage.Paid) jobs.refreshJob(jobId)
+            }
+        }
+    }
+
+    /** Closes the payment sheet. Never cancels a prompt that is still in flight. */
+    fun dismissPayment() {
+        val stage = _state.value.paymentStage
+        if (stage is StkStage.Sending || stage is StkStage.Waiting || stage is StkStage.Finalising) return
+        paymentJob?.cancel()
+        paymentJob = null
+        _state.update { it.copy(paymentStage = null) }
+    }
+
+    fun retryPayment() {
+        _state.update { it.copy(paymentStage = null) }
+        takePayment(_state.value.paymentMethod)
+    }
+
+    fun takeCashInstead() {
+        _state.update { it.copy(paymentStage = null) }
+        takePayment(PaymentMethod.Cash)
     }
 
     fun refresh(initial: Boolean = false) {

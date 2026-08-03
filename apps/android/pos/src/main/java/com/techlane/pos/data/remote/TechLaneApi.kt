@@ -1,6 +1,7 @@
 package com.techlane.pos.data.remote
 
 import com.techlane.pos.data.remote.dto.AddAttachmentRequest
+import com.techlane.pos.data.remote.dto.AppVersionDto
 import com.techlane.pos.data.remote.dto.AddNoteRequest
 import com.techlane.pos.data.remote.dto.AddSaleLineRequest
 import com.techlane.pos.data.remote.dto.AssignRequest
@@ -8,6 +9,7 @@ import com.techlane.pos.data.remote.dto.AuthorizeWorkRequest
 import com.techlane.pos.data.remote.dto.BranchDto
 import com.techlane.pos.data.remote.dto.ChangeStatusRequest
 import com.techlane.pos.data.remote.dto.CreateEstimateRequest
+import com.techlane.pos.data.remote.dto.CreatePaymentRequest
 import com.techlane.pos.data.remote.dto.JobSaleLineDto
 import com.techlane.pos.data.remote.dto.RepairAttachmentDto
 import com.techlane.pos.data.remote.dto.RepairEstimateDto
@@ -20,6 +22,8 @@ import com.techlane.pos.data.remote.dto.CheckoutRequest
 import com.techlane.pos.data.remote.dto.CheckoutResponse
 import com.techlane.pos.data.remote.dto.CompleteSaleRequest
 import com.techlane.pos.data.remote.dto.IntakePresetDto
+import com.techlane.pos.data.remote.dto.IntakeRequest
+import com.techlane.pos.data.remote.dto.IntakeResultDto
 import com.techlane.pos.data.remote.dto.ItemsEnvelope
 import com.techlane.pos.data.remote.dto.LoginRequest
 import com.techlane.pos.data.remote.dto.LoginResponse
@@ -55,6 +59,18 @@ interface TechLaneApi {
     @GET("me")
     suspend fun me(): MeDto
 
+    /**
+     * Newer-build check. Unauthenticated on the server, but routed through the
+     * same client so it inherits the configured base URL and timeouts rather
+     * than standing up a second networking stack.
+     */
+    @GET("app-version")
+    suspend fun appVersion(
+        @Query("app") app: String,
+        @Query("platform") platform: String,
+        @Query("current_version_code") currentVersionCode: Int,
+    ): AppVersionDto
+
     @GET("branches")
     suspend fun branches(): ItemsEnvelope<BranchDto>
 
@@ -85,6 +101,17 @@ interface TechLaneApi {
     suspend fun payment(@Path("id") id: String): PaymentDto
 
     /**
+     * Pays a repair job's balance. Distinct from [checkout], which creates a
+     * sale: a job already exists and already has a total, so the payment hangs
+     * off the job rather than minting a second document for the same money.
+     */
+    @POST("payments")
+    suspend fun createPayment(
+        @Body body: CreatePaymentRequest,
+        @Header("Idempotency-Key") idempotencyKey: String,
+    ): PaymentDto
+
+    /**
      * Nudges Daraja's STK Query when the callback is late. Returns 202 while the
      * customer still has the prompt open, which is why this is a raw [Response]:
      * "not finished yet" is not an error worth throwing over.
@@ -110,6 +137,14 @@ interface TechLaneApi {
 
     @GET("repairs/{id}")
     suspend fun repair(@Path("id") id: String): RepairJobDto
+
+    /**
+     * Counter intake: creates the customer (or reuses one), the device, and the
+     * repair job in a single server-side transaction, so a half-saved walk-in is
+     * not a state this app can produce.
+     */
+    @POST("repairs/intake")
+    suspend fun intake(@Body body: IntakeRequest): IntakeResultDto
 
     /** Resolves the QR printed on an intake slip (techlane://repair-pickup/CODE). */
     @GET("repairs/by-pickup-code")

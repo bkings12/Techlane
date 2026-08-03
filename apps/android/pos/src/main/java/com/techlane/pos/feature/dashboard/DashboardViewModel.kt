@@ -28,9 +28,7 @@ data class DashboardUiState(
     val firstName: String
         get() = prefs.displayName?.trim()?.substringBefore(' ')?.takeIf { it.isNotBlank() } ?: "there"
 
-    /** Intake creation is permissioned server-side; this only shapes the shortcut. */
-    val canCreateIntake: Boolean
-        get() = prefs.roles.any { it == "owner" || it == "manager" || it == "cashier" || it == "technician" }
+    val canCreateIntake: Boolean get() = prefs.canCreateIntake
 
     val quickActions: List<QuickAction> get() = DashboardRules.quickActions(canCreateIntake)
 }

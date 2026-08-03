@@ -70,6 +70,7 @@ fun DashboardScreen(
     onOpenJob: (String) -> Unit,
     onScan: () -> Unit,
     onNewSale: () -> Unit,
+    onNewIntake: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: DashboardViewModel = hiltViewModel(),
@@ -120,7 +121,7 @@ fun DashboardScreen(
                     QuickAction.Scan -> onScan()
                     QuickAction.FindJob -> onOpenJobs(JobFilter.All)
                     QuickAction.NewSale -> onNewSale()
-                    QuickAction.NewIntake -> onOpenJobs(JobFilter.AwaitingDiagnosis)
+                    QuickAction.NewIntake -> onNewIntake()
                 }
             },
         )

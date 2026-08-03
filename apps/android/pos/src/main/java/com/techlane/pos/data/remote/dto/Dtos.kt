@@ -173,3 +173,35 @@ data class ApiErrorBody(
     val code: String = "",
     val message: String = "",
 )
+
+// ---------------------------------------------------------------- app updates
+
+/**
+ * `GET /app-version`. The server does the comparison against the
+ * `current_version_code` we send, so the app never re-implements "is this
+ * newer" — it just reports what it was told.
+ */
+@Serializable
+data class AppVersionDto(
+    @SerialName("update_available") val updateAvailable: Boolean = false,
+    @SerialName("force_update") val forceUpdate: Boolean = false,
+    @SerialName("latest_version_code") val latestVersionCode: Int = 0,
+    @SerialName("latest_version_name") val latestVersionName: String = "",
+    @SerialName("download_url") val downloadUrl: String? = null,
+    val notes: String? = null,
+)
+
+/**
+ * `POST /payments`. Used for repair-job balances, which — unlike a POS sale —
+ * are paid against the job itself via the polymorphic payable reference rather
+ * than by creating a sale first.
+ */
+@Serializable
+data class CreatePaymentRequest(
+    val method: String,
+    val amount: Double,
+    @SerialName("payable_type") val payableType: String,
+    @SerialName("payable_id") val payableId: String,
+    @SerialName("branch_id") val branchId: String? = null,
+    val phone: String? = null,
+)

@@ -11,6 +11,8 @@ import com.techlane.pos.data.security.BiometricCancelled
 import com.techlane.pos.data.security.BiometricVault
 import com.techlane.pos.data.session.PosPreferences
 import com.techlane.pos.data.session.PreferencesStore
+import com.techlane.pos.data.update.AppUpdateRepository
+import com.techlane.pos.data.update.AvailableUpdate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +32,10 @@ data class SettingsUiState(
     val error: String? = null,
     val biometricAvailable: Boolean = false,
     val catalogCount: Int? = null,
+    val checkingUpdate: Boolean = false,
+    val availableUpdate: AvailableUpdate? = null,
+    /** Set after a manual check that found nothing, so the row can say so. */
+    val updateCheckedUpToDate: Boolean = false,
 )
 
 @HiltViewModel
@@ -38,10 +44,13 @@ class SettingsViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val prefs: PreferencesStore,
     private val vault: BiometricVault,
+    private val updates: AppUpdateRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
+
+    val installedVersion: String = "${updates.installedVersionName} (${updates.installedVersionCode})"
 
     init {
         _state.update { it.copy(biometricAvailable = vault.availability() == BiometricVault.Availability.Available) }
@@ -50,7 +59,26 @@ class SettingsViewModel @Inject constructor(
                 _state.update { it.copy(prefs = preferences) }
             }
         }
+        // Reflects whatever the last background check found, so the badge is
+        // present even when the prompt has already been dismissed.
+        viewModelScope.launch {
+            updates.available.collect { update ->
+                _state.update { it.copy(availableUpdate = update) }
+            }
+        }
         loadBranches()
+    }
+
+    /** Settings → Check for updates. Forced: the operator explicitly asked. */
+    fun checkForUpdate() {
+        if (_state.value.checkingUpdate) return
+        _state.update { it.copy(checkingUpdate = true, updateCheckedUpToDate = false) }
+        viewModelScope.launch {
+            val found = updates.check(force = true)
+            _state.update {
+                it.copy(checkingUpdate = false, availableUpdate = found, updateCheckedUpToDate = found == null)
+            }
+        }
     }
 
     fun loadBranches() {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.DropdownMenu
@@ -40,6 +41,7 @@ import com.techlane.pos.core.designsystem.component.TlKeyValue
 import com.techlane.pos.core.designsystem.component.TlLoading
 import com.techlane.pos.core.designsystem.component.TlScreen
 import com.techlane.pos.core.designsystem.component.TlSecondaryButton
+import com.techlane.pos.core.designsystem.component.TlStatusPill
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.TlTheme
 import com.techlane.pos.core.util.Msisdn
@@ -47,7 +49,9 @@ import com.techlane.pos.core.util.formatKes
 import com.techlane.pos.domain.model.JobAction
 import com.techlane.pos.domain.model.JobDetail
 import com.techlane.pos.domain.model.JobStatus
+import com.techlane.pos.domain.model.PaymentMethod
 import com.techlane.pos.domain.model.PhotoKind
+import com.techlane.pos.feature.charge.StkStatusScreen
 import com.techlane.pos.feature.jobs.components.ApprovalCard
 import com.techlane.pos.feature.jobs.components.CustomerUpdateSheet
 import com.techlane.pos.feature.jobs.components.DiagnosisSheet
@@ -186,6 +190,14 @@ fun JobDetailsScreen(
             onRecordApproval = { viewModel.openSheet(JobSheet.Approval) },
         )
 
+        MoneyCard(
+            total = detail.amountDue,
+            balance = detail.balanceDue,
+            busy = state.paymentStage != null,
+            onTakePayment = { viewModel.takePayment(PaymentMethod.MpesaStk) },
+            onTakeCash = { viewModel.takePayment(PaymentMethod.Cash) },
+        )
+
         PartsCard(
             parts = detail.parts,
             canEdit = detail.status.isOpen,
@@ -277,6 +289,33 @@ fun JobDetailsScreen(
                 onTakePhoto(kind)
             },
             onDismiss = viewModel::closeSheet,
+        )
+    }
+
+    // The payment result covers this screen rather than navigating away, so
+    // "Done" simply closes it and the operator is already back on the job —
+    // no back-stack unwinding, and no way to land on a stale payment screen.
+    state.paymentStage?.let { stage ->
+        StkStatusScreen(
+            stage = stage,
+            amount = detail?.balanceDue ?: 0.0,
+            phone = detail?.customer?.phone,
+            label = detail?.let { "${it.jobCode} · ${it.device.label}" }.orEmpty(),
+            method = state.paymentMethod,
+            canForceReconcile = state.canForceReconcile,
+            receiptBusy = state.printingReceipt,
+            receiptError = null,
+            onPrintReceipt = viewModel::reprintFinalReceipt,
+            onShareReceipt = viewModel::reprintFinalReceipt,
+            onRetry = viewModel::retryPayment,
+            onTakeCash = viewModel::takeCashInstead,
+            onCheckAgain = viewModel::retryPayment,
+            onStopWaiting = viewModel::dismissPayment,
+            onDone = viewModel::dismissPayment,
+            onDismiss = viewModel::dismissPayment,
+            // Already on the job, so "View job" would be a no-op button; the
+            // Done action is the honest one here.
+            onViewJob = null,
         )
     }
 }
@@ -376,6 +415,53 @@ private fun CustomerDeviceCard(
             TlSecondaryButton(
                 text = technicianName ?: "Assign",
                 onClick = onAssign,
+            )
+        }
+    }
+}
+
+/**
+ * What the customer owes, and the one action that settles it. Hidden entirely
+ * on a job with no money attached — an empty totals block on a warranty repair
+ * is noise the counter has to read past.
+ */
+@Composable
+private fun MoneyCard(
+    total: Double,
+    balance: Double,
+    busy: Boolean,
+    onTakePayment: () -> Unit,
+    onTakeCash: () -> Unit,
+) {
+    if (total <= 0.0 && balance <= 0.0) return
+    val settled = balance <= 0.0
+    TlCard {
+        Text("Money", style = MaterialTheme.typography.titleSmall)
+        TlKeyValue("Total", formatKes(total))
+        TlKeyValue("Paid", formatKes((total - balance).coerceAtLeast(0.0)))
+        TlKeyValue(
+            label = if (settled) "Balance" else "Balance due",
+            value = formatKes(balance),
+            emphasise = true,
+            // Green only when it is genuinely settled — money on a screen is
+            // not a success state by itself.
+            valueColor = if (settled) TlTheme.colors.success else MaterialTheme.colorScheme.error,
+        )
+        if (settled) {
+            TlStatusPill(text = "PAID IN FULL", tone = TlTone.Success, leadingDot = false)
+        } else {
+            TlButton(
+                text = "Take payment · ${formatKes(balance)}",
+                onClick = onTakePayment,
+                enabled = !busy,
+                icon = Icons.Outlined.PhoneAndroid,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TlSecondaryButton(
+                text = "Record cash",
+                onClick = onTakeCash,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }

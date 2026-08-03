@@ -20,6 +20,7 @@ import com.techlane.pos.data.remote.dto.AssignRequest
 import com.techlane.pos.data.remote.dto.AuthorizeWorkRequest
 import com.techlane.pos.data.remote.dto.ChangeStatusRequest
 import com.techlane.pos.data.remote.dto.CreateEstimateRequest
+import com.techlane.pos.data.remote.dto.IntakeRequest
 import com.techlane.pos.data.remote.dto.RepairJobDto
 import com.techlane.pos.data.remote.dto.SendSmsRequest
 import com.techlane.pos.data.remote.toAppException
@@ -210,6 +211,20 @@ class JobRepository @Inject constructor(
         val items = api.repairs(query = query).items
         dao.upsertJobs(items.map { it.toEntity() })
         items.map { it.toEntity().toSummary() }
+    }.recoverCatching { throw it.toAppException() }
+
+    /**
+     * Books a walk-in. Deliberately online-only rather than queued through the
+     * outbox: intake mints a job number, a pickup code and a customer record
+     * server-side, and a phone that invented those offline would hand the
+     * customer a slip whose code the shop cannot look up. The job lands in the
+     * cache on success so Job Details opens instantly on the returned id.
+     */
+    suspend fun createIntake(request: IntakeRequest): Result<String> = runCatching {
+        val repair = api.intake(request).repair
+            ?: error("The job was created but the server did not return it. Pull to refresh the board.")
+        dao.upsertJobs(listOf(repair.toEntity()))
+        repair.id
     }.recoverCatching { throw it.toAppException() }
 
     /** Resolves the intake-slip QR to a job id. */

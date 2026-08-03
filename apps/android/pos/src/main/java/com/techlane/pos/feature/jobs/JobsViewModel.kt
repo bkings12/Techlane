@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.techlane.pos.data.repository.JobRepository
 import com.techlane.pos.data.session.PreferencesStore
+import com.techlane.pos.domain.model.JobBoardSummary
 import com.techlane.pos.domain.model.JobFilter
+import com.techlane.pos.domain.model.JobSort
 import com.techlane.pos.domain.model.JobSummary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
@@ -24,12 +26,17 @@ import javax.inject.Inject
 
 data class JobsUiState(
     val filter: JobFilter = JobFilter.Mine,
+    val sort: JobSort = JobSort.RecentlyUpdated,
     val query: String = "",
     val loading: Boolean = false,
     val refreshing: Boolean = false,
     val error: String? = null,
     val pendingSync: Int = 0,
     val meId: String? = null,
+    /** Whole-shop counts for the strip above the list, not the filtered view. */
+    val summary: JobBoardSummary = JobBoardSummary(),
+    /** Server-side permissioned too; this only decides whether to offer intake. */
+    val canCreateIntake: Boolean = false,
     /** True on first open before any board has been cached. */
     val firstLoad: Boolean = true,
 )
@@ -65,12 +72,12 @@ class JobsViewModel @Inject constructor(
         _state.map { it.filter }.distinctUntilChanged(),
         query.debounce(300).distinctUntilChanged(),
         remoteMatches,
-        _state.map { it.meId }.distinctUntilChanged(),
-    ) { cached, filter, text, remote, meId ->
+        _state.map { it.meId to it.sort }.distinctUntilChanged(),
+    ) { cached, filter, text, remote, (meId, sort) ->
         // Remote hits are merged in, not swapped for: a technician searching for a
         // job they have open locally should still see their unsynced edits on it.
         val pool = (cached + remote.filter { r -> cached.none { it.id == r.id } })
-        pool.filter { it.matches(filter, meId) && it.matches(text) }
+        sort.sort(pool.filter { it.matches(filter, meId) && it.matches(text) })
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
@@ -79,9 +86,17 @@ class JobsViewModel @Inject constructor(
                 _state.update { it.copy(pendingSync = count) }
             }
         }
+        // Counts come off the whole cached board, deliberately ignoring the
+        // active filter and search — the strip's job is to show what is waiting
+        // outside whatever queue is on screen.
+        viewModelScope.launch {
+            jobs.observeJobs().collect { all ->
+                _state.update { it.copy(summary = JobBoardSummary.from(all)) }
+            }
+        }
         viewModelScope.launch {
             val preferences = prefs.preferences.first()
-            _state.update { it.copy(meId = preferences.userId) }
+            _state.update { it.copy(meId = preferences.userId, canCreateIntake = preferences.canCreateIntake) }
             // An explicit deep-link wins; otherwise a technician's own bench is
             // the useful default, and a shop with no identity yet falls back to
             // the whole board rather than an empty one.
@@ -103,6 +118,8 @@ class JobsViewModel @Inject constructor(
     }
 
     fun setFilter(filter: JobFilter) = _state.update { it.copy(filter = filter) }
+
+    fun setSort(sort: JobSort) = _state.update { it.copy(sort = sort) }
 
     fun setQuery(value: String) {
         query.value = value

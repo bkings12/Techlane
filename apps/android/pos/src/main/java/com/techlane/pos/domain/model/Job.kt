@@ -152,11 +152,79 @@ data class JobSummary(
     val isUrgent: Boolean get() = customerWaiting && status.isOpen
 }
 
+/**
+ * The counts along the top of the board. Derived from the whole shop's jobs
+ * rather than the filtered view, because the point of the strip is to show
+ * what is waiting *outside* whatever queue is currently on screen.
+ */
+data class JobBoardSummary(
+    val open: Int = 0,
+    val onBench: Int = 0,
+    val waitingParts: Int = 0,
+    val ready: Int = 0,
+    val overdue: Int = 0,
+) {
+    val isEmpty: Boolean get() = open == 0 && onBench == 0 && waitingParts == 0 && ready == 0 && overdue == 0
+
+    companion object {
+        fun from(jobs: List<JobSummary>): JobBoardSummary = JobBoardSummary(
+            open = jobs.count { it.status.isOpen },
+            onBench = jobs.count { it.status == JobStatus.InProgress },
+            waitingParts = jobs.count { it.status == JobStatus.WaitingParts },
+            ready = jobs.count { it.status == JobStatus.ReadyForPickup },
+            overdue = jobs.count { it.isOverdue },
+        )
+    }
+}
+
+/** How the board is ordered. Default keeps the most recently touched work on top. */
+enum class JobSort(val label: String) {
+    RecentlyUpdated("Recently updated"),
+    Newest("Newest"),
+    Oldest("Oldest"),
+    PromiseDate("Promise date"),
+    ;
+
+    /**
+     * Overdue and waiting walk-ins always float regardless of sort — an
+     * operator scanning the board needs those first no matter how they ordered it.
+     */
+    fun sort(jobs: List<JobSummary>): List<JobSummary> {
+        val comparator: Comparator<JobSummary> = when (this) {
+            // The board has no separate "updated at", so newest-first is the
+            // closest honest proxy rather than inventing a timestamp.
+            RecentlyUpdated, Newest -> compareByDescending { it.createdAt }
+            Oldest -> compareBy { it.createdAt }
+            // Jobs with no promise sink below those that have one.
+            PromiseDate -> compareBy { it.promisedBy ?: Long.MAX_VALUE }
+        }
+        return jobs.sortedWith(
+            compareByDescending<JobSummary> { it.isUrgent }
+                .thenByDescending { it.isOverdue }
+                .then(comparator),
+        )
+    }
+}
+
 data class JobCustomer(
     val id: String?,
     val name: String?,
     val phone: String?,
 )
+
+/** The device kinds `POST /repairs/intake` accepts — mirrors internal/repair/intake.go. */
+enum class DeviceKind(val wire: String, val label: String) {
+    Phone("phone", "Phone"),
+    Laptop("laptop", "Laptop"),
+    Tablet("tablet", "Tablet"),
+    Other("other", "Other"),
+    ;
+
+    /** Phones and tablets are identified by IMEI; everything else by serial. */
+    val identifierIsImei: Boolean get() = this == Phone || this == Tablet
+
+    val identifierLabel: String get() = if (identifierIsImei) "IMEI" else "Serial number"
+}
 
 data class JobDevice(
     val id: String?,

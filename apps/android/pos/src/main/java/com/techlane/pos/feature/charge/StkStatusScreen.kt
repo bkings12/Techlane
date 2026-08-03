@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
@@ -49,6 +50,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.techlane.pos.core.designsystem.component.TlBanner
 import com.techlane.pos.core.designsystem.component.TlButton
+import com.techlane.pos.core.designsystem.component.TlNeutralButton
 import com.techlane.pos.core.designsystem.component.TlSecondaryButton
 import com.techlane.pos.core.designsystem.component.TlTextButton
 import com.techlane.pos.core.designsystem.component.TlTone
@@ -87,6 +89,8 @@ fun StkStatusScreen(
     onStopWaiting: () -> Unit,
     onDone: () -> Unit,
     onDismiss: () -> Unit,
+    /** Non-null when this charge was started from a repair job — adds "View job". */
+    onViewJob: (() -> Unit)? = null,
 ) {
     val inFlight = stage is StkStage.Sending || stage is StkStage.Waiting || stage is StkStage.Finalising
 
@@ -174,6 +178,7 @@ fun StkStatusScreen(
                         onStopWaiting = onStopWaiting,
                         onDone = onDone,
                         onDismiss = onDismiss,
+                        onViewJob = onViewJob,
                     )
                 }
             }
@@ -261,6 +266,7 @@ private fun Actions(
     onStopWaiting: () -> Unit,
     onDone: () -> Unit,
     onDismiss: () -> Unit,
+    onViewJob: (() -> Unit)?,
 ) {
     when (stage) {
         StkStage.Sending, StkStage.Finalising -> Unit
@@ -298,22 +304,21 @@ private fun Actions(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            TlButton(
-                text = "New charge",
-                onClick = onDone,
-                large = !hasSale,
-                containerColor = if (hasSale) {
-                    MaterialTheme.colorScheme.surfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-                contentColor = if (hasSale) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onPrimary
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            // Every completed charge offers one unmistakable way out, so the
+            // counter never has to reach for system Back to escape a finished
+            // transaction. Where it came from decides where "done" leads:
+            // a job payment returns to the job, a till charge to a fresh charge.
+            if (onViewJob != null) {
+                TlSecondaryButton(
+                    text = "View job",
+                    onClick = onViewJob,
+                    icon = Icons.Outlined.Build,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TlNeutralButton(text = "Done", onClick = onDone, modifier = Modifier.fillMaxWidth())
+            } else {
+                TlNeutralButton(text = "New sale", onClick = onDone, modifier = Modifier.fillMaxWidth())
+            }
         }
 
         is StkStage.Failed -> {
