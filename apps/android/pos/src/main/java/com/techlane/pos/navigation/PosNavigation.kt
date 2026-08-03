@@ -61,6 +61,7 @@ import com.techlane.pos.feature.jobs.JobsScreen
 import com.techlane.pos.feature.more.MoreScreen
 import com.techlane.pos.feature.scan.ScanScreen
 import com.techlane.pos.feature.settings.SettingsScreen
+import com.techlane.pos.feature.settings.printer.PrinterSettingsScreen
 
 object Routes {
     const val LOGIN = "login"
@@ -72,6 +73,7 @@ object Routes {
     const val MORE = "more"
     const val HISTORY = "history"
     const val SETTINGS = "settings"
+    const val PRINTER_SETTINGS = "settings/printer"
     const val JOB_DETAILS = "job/{jobId}"
     const val JOB_CAMERA = "job/{jobId}/camera/{kind}"
 
@@ -168,7 +170,12 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
                         popUpTo(0) { inclusive = true }
                     }
                 },
+                onOpenPrinterSettings = { navController.navigate(Routes.PRINTER_SETTINGS) },
             )
+        }
+
+        composable(Routes.PRINTER_SETTINGS) {
+            PrinterSettingsScreen(onBack = { navController.popBackStack() })
         }
     }
 }

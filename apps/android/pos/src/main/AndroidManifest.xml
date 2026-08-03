@@ -9,8 +9,31 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      Bluetooth thermal printing (GOOJPRT MTP-II and similar SPP printers).
+
+      BLUETOOTH / BLUETOOTH_ADMIN are the pre-Android-12 permissions; they are
+      capped at maxSdkVersion 30 because API 31+ replaces them with the two
+      runtime permissions below. BLUETOOTH_CONNECT covers opening the RFCOMM
+      socket and reading a paired device's name; BLUETOOTH_SCAN covers device
+      discovery. usesPermissionFlags="neverForLocation" declares we only use
+      scan results to find a printer, never to derive the phone's location —
+      that's what lets us skip requesting ACCESS_FINE/COARSE_LOCATION, which
+      Android would otherwise silently require for BLUETOOTH_SCAN.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:targetApi="31" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="31" />
+
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <application
         android:name=".TechLanePosApplication"

@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material3.FilterChip
@@ -41,6 +42,7 @@ import com.techlane.pos.feature.auth.findFragmentActivity
 fun SettingsScreen(
     onBack: () -> Unit,
     onSignedOut: () -> Unit,
+    onOpenPrinterSettings: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
@@ -117,6 +119,16 @@ fun SettingsScreen(
                 loading = state.syncing,
                 enabled = state.prefs.locationId != null,
                 modifier = Modifier.fillMaxWidth().padding(TlTheme.spacing.lg),
+            )
+        }
+
+        TlSectionHeader(title = "Printer")
+        TlCard(contentPadding = PaddingValues(0.dp)) {
+            TlListRow(
+                title = "Bluetooth thermal printer",
+                subtitle = "GOOJPRT MTP-II · 58mm",
+                leadingIcon = Icons.Outlined.Print,
+                onClick = onOpenPrinterSettings,
             )
         }
 
