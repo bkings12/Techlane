@@ -2,7 +2,6 @@ package com.techlane.pos.feature.charge
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.techlane.pos.core.designsystem.theme.ThemeMode
 import com.techlane.pos.core.print.ReceiptPrinter
 import com.techlane.pos.core.util.Msisdn
 import com.techlane.pos.data.local.CatalogItemEntity
@@ -166,15 +165,6 @@ class QuickChargeViewModel @Inject constructor(
     fun onMethodChange(method: PaymentMethod) = _state.update { it.copy(method = method, validationError = null) }
 
     fun onSearchQueryChange(value: String) { searchQuery.value = value }
-
-    /**
-     * Light/dark from the top bar. Shop lighting changes through the day and a
-     * technician should not have to dig through Settings to keep the screen
-     * readable, so this writes an explicit mode rather than toggling "match phone".
-     */
-    fun setThemeMode(mode: ThemeMode) {
-        viewModelScope.launch { prefs.setThemeMode(mode) }
-    }
 
     /**
      * Choosing what's being sold is optional, but when it is chosen it should

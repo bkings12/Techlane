@@ -3,7 +3,6 @@ package com.techlane.pos.feature.settings
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.techlane.pos.core.designsystem.theme.ThemeMode
 import com.techlane.pos.data.remote.dto.BranchDto
 import com.techlane.pos.data.remote.dto.StockLocationDto
 import com.techlane.pos.data.repository.AuthRepository
@@ -114,10 +113,6 @@ class SettingsViewModel @Inject constructor(
                 }
                 .onFailure { error -> _state.update { it.copy(syncing = false, error = error.message) } }
         }
-    }
-
-    fun setThemeMode(mode: ThemeMode) {
-        viewModelScope.launch { prefs.setThemeMode(mode) }
     }
 
     fun setBiometricEnabled(activity: FragmentActivity, enabled: Boolean) {

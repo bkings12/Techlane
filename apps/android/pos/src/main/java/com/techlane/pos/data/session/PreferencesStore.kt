@@ -6,7 +6,6 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.techlane.pos.core.designsystem.theme.ThemeMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -33,8 +32,6 @@ class PreferencesStore @Inject constructor(
         it.putOrRemove(KEY_LOCATION_ID, locationId)
         it.putOrRemove(KEY_LOCATION_NAME, locationName)
     }
-
-    suspend fun setThemeMode(mode: ThemeMode) = edit { it[KEY_THEME] = mode.name }
 
     suspend fun setBiometricEnabled(enabled: Boolean) = edit { it[KEY_BIOMETRIC] = enabled }
 
@@ -70,7 +67,6 @@ class PreferencesStore @Inject constructor(
         branchName = this[KEY_BRANCH_NAME],
         locationId = this[KEY_LOCATION_ID],
         locationName = this[KEY_LOCATION_NAME],
-        themeMode = this[KEY_THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
         biometricEnabled = this[KEY_BIOMETRIC] ?: false,
         displayName = this[KEY_DISPLAY_NAME],
         userId = this[KEY_USER_ID],
@@ -83,7 +79,6 @@ class PreferencesStore @Inject constructor(
         val KEY_BRANCH_NAME = stringPreferencesKey("branch_name")
         val KEY_LOCATION_ID = stringPreferencesKey("location_id")
         val KEY_LOCATION_NAME = stringPreferencesKey("location_name")
-        val KEY_THEME = stringPreferencesKey("theme_mode")
         val KEY_BIOMETRIC = booleanPreferencesKey("biometric_enabled")
         val KEY_DISPLAY_NAME = stringPreferencesKey("display_name")
         val KEY_USER_ID = stringPreferencesKey("user_id")
@@ -97,7 +92,6 @@ data class PosPreferences(
     val branchName: String? = null,
     val locationId: String? = null,
     val locationName: String? = null,
-    val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val biometricEnabled: Boolean = false,
     val displayName: String? = null,
     /** Signed-in staff id — drives the "My jobs" filter and "assign to me". */

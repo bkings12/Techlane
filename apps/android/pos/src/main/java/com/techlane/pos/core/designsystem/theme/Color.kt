@@ -1,20 +1,18 @@
 package com.techlane.pos.core.designsystem.theme
 
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 /**
- * Raw brand values from design-tokens/tokens.json. Screens never reach for these —
- * they read [androidx.compose.material3.MaterialTheme.colorScheme] or [TlTheme.colors]
- * so light and dark stay in step.
+ * Raw brand values from design-tokens/tokens.json. Screens never reach for
+ * these — they read [androidx.compose.material3.MaterialTheme.colorScheme]
+ * or [TlTheme.colors] instead, so a future retint only ever happens here.
  */
 internal object BrandPalette {
     val Navy = Color(0xFF060386)
     val NavyDark = Color(0xFF040257)
-    val NavyDeep = Color(0xFF02012E)
     val NavyTint = Color(0xFFE6E5FA)
     val NavyLight = Color(0xFFA9A7F0)
 
@@ -31,22 +29,10 @@ internal object BrandPalette {
     val Slate100 = Color(0xFFEEF2F7)
     val Canvas = Color(0xFFF5F7FB)
 
-    val NightCanvas = Color(0xFF090D18)
-    val NightSurface = Color(0xFF121728)
-    val NightSurfaceHigh = Color(0xFF1A2135)
-    val NightSurfaceHighest = Color(0xFF232B42)
-    val NightBorder = Color(0xFF2C3550)
-    val NightText = Color(0xFFE8ECF5)
-    val NightTextMuted = Color(0xFF9AA5BD)
-
     val Success = Color(0xFF059669)
-    val SuccessDark = Color(0xFF34D399)
     val Warning = Color(0xFFD97706)
-    val WarningDark = Color(0xFFFBBF24)
     val Danger = Color(0xFFDC2626)
-    val DangerDark = Color(0xFFF87171)
     val Info = Color(0xFF4F46E5)
-    val InfoDark = Color(0xFF9B95F5)
 }
 
 val TlLightColorScheme = lightColorScheme(
@@ -83,42 +69,6 @@ val TlLightColorScheme = lightColorScheme(
     errorContainer = Color(0xFFFEE2E2),
     onErrorContainer = Color(0xFF7F1D1D),
     scrim = Color(0xFF060B18),
-)
-
-val TlDarkColorScheme = darkColorScheme(
-    primary = BrandPalette.NavyLight,
-    onPrimary = BrandPalette.NavyDeep,
-    primaryContainer = Color(0xFF231F8C),
-    onPrimaryContainer = Color(0xFFDDDCFB),
-    inversePrimary = BrandPalette.Navy,
-    secondary = BrandPalette.Gold,
-    onSecondary = Color(0xFF1D1704),
-    secondaryContainer = Color(0xFF473509),
-    onSecondaryContainer = BrandPalette.GoldTint,
-    tertiary = BrandPalette.Gold,
-    onTertiary = Color(0xFF1D1704),
-    tertiaryContainer = Color(0xFF473509),
-    onTertiaryContainer = BrandPalette.GoldTint,
-    background = BrandPalette.NightCanvas,
-    onBackground = BrandPalette.NightText,
-    surface = BrandPalette.NightSurface,
-    onSurface = BrandPalette.NightText,
-    surfaceVariant = BrandPalette.NightSurfaceHigh,
-    onSurfaceVariant = BrandPalette.NightTextMuted,
-    surfaceContainerLowest = Color(0xFF0B101C),
-    surfaceContainerLow = Color(0xFF0F1422),
-    surfaceContainer = BrandPalette.NightSurface,
-    surfaceContainerHigh = BrandPalette.NightSurfaceHigh,
-    surfaceContainerHighest = BrandPalette.NightSurfaceHighest,
-    inverseSurface = Color(0xFFE8ECF5),
-    inverseOnSurface = Color(0xFF111A2B),
-    outline = BrandPalette.NightBorder,
-    outlineVariant = Color(0xFF222A40),
-    error = BrandPalette.DangerDark,
-    onError = Color(0xFF450A0A),
-    errorContainer = Color(0xFF4C1414),
-    onErrorContainer = Color(0xFFFECACA),
-    scrim = Color(0xFF01030A),
 )
 
 /**
@@ -164,26 +114,6 @@ val LightSemanticColors = TlSemanticColors(
     elevatedSurface = Color.White,
     moneyPositive = BrandPalette.Success,
     scrimHeavy = Color(0xE60B1220),
-)
-
-val DarkSemanticColors = TlSemanticColors(
-    success = BrandPalette.SuccessDark,
-    onSuccess = Color(0xFF00281B),
-    successContainer = Color(0xFF10402F),
-    onSuccessContainer = Color(0xFFB9F5DC),
-    warning = BrandPalette.WarningDark,
-    onWarning = Color(0xFF3A2503),
-    warningContainer = Color(0xFF4A3208),
-    onWarningContainer = Color(0xFFFDE8B5),
-    info = BrandPalette.InfoDark,
-    infoContainer = Color(0xFF272364),
-    onInfoContainer = Color(0xFFDDDCFB),
-    accent = BrandPalette.Gold,
-    onAccent = Color(0xFF1D1704),
-    hairline = BrandPalette.NightBorder,
-    elevatedSurface = BrandPalette.NightSurfaceHigh,
-    moneyPositive = BrandPalette.SuccessDark,
-    scrimHeavy = Color(0xF20A0E1A),
 )
 
 internal val LocalTlSemanticColors = staticCompositionLocalOf { LightSemanticColors }

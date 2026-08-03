@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.LocalAtm
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Settings
@@ -29,7 +27,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -59,7 +56,6 @@ import com.techlane.pos.core.designsystem.component.TlScreen
 import com.techlane.pos.core.designsystem.component.TlStepper
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.PillShape
-import com.techlane.pos.core.designsystem.theme.ThemeMode
 import com.techlane.pos.core.designsystem.theme.TlTheme
 import com.techlane.pos.core.util.Msisdn
 import com.techlane.pos.core.util.formatKes
@@ -85,13 +81,6 @@ fun QuickChargeScreen(
     val amountFocus = remember { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    val systemDark = isSystemInDarkTheme()
-    val showingDark = when (state.prefs.themeMode) {
-        ThemeMode.SYSTEM -> systemDark
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-    }
-
     // The till opens ready to take a number — that is the whole job of this screen.
     LaunchedEffect(Unit) { runCatching { amountFocus.requestFocus() } }
 
@@ -116,14 +105,6 @@ fun QuickChargeScreen(
         onRefresh = viewModel::refresh,
         refreshing = state.refreshing,
         actions = {
-            IconButton(
-                onClick = { viewModel.setThemeMode(if (showingDark) ThemeMode.LIGHT else ThemeMode.DARK) },
-            ) {
-                Icon(
-                    if (showingDark) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
-                    contentDescription = if (showingDark) "Switch to light mode" else "Switch to dark mode",
-                )
-            }
             IconButton(onClick = onOpenSettings) {
                 Icon(Icons.Outlined.Settings, contentDescription = "Settings")
             }

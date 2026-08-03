@@ -33,7 +33,6 @@ import com.techlane.pos.core.designsystem.component.TlScreen
 import com.techlane.pos.core.designsystem.component.TlSecondaryButton
 import com.techlane.pos.core.designsystem.component.TlSectionHeader
 import com.techlane.pos.core.designsystem.component.TlTone
-import com.techlane.pos.core.designsystem.theme.ThemeMode
 import com.techlane.pos.core.designsystem.theme.TlTheme
 import com.techlane.pos.feature.auth.findFragmentActivity
 
@@ -152,32 +151,6 @@ fun SettingsScreen(
                     )
                 },
             )
-        }
-
-        TlSectionHeader(title = "Appearance")
-        TlCard {
-            Text(
-                "Theme",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm)) {
-                ThemeMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = state.prefs.themeMode == mode,
-                        onClick = { viewModel.setThemeMode(mode) },
-                        label = {
-                            Text(
-                                when (mode) {
-                                    ThemeMode.SYSTEM -> "Match phone"
-                                    ThemeMode.LIGHT -> "Light"
-                                    ThemeMode.DARK -> "Dark"
-                                },
-                            )
-                        },
-                    )
-                }
-            }
         }
 
         TlSectionHeader(title = "Account")
