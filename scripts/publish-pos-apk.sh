@@ -208,9 +208,9 @@ for path in [
     if not p.exists():
         continue
     text = p.read_text()
-    text = re.sub(r'(com\.techlane\.pos · staff · )v[0-9.]+', rf'\1v{ver}', text)
-    text = re.sub(r'(data-pos-size>)[^<]*', rf'\1{size}', text)
-    text = re.sub(r'(data-pos-updated>)[^<]*', rf'\1{updated}', text)
+    text = re.sub(r'(com\.techlane\.pos · staff · )v[0-9.]+', lambda m: m.group(1) + 'v' + ver, text)
+    text = re.sub(r'(data-pos-size>)[^<]*', lambda m: m.group(1) + size, text)
+    text = re.sub(r'(data-pos-updated>)[^<]*', lambda m: m.group(1) + updated, text)
     text = re.sub(r'href="[^"]*techlane-pos\.apk[^"]*"', f'href="{url}"', text, count=1)
     p.write_text(text)
     print("updated", path)
@@ -220,8 +220,16 @@ PY
   "${PUBLISH_SSH}:/opt/techlane/web-dist/web-ops/download/index.html"
 
 echo "==> Smoke-check /app-version"
-curl -fsS "https://api.techlane.co.ke/api/v1/app-version?app=pos&platform=android&current_version_code=$((VERSION_CODE - 1))" \
-  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("update_available") is True, d; print("update_available=true for older phones ✓")'
+if [[ "$VERSION_CODE" -gt 1 ]]; then
+  # update_available only ever flips true when the caller reports a real prior
+  # version — the API treats current_version_code<=0 as "unknown", by design,
+  # so this check is only meaningful from the second release onward.
+  curl -fsS "https://api.techlane.co.ke/api/v1/app-version?app=pos&platform=android&current_version_code=$((VERSION_CODE - 1))" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("update_available") is True, d; print("update_available=true for older phones ✓")'
+else
+  curl -fsS "https://api.techlane.co.ke/api/v1/app-version?app=pos&platform=android&current_version_code=1" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("latest_version_code") == 1, d; print("app-version registered ✓", d)'
+fi
 
 echo
 echo "==> Published TechLane POS ${VERSION_NAME} (code ${VERSION_CODE})"
