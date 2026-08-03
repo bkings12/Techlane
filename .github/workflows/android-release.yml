@@ -1,0 +1,105 @@
+name: Android POS release
+
+# Builds, signs and publishes a production TechLane POS APK as a GitHub
+# Release asset whenever a pos-vX.Y.Z tag is pushed.
+#
+# This workflow deliberately does NOT call the backend's POST /app-releases
+# endpoint — that requires an owner-level TechLane session, which is a bigger
+# secret to hand CI than the signing key itself. Registering a release with
+# the in-app update-check API (and mirroring the built APK to R2/web-dist) is
+# scripts/publish-pos-apk.sh, run by a maintainer — the same split the
+# existing Ops app already uses between CI and scripts/publish-ops-apk.sh.
+on:
+  push:
+    tags:
+      - "pos-v*"
+
+permissions:
+  contents: write # to create the Release and upload assets
+
+jobs:
+  build-sign-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#pos-v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Confirm build.gradle.kts versionName matches the tag
+        working-directory: apps/android
+        run: |
+          declared="$(grep -E 'versionName\s*=' pos/build.gradle.kts | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "$declared" != "${{ steps.version.outputs.version }}" ]]; then
+            echo "::error::Tag ${{ steps.version.outputs.tag }} implies version ${{ steps.version.outputs.version }}, but pos/build.gradle.kts has versionName=\"$declared\". Bump versionName (and versionCode) and retag." >&2
+            exit 1
+          fi
+
+      - name: Decode signing keystore
+        working-directory: apps/android
+        run: |
+          if [[ -z "${{ secrets.TECHLANE_KEYSTORE_BASE64 }}" ]]; then
+            echo "::error::TECHLANE_KEYSTORE_BASE64 secret is not set — cannot produce a production-signed release." >&2
+            exit 1
+          fi
+          echo "${{ secrets.TECHLANE_KEYSTORE_BASE64 }}" | base64 -d > techlane-pos-release.jks
+
+      - name: Build and sign the release APK
+        working-directory: apps/android
+        env:
+          TECHLANE_KEYSTORE_PATH: techlane-pos-release.jks
+          TECHLANE_KEYSTORE_PASSWORD: ${{ secrets.TECHLANE_KEYSTORE_PASSWORD }}
+          TECHLANE_KEY_ALIAS: ${{ secrets.TECHLANE_KEY_ALIAS }}
+          TECHLANE_KEY_PASSWORD: ${{ secrets.TECHLANE_KEY_PASSWORD }}
+        run: ./gradlew :pos:testDebugUnitTest :pos:renameApkRelease --no-daemon
+
+      - name: Remove the keystore from the runner
+        if: always()
+        working-directory: apps/android
+        run: rm -f techlane-pos-release.jks
+
+      - name: Verify the APK is release-signed
+        working-directory: apps/android
+        run: |
+          apk="pos/build/outputs/apk/named/techlane-pos-v${{ steps.version.outputs.version }}-release.apk"
+          test -f "$apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
+          "$build_tools/apksigner" verify --verbose --print-certs "$apk" | tee /tmp/apksigner-out.txt
+          if grep -qi "^V2 Signer: certificate DN: CN=Android Debug" /tmp/apksigner-out.txt; then
+            echo "::error::APK is signed with the DEBUG certificate — refusing to publish it as a release." >&2
+            exit 1
+          fi
+          echo "apk_path=$apk" >> "$GITHUB_ENV"
+
+      - name: Publish a stable-named copy for the always-current download link
+        working-directory: apps/android
+        run: cp "$apk_path" "pos/build/outputs/apk/named/techlane-pos-release.apk"
+
+      - name: Create the GitHub Release and attach both APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "TechLane POS v${{ steps.version.outputs.version }}" \
+            --notes "Signed production build of the TechLane staff Android app." \
+            "apps/android/pos/build/outputs/apk/named/techlane-pos-v${{ steps.version.outputs.version }}-release.apk" \
+            "apps/android/pos/build/outputs/apk/named/techlane-pos-release.apk"
+
+      - name: Summary
+        run: |
+          echo "### TechLane POS v${{ steps.version.outputs.version }} published" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Versioned asset: techlane-pos-v${{ steps.version.outputs.version }}-release.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Stable \"always current\" asset: techlane-pos-release.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Remaining manual step: run scripts/publish-pos-apk.sh to register this build with the in-app update-check API and mirror it to R2 — see apps/android/RELEASE.md." >> "$GITHUB_STEP_SUMMARY"

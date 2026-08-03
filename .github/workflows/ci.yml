@@ -59,7 +59,10 @@ jobs:
           java-version: "17"
       - name: Assemble debug APKs
         working-directory: apps/android
-        run: ./gradlew :app:assembleDebug :customer:assembleDebug :supplier:assembleDebug --no-daemon
+        run: ./gradlew :app:assembleDebug :customer:assembleDebug :supplier:assembleDebug :pos:assembleDebug --no-daemon
+      - name: Run POS unit tests
+        working-directory: apps/android
+        run: ./gradlew :pos:testDebugUnitTest --no-daemon
 
   docs-present:
     runs-on: ubuntu-latest

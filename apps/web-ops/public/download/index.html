@@ -54,9 +54,11 @@
     display: flex;
     flex-direction: column;
   }
-  .card h2 { margin: 0 0 6px; font-size: 1.15rem; }
+  .card h2 { margin: 0 0 6px; font-size: 1.15rem; display: flex; align-items: center; gap: 8px; }
+  .card h2 svg.android { width: 18px; height: 18px; flex: none; }
   .pkg { font-size: 0.75rem; color: #5b6178; margin-bottom: 12px; font-family: ui-monospace, monospace; }
-  .desc { margin: 0 0 20px; color: #5b6178; font-size: 0.9rem; line-height: 1.5; flex-grow: 1; }
+  .desc { margin: 0 0 12px; color: #5b6178; font-size: 0.9rem; line-height: 1.5; flex-grow: 1; }
+  .meta { font-size: 0.78rem; color: #5b6178; margin-bottom: 16px; }
   .btn {
     display: inline-flex;
     align-items: center;
@@ -105,6 +107,19 @@
         <div class="pkg">com.techlane.ops · staff · v0.1.35</div>
         <p class="desc">For owners, technicians &amp; cashiers. Repair jobs, POS, payments, cash handovers, offline sync, and QR scanning.</p>
         <a class="btn" href="https://pub-c5cbd20e1eff426bb9379d8f58fca06f.r2.dev/downloads/techlane-ops.apk?v=0.1.35">Download APK <span>→</span></a>
+      </div>
+
+      <div class="card">
+        <h2>
+          <svg class="android" viewBox="0 0 24 24" fill="#3DDC84" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M17.6 9.48l1.84-3.18c.16-.31.04-.69-.26-.85-.29-.15-.65-.06-.83.22l-1.88 3.24c-1.44-.65-3.06-1-4.47-1s-3.03.35-4.47 1L5.65 5.67c-.18-.28-.54-.37-.83-.22-.3.16-.42.54-.26.85L6.4 9.48C3.3 11.25 1.28 14.44 1 18h22c-.28-3.56-2.3-6.75-5.4-8.52zM7 15.25c-.69 0-1.25-.56-1.25-1.25s.56-1.25 1.25-1.25 1.25.56 1.25 1.25-.56 1.25-1.25 1.25zm10 0c-.69 0-1.25-.56-1.25-1.25s.56-1.25 1.25-1.25 1.25.56 1.25 1.25-.56 1.25-1.25 1.25z"/>
+          </svg>
+          TechLane Staff
+        </h2>
+        <div class="pkg">com.techlane.pos · staff · v1.0.0</div>
+        <p class="desc">Manage repair jobs, update diagnoses, scan devices, process sales, and stay connected to your TechLane workspace from Android.</p>
+        <div class="meta">Android 8.0+ · <span data-pos-size>~24 MB</span> · Updated <span data-pos-updated>—</span></div>
+        <a class="btn" href="https://pub-c5cbd20e1eff426bb9379d8f58fca06f.r2.dev/downloads/techlane-pos.apk?v=1.0.0">Download APK <span>→</span></a>
       </div>
 
       <div class="card">

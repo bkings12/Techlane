@@ -32,6 +32,14 @@ vendor/
 apps/android/.gradle/
 apps/android/**/build/
 apps/android/local.properties
+
+# Release signing — the production keystore and its passwords must never be
+# committed. See apps/android/RELEASE.md for where these actually live.
+apps/android/keystore.properties
+apps/android/*.jks
+apps/android/*.keystore
+apps/android/**/*.jks
+apps/android/**/*.keystore
 *.apk
 *.aab
 

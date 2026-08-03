@@ -54,6 +54,7 @@ import com.techlane.pos.feature.activity.ActivityScreen
 import com.techlane.pos.feature.auth.LoginScreen
 import com.techlane.pos.feature.camera.JobCameraScreen
 import com.techlane.pos.feature.charge.QuickChargeScreen
+import com.techlane.pos.feature.dashboard.DashboardScreen
 import com.techlane.pos.feature.jobs.JobDetailsScreen
 import com.techlane.pos.feature.jobs.JobDetailsViewModel
 import com.techlane.pos.feature.jobs.JobsScreen
@@ -65,13 +66,17 @@ object Routes {
     const val LOGIN = "login"
     const val SHELL = "shell"
     const val HOME = "home"
-    const val JOBS = "jobs"
+    const val JOBS = "jobs?filter={filter}"
     const val SCAN = "scan"
     const val SALES = "sales"
     const val MORE = "more"
+    const val HISTORY = "history"
     const val SETTINGS = "settings"
     const val JOB_DETAILS = "job/{jobId}"
     const val JOB_CAMERA = "job/{jobId}/camera/{kind}"
+
+    fun jobs(filter: com.techlane.pos.domain.model.JobFilter? = null) =
+        if (filter == null) "jobs?filter=" else "jobs?filter=${filter.name}"
 
     fun jobDetails(jobId: String) = "job/$jobId"
     fun jobCamera(jobId: String, kind: PhotoKind) = "job/$jobId/camera/${kind.wire}"
@@ -83,7 +88,7 @@ object Routes {
  */
 private enum class ShellTab(val route: String, val label: String, val icon: ImageVector) {
     Home(Routes.HOME, "Home", Icons.Outlined.Home),
-    Jobs(Routes.JOBS, "Jobs", Icons.Outlined.Build),
+    Jobs("jobs", "Jobs", Icons.Outlined.Build),
     Scan(Routes.SCAN, "Scan", Icons.Outlined.QrCodeScanner),
     Sales(Routes.SALES, "Sales", Icons.AutoMirrored.Outlined.ReceiptLong),
     More(Routes.MORE, "More", Icons.Outlined.MoreHoriz),
@@ -196,27 +201,48 @@ private fun AppShell(onOpenSettings: () -> Unit, onOpenJob: (String) -> Unit) {
         ) {
             NavHost(
                 navController = tabController,
-                startDestination = Routes.JOBS,
+                startDestination = Routes.HOME,
                 enterTransition = { fadeIn(tween(140)) },
                 exitTransition = { fadeOut(tween(100)) },
             ) {
-                composable(Routes.HOME) { QuickChargeScreen(onOpenSettings = onOpenSettings) }
-                composable(Routes.JOBS) {
+                composable(Routes.HOME) {
+                    DashboardScreen(
+                        onOpenJobs = { filter -> tabController.navigateTab(Routes.jobs(filter)) },
+                        onOpenJob = onOpenJob,
+                        onScan = { tabController.navigateTab(Routes.SCAN) },
+                        onNewSale = { tabController.navigateTab(Routes.SALES) },
+                        onOpenSettings = onOpenSettings,
+                    )
+                }
+                composable(
+                    route = Routes.JOBS,
+                    arguments = listOf(
+                        navArgument("filter") { type = NavType.StringType; defaultValue = "" },
+                    ),
+                ) {
                     JobsScreen(
                         onOpenJob = onOpenJob,
                         onScan = { tabController.navigateTab(Routes.SCAN) },
                     )
                 }
                 composable(Routes.SCAN) { ScanScreen(onJobResolved = onOpenJob) }
-                composable(Routes.SALES) { ActivityScreen() }
-                composable(Routes.MORE) { MoreScreen(onOpenSettings = onOpenSettings) }
+                composable(Routes.SALES) { QuickChargeScreen(onOpenSettings = onOpenSettings) }
+                composable(Routes.MORE) {
+                    MoreScreen(
+                        onOpenSettings = onOpenSettings,
+                        onOpenChargeHistory = { tabController.navigateTab(Routes.HISTORY) },
+                    )
+                }
+                composable(Routes.HISTORY) { ActivityScreen() }
             }
         }
         if (!imeVisible) {
             BottomBar(
                 current = currentRoute?.route,
                 onSelect = { tab -> tabController.navigateTab(tab.route) },
-                isSelected = { tab -> currentRoute?.hierarchy?.any { it.route == tab.route } == true },
+                isSelected = { tab ->
+                    currentRoute?.hierarchy?.any { it.route?.substringBefore('?') == tab.route } == true
+                },
             )
         }
     }

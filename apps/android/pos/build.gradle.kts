@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -21,6 +23,10 @@ android {
         applicationId = "com.techlane.pos"
         minSdk = 26
         targetSdk = 35
+        // Release versioning: bump BOTH for every release build.
+        //   versionCode  — plain integer, strictly increasing, never reused.
+        //   versionName  — semver shown to staff and on the download page.
+        // See apps/android/RELEASE.md for the full release checklist.
         versionCode = 1
         versionName = "1.0.0"
         vectorDrawables.useSupportLibrary = true
@@ -28,6 +34,50 @@ android {
 
     // -PapiBase=https://host/api/v1 overrides both variants (LAN testing, staging).
     val apiBaseOverride = (project.findProperty("apiBase") as String?)?.trim().orEmpty()
+
+    // ---------------------------------------------------------------- signing
+    //
+    // Production signing credentials never live in source. They are read, in
+    // order of precedence, from:
+    //   1. Gradle properties -PTECHLANE_KEYSTORE_PATH=... (what CI passes)
+    //   2. Environment variables TECHLANE_KEYSTORE_PATH, ... (a local shell)
+    //   3. apps/android/keystore.properties (gitignored; a developer's own copy)
+    //
+    // See apps/android/RELEASE.md for how the keystore is generated, backed up,
+    // and rotated (it cannot be rotated for an app already in the hands of
+    // staff — Android refuses updates signed by a different key).
+    fun signingProp(name: String): String? =
+        (project.findProperty(name) as String?)?.takeIf { it.isNotBlank() }
+            ?: System.getenv(name)?.takeIf { it.isNotBlank() }
+
+    val keystorePropsFile = rootProject.file("keystore.properties")
+    val keystoreProps = Properties().apply {
+        if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { stream -> load(stream) }
+    }
+
+    fun signingValue(propKey: String, envKey: String): String? =
+        signingProp(envKey) ?: keystoreProps.getProperty(propKey)?.takeIf { it.isNotBlank() }
+
+    val releaseStorePath = signingValue("storeFile", "TECHLANE_KEYSTORE_PATH")
+    val releaseStorePassword = signingValue("storePassword", "TECHLANE_KEYSTORE_PASSWORD")
+    val releaseKeyAlias = signingValue("keyAlias", "TECHLANE_KEY_ALIAS")
+    val releaseKeyPassword = signingValue("keyPassword", "TECHLANE_KEY_PASSWORD")
+
+    val hasReleaseSigning = !releaseStorePath.isNullOrBlank() &&
+        !releaseStorePassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank() &&
+        !releaseKeyPassword.isNullOrBlank()
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
 
     buildTypes {
         debug {
@@ -48,8 +98,21 @@ android {
                 "API_BASE",
                 "\"${apiBaseOverride.ifEmpty { "https://api.techlane.co.ke/api/v1/" }}\"",
             )
-            // Replace with a real upload key before shipping to Play.
-            signingConfig = signingConfigs.getByName("debug")
+            // Falls back to the debug key only when no production credentials are
+            // configured, so `./gradlew assembleRelease` still works for local/CI
+            // smoke builds without secrets. A real release build (see RELEASE.md)
+            // always has these set, and CI verifies the output is release-signed
+            // before it is ever attached to a GitHub Release.
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "TechLane POS: no release signing credentials found — " +
+                        "signing this release build with the DEBUG key. " +
+                        "See apps/android/RELEASE.md before distributing it.",
+                )
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -73,6 +136,23 @@ android {
             "/META-INF/{AL2.0,LGPL2.1}",
             "/META-INF/DEPENDENCIES",
         )
+    }
+
+}
+
+// "pos-release.apk" tells a technician nothing, and renaming the Gradle output
+// in place (via the Variant API) is version-sensitive enough across AGP
+// releases that it isn't worth fighting — a small Copy task after assemble is
+// simpler and cannot break the actual build. Lands in outputs/apk/named/,
+// which is what the release workflow and RELEASE.md both point at.
+listOf("debug", "release").forEach { variantName ->
+    val capitalised = variantName.replaceFirstChar { it.uppercase() }
+    tasks.register<Copy>("renameApk$capitalised") {
+        dependsOn("assemble$capitalised")
+        from(layout.buildDirectory.dir("outputs/apk/$variantName"))
+        include("*.apk")
+        into(layout.buildDirectory.dir("outputs/apk/named"))
+        rename { "techlane-pos-v${android.defaultConfig.versionName}-$variantName.apk" }
     }
 }
 

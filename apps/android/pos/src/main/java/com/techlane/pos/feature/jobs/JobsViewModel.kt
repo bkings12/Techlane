@@ -37,11 +37,18 @@ data class JobsUiState(
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class JobsViewModel @Inject constructor(
+    savedStateHandle: androidx.lifecycle.SavedStateHandle,
     private val jobs: JobRepository,
     private val prefs: PreferencesStore,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(JobsUiState())
+    /** Dashboard tiles deep-link straight into a queue. */
+    private val initialFilter: JobFilter? =
+        savedStateHandle.get<String>("filter")?.let { name ->
+            JobFilter.entries.firstOrNull { it.name == name }
+        }
+
+    private val _state = MutableStateFlow(JobsUiState(filter = initialFilter ?: JobFilter.Mine))
     val state: StateFlow<JobsUiState> = _state.asStateFlow()
 
     private val query = MutableStateFlow("")
@@ -75,9 +82,13 @@ class JobsViewModel @Inject constructor(
         viewModelScope.launch {
             val preferences = prefs.preferences.first()
             _state.update { it.copy(meId = preferences.userId) }
-            // A technician's own bench is the useful default; a shop with no
-            // identity yet falls back to the whole board rather than an empty one.
-            if (preferences.userId == null) _state.update { it.copy(filter = JobFilter.All) }
+            // An explicit deep-link wins; otherwise a technician's own bench is
+            // the useful default, and a shop with no identity yet falls back to
+            // the whole board rather than an empty one.
+            when {
+                initialFilter != null -> _state.update { it.copy(filter = initialFilter) }
+                preferences.userId == null -> _state.update { it.copy(filter = JobFilter.All) }
+            }
         }
         viewModelScope.launch {
             query.debounce(350).distinctUntilChanged().collect { text ->

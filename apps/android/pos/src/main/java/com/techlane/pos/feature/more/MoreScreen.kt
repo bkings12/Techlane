@@ -49,6 +49,7 @@ class MoreViewModel @Inject constructor(
 @Composable
 fun MoreScreen(
     onOpenSettings: () -> Unit,
+    onOpenChargeHistory: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: MoreViewModel = hiltViewModel(),
 ) {
@@ -77,6 +78,12 @@ fun MoreScreen(
                     .joinToString(" · ")
                     .ifBlank { "No branch selected" },
                 leadingIcon = Icons.AutoMirrored.Outlined.ReceiptLong,
+            )
+            TlListRow(
+                title = "Charge history",
+                subtitle = "Every M-Pesa prompt and cash sale from this phone",
+                leadingIcon = Icons.AutoMirrored.Outlined.ReceiptLong,
+                onClick = onOpenChargeHistory,
             )
             TlListRow(
                 title = "Settings",

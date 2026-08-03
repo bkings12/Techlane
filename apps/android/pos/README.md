@@ -9,16 +9,38 @@ replacing it, so the shop keeps a working till while this one grows. Change
 
 ## What's in it today
 
+- **Home** — the staff dashboard: greeting, action-oriented summary tiles,
+  a "Needs attention" list, "My jobs", quick actions, and recent activity.
+  See "Dashboard" below.
 - **Jobs** — the technician board and workspace: filters, search, diagnosis,
   approval gate, parts, photos, timeline. See "Jobs module" below.
 - **Scan** — opens a job from the QR printed on its intake slip.
-- **Quick Charge** (Home) — type an amount, optionally say what it's for (a
-  stock item or a service; both optional), send an M-Pesa STK prompt or cash.
+- **Sales** — type an amount, optionally say what it's for (a stock item or a
+  service; both optional), send an M-Pesa STK prompt or cash.
 - **STK wait** — a blocking, honest status screen that stays until the payment
   is confirmed, refused, or explicitly parked. Never invents an outcome.
-- **Sales** — every prompt this phone sent, including unresolved ones.
+- **More** — charge history, till/branch info, a link to Settings.
 - **Auth** — password + MFA, plus fingerprint sign-in.
 - **Settings** — branch/stock location, catalog sync, biometrics, theme, sign out.
+
+## Dashboard
+
+`domain/model/Dashboard.kt` + `data/repository/DashboardRepository.kt`.
+
+No dashboard endpoint exists or was added. `/repairs` already carries status,
+promise time, technician and authorization for every job, and `JobRepository`
+already caches all of it in Room — so `DashboardRepository.observe()` is a
+`combine()` over that same cache plus the charge ledger and the sync outbox.
+The practical effect: the dashboard works fully offline, which is the state a
+back-room bench is usually in, and there is nothing here to keep in step with
+a second, server-side aggregation.
+
+`DashboardRules` (a plain object, no Android dependencies) turns that raw job
+list into tiles, a ranked "Needs attention" list, and a ranked "My jobs" list.
+It is deliberately pure and unit-tested (`DashboardRulesTest`) because the
+thresholds in it — what counts as "due soon", how long a ready device sits
+before it is "stale" — are judgement calls about the shop floor, not facts,
+and should be easy to read and argue with.
 
 ## Jobs module
 
@@ -147,13 +169,23 @@ whether the session is valid, so a revoked account cannot get back in.
 Defaults: debug `http://10.0.2.2:8080/api/v1/` (emulator → host),
 release `https://api.techlane.co.ke/api/v1/`.
 
-APKs land in `pos/build/outputs/apk/`.
+APKs land in `pos/build/outputs/apk/`, and a copy with a friendly, versioned
+name (`techlane-pos-v1.0.0-release.apk`) in `pos/build/outputs/apk/named/` —
+see `./gradlew :pos:renameApkDebug` / `renameApkRelease`.
+
+## Release signing
+
+Production signing, the release workflow, and the versioning process are all
+documented in **`apps/android/RELEASE.md`** — read that before cutting a real
+release. Summary: without production credentials configured,
+`assembleRelease` still builds (falls back to the debug key with a loud
+warning); with `apps/android/keystore.properties` or the `TECHLANE_KEYSTORE_*`
+environment variables set, it signs with the real production key. CI
+(`.github/workflows/android-release.yml`) builds and signs on a `pos-v*` tag
+and attaches the APK to a GitHub Release.
 
 ## Not wired up yet
 
-- **Release signing** uses the debug key. Swap in a real upload key before Play.
 - **Push** — drop `google-services.json` into `pos/` and the Firebase plugin
   applies itself; `PosMessagingService` is already registered. Without the file
   Firebase never initialises and nothing runs.
-- **CameraX / ML Kit** are on the dependency list for the scanner that the
-  repairs module will need; no scanner screen ships yet.
