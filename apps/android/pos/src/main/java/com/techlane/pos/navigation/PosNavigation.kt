@@ -13,24 +13,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -42,29 +45,48 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.techlane.pos.core.designsystem.component.TlEmptyState
-import com.techlane.pos.core.designsystem.component.TlScreen
+import androidx.navigation.navArgument
+import androidx.navigation.NavType
 import com.techlane.pos.core.designsystem.theme.PillShape
 import com.techlane.pos.core.designsystem.theme.TlTheme
+import com.techlane.pos.domain.model.PhotoKind
 import com.techlane.pos.feature.activity.ActivityScreen
 import com.techlane.pos.feature.auth.LoginScreen
+import com.techlane.pos.feature.camera.JobCameraScreen
 import com.techlane.pos.feature.charge.QuickChargeScreen
+import com.techlane.pos.feature.jobs.JobDetailsScreen
+import com.techlane.pos.feature.jobs.JobDetailsViewModel
+import com.techlane.pos.feature.jobs.JobsScreen
+import com.techlane.pos.feature.more.MoreScreen
+import com.techlane.pos.feature.scan.ScanScreen
 import com.techlane.pos.feature.settings.SettingsScreen
 
 object Routes {
     const val LOGIN = "login"
     const val SHELL = "shell"
-    const val CHARGE = "charge"
+    const val HOME = "home"
     const val JOBS = "jobs"
-    const val ACTIVITY = "activity"
+    const val SCAN = "scan"
+    const val SALES = "sales"
+    const val MORE = "more"
     const val SETTINGS = "settings"
+    const val JOB_DETAILS = "job/{jobId}"
+    const val JOB_CAMERA = "job/{jobId}/camera/{kind}"
+
+    fun jobDetails(jobId: String) = "job/$jobId"
+    fun jobCamera(jobId: String, kind: PhotoKind) = "job/$jobId/camera/${kind.wire}"
 }
 
-/** Tabs that exist today. Repairs/inventory modules slot in beside these. */
+/**
+ * Five destinations, no more. Scan sits in the middle because it is the fastest
+ * route into a job from a physical slip, which is how most bench work starts.
+ */
 private enum class ShellTab(val route: String, val label: String, val icon: ImageVector) {
-    Charge(Routes.CHARGE, "Charge", Icons.Outlined.Bolt),
+    Home(Routes.HOME, "Home", Icons.Outlined.Home),
     Jobs(Routes.JOBS, "Jobs", Icons.Outlined.Build),
-    Activity(Routes.ACTIVITY, "Activity", Icons.AutoMirrored.Outlined.ReceiptLong),
+    Scan(Routes.SCAN, "Scan", Icons.Outlined.QrCodeScanner),
+    Sales(Routes.SALES, "Sales", Icons.AutoMirrored.Outlined.ReceiptLong),
+    More(Routes.MORE, "More", Icons.Outlined.MoreHoriz),
 }
 
 @Composable
@@ -93,6 +115,43 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
         composable(Routes.SHELL) {
             AppShell(
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenJob = { navController.navigate(Routes.jobDetails(it)) },
+            )
+        }
+
+        composable(
+            route = Routes.JOB_DETAILS,
+            arguments = listOf(navArgument("jobId") { type = NavType.StringType }),
+        ) { entry ->
+            val jobId = entry.arguments?.getString("jobId").orEmpty()
+            JobDetailsScreen(
+                onBack = { navController.popBackStack() },
+                onTakePhoto = { kind -> navController.navigate(Routes.jobCamera(jobId, kind)) },
+            )
+        }
+
+        composable(
+            route = Routes.JOB_CAMERA,
+            arguments = listOf(
+                navArgument("jobId") { type = NavType.StringType },
+                navArgument("kind") { type = NavType.StringType },
+            ),
+        ) { entry ->
+            val kind = PhotoKind.fromWire(entry.arguments?.getString("kind"))
+            // Scoped to the details entry so the captured photo lands on the same
+            // ViewModel that is about to redisplay the gallery.
+            val parentEntry = remember(entry) {
+                navController.getBackStackEntry(Routes.jobDetails(entry.arguments?.getString("jobId").orEmpty()))
+            }
+            val detailsViewModel: JobDetailsViewModel =
+                androidx.hilt.navigation.compose.hiltViewModel(parentEntry)
+            JobCameraScreen(
+                kind = kind,
+                onCaptured = { file, caption ->
+                    detailsViewModel.addPhoto(file, kind, caption)
+                    navController.popBackStack()
+                },
+                onCancel = { navController.popBackStack() },
             )
         }
 
@@ -111,7 +170,7 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AppShell(onOpenSettings: () -> Unit) {
+private fun AppShell(onOpenSettings: () -> Unit, onOpenJob: (String) -> Unit) {
     val tabController = rememberNavController()
     val backStack by tabController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination
@@ -137,37 +196,37 @@ private fun AppShell(onOpenSettings: () -> Unit) {
         ) {
             NavHost(
                 navController = tabController,
-                startDestination = Routes.CHARGE,
+                startDestination = Routes.JOBS,
                 enterTransition = { fadeIn(tween(140)) },
                 exitTransition = { fadeOut(tween(100)) },
             ) {
-                composable(Routes.CHARGE) { QuickChargeScreen(onOpenSettings = onOpenSettings) }
-                composable(Routes.ACTIVITY) { ActivityScreen() }
+                composable(Routes.HOME) { QuickChargeScreen(onOpenSettings = onOpenSettings) }
                 composable(Routes.JOBS) {
-                    TlScreen(title = "Jobs", subtitle = "Repairs board") {
-                        TlEmptyState(
-                            title = "Repairs land here next",
-                            subtitle = "Intake, diagnosis, parts and handover will use the same shell and " +
-                                "components as the charge screen.",
-                            icon = Icons.Outlined.Build,
-                        )
-                    }
+                    JobsScreen(
+                        onOpenJob = onOpenJob,
+                        onScan = { tabController.navigateTab(Routes.SCAN) },
+                    )
                 }
+                composable(Routes.SCAN) { ScanScreen(onJobResolved = onOpenJob) }
+                composable(Routes.SALES) { ActivityScreen() }
+                composable(Routes.MORE) { MoreScreen(onOpenSettings = onOpenSettings) }
             }
         }
         if (!imeVisible) {
             BottomBar(
                 current = currentRoute?.route,
-                onSelect = { tab ->
-                    tabController.navigate(tab.route) {
-                        popUpTo(tabController.graph.findStartDestination().id) { saveState = true }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
-                },
+                onSelect = { tab -> tabController.navigateTab(tab.route) },
                 isSelected = { tab -> currentRoute?.hierarchy?.any { it.route == tab.route } == true },
             )
         }
+    }
+}
+
+private fun NavHostController.navigateTab(route: String) {
+    navigate(route) {
+        popUpTo(graph.findStartDestination().id) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
     }
 }
 
@@ -205,7 +264,7 @@ private fun BottomBar(
                         },
                     ) {
                         Box(
-                            modifier = Modifier.padding(horizontal = TlTheme.spacing.xl, vertical = TlTheme.spacing.xs),
+                            modifier = Modifier.padding(horizontal = TlTheme.spacing.lg, vertical = TlTheme.spacing.xs),
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(

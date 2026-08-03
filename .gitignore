@@ -37,7 +37,10 @@ apps/android/local.properties
 
 # Logs / data
 *.log
-data/
+# Anchored: a bare 'data/' also matched every Android module's data package
+# (com.techlane.*.data), silently keeping repositories, Room and the token
+# stores out of the repo.
+/data/
 tmp/
 
 # Generated clients (optional keep)

@@ -6,6 +6,7 @@ import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFact
 import com.techlane.pos.BuildConfig
 import com.techlane.pos.data.local.CatalogDao
 import com.techlane.pos.data.local.ChargeDao
+import com.techlane.pos.data.local.JobDao
 import com.techlane.pos.data.local.PosDatabase
 import com.techlane.pos.data.local.ServiceDao
 import com.techlane.pos.data.remote.AuthHeaderInterceptor
@@ -102,4 +103,7 @@ object AppModule {
 
     @Provides
     fun chargeDao(db: PosDatabase): ChargeDao = db.chargeDao()
+
+    @Provides
+    fun jobDao(db: PosDatabase): JobDao = db.jobDao()
 }
