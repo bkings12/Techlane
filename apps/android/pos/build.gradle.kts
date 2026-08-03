@@ -27,8 +27,8 @@ android {
         //   versionCode  — plain integer, strictly increasing, never reused.
         //   versionName  — semver shown to staff and on the download page.
         // See apps/android/RELEASE.md for the full release checklist.
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 5
+        versionName = "1.0.4"
         vectorDrawables.useSupportLibrary = true
     }
 
