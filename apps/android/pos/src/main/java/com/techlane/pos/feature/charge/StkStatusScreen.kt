@@ -27,6 +27,8 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.Print
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -45,9 +47,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.techlane.pos.core.designsystem.component.TlBanner
 import com.techlane.pos.core.designsystem.component.TlButton
 import com.techlane.pos.core.designsystem.component.TlSecondaryButton
 import com.techlane.pos.core.designsystem.component.TlTextButton
+import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.MoneyDisplay
 import com.techlane.pos.core.designsystem.theme.PillShape
 import com.techlane.pos.core.designsystem.theme.TlTheme
@@ -73,6 +77,10 @@ fun StkStatusScreen(
     label: String,
     method: PaymentMethod,
     canForceReconcile: Boolean,
+    receiptBusy: Boolean,
+    receiptError: String?,
+    onPrintReceipt: () -> Unit,
+    onShareReceipt: () -> Unit,
     onRetry: () -> Unit,
     onTakeCash: () -> Unit,
     onCheckAgain: () -> Unit,
@@ -154,8 +162,12 @@ fun StkStatusScreen(
                         .align(Alignment.BottomCenter),
                     verticalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm),
                 ) {
+                    TlBanner(message = receiptError, tone = TlTone.Danger)
                     Actions(
                         stage = stage,
+                        receiptBusy = receiptBusy,
+                        onPrintReceipt = onPrintReceipt,
+                        onShareReceipt = onShareReceipt,
                         onRetry = onRetry,
                         onTakeCash = onTakeCash,
                         onCheckAgain = onCheckAgain,
@@ -240,6 +252,9 @@ private fun DetailBlock(stage: StkStage, phone: String?, canForceReconcile: Bool
 @Composable
 private fun Actions(
     stage: StkStage,
+    receiptBusy: Boolean,
+    onPrintReceipt: () -> Unit,
+    onShareReceipt: () -> Unit,
     onRetry: () -> Unit,
     onTakeCash: () -> Unit,
     onCheckAgain: () -> Unit,
@@ -263,10 +278,40 @@ private fun Actions(
         }
 
         is StkStage.Paid -> {
+            // A receipt only exists once the sale is closed server-side, which is
+            // exactly what reaching Paid means — so it is offered here and nowhere
+            // earlier in the flow.
+            val hasSale = stage.saleId != null
+            if (hasSale) {
+                TlButton(
+                    text = if (receiptBusy) "Loading receipt…" else "Print receipt",
+                    onClick = onPrintReceipt,
+                    icon = Icons.Outlined.Print,
+                    loading = receiptBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TlSecondaryButton(
+                    text = "Send receipt",
+                    onClick = onShareReceipt,
+                    icon = Icons.Outlined.Share,
+                    enabled = !receiptBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             TlButton(
                 text = "New charge",
                 onClick = onDone,
-                large = true,
+                large = !hasSale,
+                containerColor = if (hasSale) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                contentColor = if (hasSale) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onPrimary
+                },
                 modifier = Modifier.fillMaxWidth(),
             )
         }

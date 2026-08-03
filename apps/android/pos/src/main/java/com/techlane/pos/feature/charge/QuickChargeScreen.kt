@@ -79,6 +79,7 @@ fun QuickChargeScreen(
     var showTargetSheet by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val amountFocus = remember { FocusRequester() }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     val systemDark = isSystemInDarkTheme()
     val showingDark = when (state.prefs.themeMode) {
@@ -201,6 +202,10 @@ fun QuickChargeScreen(
             label = state.target.label,
             method = state.method,
             canForceReconcile = state.prefs.canForceReconcile,
+            receiptBusy = state.receiptBusy,
+            receiptError = state.receiptError,
+            onPrintReceipt = { viewModel.printReceipt(context) },
+            onShareReceipt = { viewModel.shareReceipt(context) },
             onRetry = viewModel::retryFailed,
             onTakeCash = viewModel::switchToCashAndCharge,
             onCheckAgain = viewModel::checkAgain,

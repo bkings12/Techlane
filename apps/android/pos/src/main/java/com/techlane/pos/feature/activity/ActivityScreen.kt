@@ -6,21 +6,25 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.techlane.pos.core.print.ReceiptPrinter
 import com.techlane.pos.core.designsystem.component.TlBanner
 import com.techlane.pos.core.designsystem.component.TlCard
 import com.techlane.pos.core.designsystem.component.TlEmptyState
 import com.techlane.pos.core.designsystem.component.TlScreen
+import com.techlane.pos.core.designsystem.component.TlSecondaryButton
 import com.techlane.pos.core.designsystem.component.TlStatusPill
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.TlTheme
@@ -74,6 +78,15 @@ class ActivityViewModel @Inject constructor(
     }
 
     fun clearMessage() { _message.value = null }
+
+    /** Reprint for a customer who comes back for their receipt. */
+    fun printReceipt(context: android.content.Context, saleId: String) {
+        viewModelScope.launch {
+            charges.receiptHtml(saleId)
+                .onSuccess { html -> ReceiptPrinter.print(context, html, "TechLane receipt") }
+                .onFailure { error -> _message.value = error.message ?: "Could not load that receipt" }
+        }
+    }
 }
 
 /**
@@ -85,6 +98,7 @@ fun ActivityScreen(modifier: Modifier = Modifier, viewModel: ActivityViewModel =
     val records by viewModel.records.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     TlScreen(
         title = "Activity",
@@ -101,13 +115,20 @@ fun ActivityScreen(modifier: Modifier = Modifier, viewModel: ActivityViewModel =
                 icon = Icons.AutoMirrored.Outlined.ReceiptLong,
             )
         } else {
-            records.forEach { record -> ChargeRow(record) }
+            records.forEach { record ->
+                ChargeRow(
+                    record = record,
+                    onPrint = record.saleId
+                        ?.takeIf { record.status == "paid" }
+                        ?.let { saleId -> { viewModel.printReceipt(context, saleId) } },
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ChargeRow(record: ChargeRecordEntity) {
+private fun ChargeRow(record: ChargeRecordEntity, onPrint: (() -> Unit)?) {
     TlCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -137,6 +158,14 @@ private fun ChargeRow(record: ChargeRecordEntity) {
                 Text(formatKes(record.amount), style = MaterialTheme.typography.titleSmall)
                 TlStatusPill(text = record.status.display(), tone = record.status.tone())
             }
+        }
+        if (onPrint != null) {
+            TlSecondaryButton(
+                text = "Print receipt",
+                onClick = onPrint,
+                icon = Icons.Outlined.Print,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

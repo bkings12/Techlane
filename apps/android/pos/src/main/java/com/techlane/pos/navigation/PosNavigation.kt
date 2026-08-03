@@ -8,8 +8,14 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -103,14 +109,32 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AppShell(onOpenSettings: () -> Unit) {
     val tabController = rememberNavController()
     val backStack by tabController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination
 
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f)) {
+    // The app draws edge to edge, so nothing lifts off the keyboard on its own.
+    // Without this the charge button sits underneath the IME — which is exactly
+    // where a technician cannot reach it.
+    val imeVisible = WindowInsets.isImeVisible
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .imePadding(),
+    ) {
+        Box(
+            Modifier
+                .weight(1f)
+                // The tab bar already clears the navigation bar; consuming the
+                // inset here stops the screen's own footer padding for it twice.
+                .then(
+                    if (imeVisible) Modifier else Modifier.consumeWindowInsets(WindowInsets.navigationBars),
+                ),
+        ) {
             NavHost(
                 navController = tabController,
                 startDestination = Routes.CHARGE,
@@ -131,17 +155,19 @@ private fun AppShell(onOpenSettings: () -> Unit) {
                 }
             }
         }
-        BottomBar(
-            current = currentRoute?.route,
-            onSelect = { tab ->
-                tabController.navigate(tab.route) {
-                    popUpTo(tabController.graph.findStartDestination().id) { saveState = true }
-                    launchSingleTop = true
-                    restoreState = true
-                }
-            },
-            isSelected = { tab -> currentRoute?.hierarchy?.any { it.route == tab.route } == true },
-        )
+        if (!imeVisible) {
+            BottomBar(
+                current = currentRoute?.route,
+                onSelect = { tab ->
+                    tabController.navigate(tab.route) {
+                        popUpTo(tabController.graph.findStartDestination().id) { saveState = true }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                },
+                isSelected = { tab -> currentRoute?.hierarchy?.any { it.route == tab.route } == true },
+            )
+        }
     }
 }
 

@@ -3,6 +3,7 @@ package com.techlane.pos.feature.charge
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.techlane.pos.core.designsystem.theme.ThemeMode
+import com.techlane.pos.core.print.ReceiptPrinter
 import com.techlane.pos.core.util.Msisdn
 import com.techlane.pos.data.local.CatalogItemEntity
 import com.techlane.pos.data.local.ServiceItemEntity
@@ -43,6 +44,8 @@ data class ChargeUiState(
     /** Non-null while a charge is in flight or resolved — the UI blocks on it. */
     val stage: StkStage? = null,
     val refreshing: Boolean = false,
+    val receiptBusy: Boolean = false,
+    val receiptError: String? = null,
 ) {
     val amount: Double get() = amountDigits.toDoubleOrNull() ?: 0.0
     val hasAmount: Boolean get() = amount > 0
@@ -283,6 +286,48 @@ class QuickChargeViewModel @Inject constructor(
         _state.update { it.copy(stage = StkStage.TimedOut(null)) }
     }
 
+    /**
+     * Fetches the rendered receipt for the sale just paid and hands it to the
+     * print spooler. The sale id comes off the Paid stage — a receipt only
+     * exists once the server has actually completed the sale.
+     */
+    fun printReceipt(context: android.content.Context) {
+        val saleId = (_state.value.stage as? StkStage.Paid)?.saleId
+        if (saleId == null) {
+            _state.update { it.copy(receiptError = "This charge has no completed sale to print yet.") }
+            return
+        }
+        printSale(context, saleId)
+    }
+
+    fun printSale(context: android.content.Context, saleId: String) {
+        if (_state.value.receiptBusy) return
+        _state.update { it.copy(receiptBusy = true, receiptError = null) }
+        viewModelScope.launch {
+            charges.receiptHtml(saleId)
+                .onSuccess { html -> ReceiptPrinter.print(context, html, "TechLane receipt") }
+                .onFailure { error ->
+                    _state.update { it.copy(receiptError = error.message ?: "Could not load the receipt") }
+                }
+            _state.update { it.copy(receiptBusy = false) }
+        }
+    }
+
+    /** Sends the receipt out over WhatsApp/email/anything the phone has. */
+    fun shareReceipt(context: android.content.Context) {
+        val saleId = (_state.value.stage as? StkStage.Paid)?.saleId ?: return
+        if (_state.value.receiptBusy) return
+        _state.update { it.copy(receiptBusy = true, receiptError = null) }
+        viewModelScope.launch {
+            charges.receiptHtml(saleId)
+                .onSuccess { html -> ReceiptPrinter.share(context, html, "TechLane receipt") }
+                .onFailure { error ->
+                    _state.update { it.copy(receiptError = error.message ?: "Could not load the receipt") }
+                }
+            _state.update { it.copy(receiptBusy = false) }
+        }
+    }
+
     /** Clears the result and readies the till for the next customer. */
     fun finishAndReset(keepPhone: Boolean = false) {
         chargeJob?.cancel()
@@ -291,6 +336,7 @@ class QuickChargeViewModel @Inject constructor(
         _state.update {
             it.copy(
                 stage = null,
+                receiptError = null,
                 amountDigits = "",
                 target = ChargeTarget.None,
                 phone = if (keepPhone) it.phone else "",
