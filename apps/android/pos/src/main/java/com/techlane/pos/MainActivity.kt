@@ -11,6 +11,7 @@ import androidx.lifecycle.lifecycleScope
 import com.techlane.core.display.ProvideDisplayCompat
 import com.techlane.pos.core.designsystem.theme.TechLanePosTheme
 import com.techlane.pos.data.remote.SessionExpiryNotifier
+import com.techlane.pos.data.repository.AuthRepository
 import com.techlane.pos.data.session.SecureTokenStore
 import com.techlane.pos.navigation.PosApp
 import dagger.hilt.android.AndroidEntryPoint
@@ -26,6 +27,7 @@ class MainActivity : FragmentActivity() {
 
     @Inject lateinit var tokens: SecureTokenStore
     @Inject lateinit var sessionExpiry: SessionExpiryNotifier
+    @Inject lateinit var auth: AuthRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -35,6 +37,14 @@ class MainActivity : FragmentActivity() {
         // A 401 that survives a token refresh means the session is truly over.
         lifecycleScope.launch {
             sessionExpiry.expired.collect { tokens.clear() }
+        }
+
+        // Re-read the profile on every launch. Roles are otherwise only written
+        // when GET /me happens to succeed at sign-in, so a handset that signed
+        // in on a bad connection would carry an empty role list — and the
+        // permissions it gates — until someone signed out and back in.
+        lifecycleScope.launch {
+            if (tokens.refreshToken != null) auth.refreshProfile()
         }
 
         setContent {

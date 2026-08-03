@@ -106,9 +106,16 @@ data class PosPreferences(
     val canForceReconcile: Boolean get() = roles.any { it == "owner" || it == "manager" }
 
     /**
-     * Intake creation is permissioned server-side; this only decides whether to
-     * offer the shortcut, so a technician isn't shown a button that will 403.
+     * Whether to offer intake. Intake is permissioned server-side regardless,
+     * so this only avoids showing a button that would 403.
+     *
+     * Deliberately fails *open* on an empty role list. Roles are only written
+     * when `GET /me` succeeds, and that call is best-effort — a slow network at
+     * sign-in leaves this handset with no roles at all. Failing closed there
+     * silently hides the Jobs screen's primary action with nothing on screen to
+     * explain it, which is far worse than letting the server refuse a tap.
      */
     val canCreateIntake: Boolean
-        get() = roles.any { it == "owner" || it == "manager" || it == "cashier" || it == "technician" }
+        get() = roles.isEmpty() ||
+            roles.any { it == "owner" || it == "manager" || it == "cashier" || it == "technician" }
 }

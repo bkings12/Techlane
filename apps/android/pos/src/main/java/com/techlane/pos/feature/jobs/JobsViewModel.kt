@@ -94,15 +94,24 @@ class JobsViewModel @Inject constructor(
                 _state.update { it.copy(summary = JobBoardSummary.from(all)) }
             }
         }
+        // Observed, not read once: the profile refresh on launch can land after
+        // this screen is already built, and identity decides both the default
+        // queue and whether intake is offered.
         viewModelScope.launch {
-            val preferences = prefs.preferences.first()
-            _state.update { it.copy(meId = preferences.userId, canCreateIntake = preferences.canCreateIntake) }
-            // An explicit deep-link wins; otherwise a technician's own bench is
-            // the useful default, and a shop with no identity yet falls back to
-            // the whole board rather than an empty one.
-            when {
-                initialFilter != null -> _state.update { it.copy(filter = initialFilter) }
-                preferences.userId == null -> _state.update { it.copy(filter = JobFilter.All) }
+            var appliedDefaultFilter = false
+            prefs.preferences.collect { preferences ->
+                _state.update { it.copy(meId = preferences.userId, canCreateIntake = preferences.canCreateIntake) }
+                // An explicit deep-link wins; otherwise a technician's own bench
+                // is the useful default, and a shop with no identity yet falls
+                // back to the whole board rather than an empty one. Applied once
+                // so a later profile refresh cannot yank the filter out from
+                // under someone mid-scroll.
+                if (appliedDefaultFilter) return@collect
+                appliedDefaultFilter = true
+                when {
+                    initialFilter != null -> _state.update { it.copy(filter = initialFilter) }
+                    preferences.userId == null -> _state.update { it.copy(filter = JobFilter.All) }
+                }
             }
         }
         viewModelScope.launch {
