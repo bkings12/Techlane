@@ -513,7 +513,7 @@ func (h *Handler) staffRepairReceiptESCPOS(w http.ResponseWriter, r *http.Reques
 		apierrors.Write(w, status, "RECEIPT_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
 		return
 	}
-	body, err := h.receipts.RenderESCPOS(r.Context(), claims.TenantID, doc.ToReceiptDocument(false), doc.RepairID)
+	body, err := h.receipts.RenderESCPOS(r.Context(), claims.TenantID, doc.ToReceiptDocument(false), doc.RepairID, r.URL.Query().Get("paper"))
 	if err != nil {
 		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
 		return
@@ -1753,7 +1753,7 @@ func (h *Handler) staffIntakeSlipESCPOS(w http.ResponseWriter, r *http.Request) 
 	set.ShowPayments = false
 	set.ShowBalance = false
 	shop := h.receipts.LoadShop(r.Context(), tenantID, set)
-	body := receipts.BuildESCPOS(shop, doc.ToIntakeDocument(), set)
+	body := receipts.BuildESCPOS(shop, doc.ToIntakeDocument(), set, r.URL.Query().Get("paper"))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, doc.JobCode+"-intake.escpos"))
 	w.Header().Set("Cache-Control", "no-store")

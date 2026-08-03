@@ -31,7 +31,7 @@ func TestBuildESCPOSBasic(t *testing.T) {
 		FooterText:   "techlane.co.ke",
 		ShowPayments: true,
 	}
-	out := BuildESCPOS(shop, doc, set)
+	out := BuildESCPOS(shop, doc, set, PaperThermal80)
 	s := string(out)
 	for _, want := range []string{
 		"TechLane", "Gadgets & repairs", "Moi Avenue", "hi@techlane.co.ke",
@@ -84,7 +84,7 @@ func TestBuildESCPOSIncludesQR(t *testing.T) {
 			QRPayload: "techlane://repair-pickup/PK-ABC123",
 			Note:      "SMS has your code",
 		},
-	}, Settings{ThankYouText: "Thanks"})
+	}, Settings{ThankYouText: "Thanks"}, PaperThermal80)
 	// GS v 0 raster header
 	if !strings.Contains(string(out), string([]byte{0x1d, 0x76, 0x30, 0x00})) {
 		t.Fatal("missing GS v 0 QR raster")
@@ -92,5 +92,63 @@ func TestBuildESCPOSIncludesQR(t *testing.T) {
 	if !strings.Contains(string(out), "Scan when collecting") {
 		t.Fatal("missing QR label")
 	}
+}
+
+// TestBuildESCPOS58mm pins the MTP-II width: every text row must fit inside
+// the printer's actual 32-column paper, not the 42-column layout tuned for
+// 80mm counter printers.
+func TestBuildESCPOS58mm(t *testing.T) {
+	shop := Shop{Name: "TechLane", Phone: "0700000000", AddressLines: []string{"Moi Avenue, Nairobi"}}
+	doc := Document{
+		Title:         "Sale receipt",
+		Number:        "R-1",
+		Currency:      "KES",
+		CustomerName:  "A Very Long Customer Name Indeed",
+		CustomerPhone: "0712345678",
+		Branch:        "Main Branch Downtown",
+		Lines: []Line{
+			{Description: "Tempered glass screen protector", Qty: 2, UnitPrice: 500, Amount: 1000},
+			{Description: "USB-C Cable", Qty: 1, UnitPrice: 200, Amount: 200},
+		},
+		Total:    1200,
+		Paid:     1200,
+		Payments: []PaymentLine{{Method: "cash", Amount: 1200}},
+	}
+	set := Settings{ThankYouText: "Asante", ShowPayments: true, ShowBalance: true}
+
+	out := BuildESCPOS(shop, doc, set, PaperThermal58)
+	s := string(out)
+
+	if !strings.Contains(s, strings.Repeat("=", 32)) {
+		t.Fatal("expected 32-col rule for 58mm paper")
+	}
+	if strings.Contains(s, strings.Repeat("=", 42)) {
+		t.Fatal("80mm-width rule leaked into a 58mm receipt")
+	}
+	// Rows are measured from their known text marker rather than by
+	// blanket-splitting on "\n": a row can share its line with a preceding
+	// ESC/GS command whose parameter bytes happen to fall in printable ASCII
+	// range (e.g. ESC 'a' 0x00 for left-align), which isn't printed text.
+	for _, marker := range []string{"Customer", "Phone", "Branch", "TOTAL", "Paid", "Tempered glass", "USB-C Cable"} {
+		row := rowContaining(t, s, marker)
+		if len(row) > 32 {
+			t.Fatalf("%q row exceeds 32 cols on 58mm paper: %q (%d chars)", marker, row, len(row))
+		}
+	}
+}
+
+// rowContaining returns the text from marker to the next newline (or end of
+// string), failing the test if marker isn't present.
+func rowContaining(t *testing.T, s, marker string) string {
+	t.Helper()
+	idx := strings.Index(s, marker)
+	if idx < 0 {
+		t.Fatalf("expected %q in receipt", marker)
+	}
+	rest := s[idx:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	return rest
 }
 

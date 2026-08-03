@@ -94,6 +94,9 @@ class QuickChargeViewModel @Inject constructor(
     private var lastRequest: ChargeRequest? = null
     private var chargeJob: Job? = null
 
+    /** Throttles [syncCatalogIfStale] so returning to the screen repeatedly doesn't refetch every time. */
+    private var lastCatalogSyncAtMs = 0L
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val products: StateFlow<List<CatalogItemEntity>> =
         combine(prefs.preferences.map { it.locationId }, searchQuery) { locationId, query ->
@@ -126,6 +129,23 @@ class QuickChargeViewModel @Inject constructor(
             }
         }
         refreshPaymentSettings()
+    }
+
+    /**
+     * Keeps the catalog current without a manual "sync now" tap: called every
+     * time the charge screen becomes visible, so a product added on the web
+     * console shows up next time a technician looks rather than waiting on
+     * the 30-minute background job. Throttled — resuming the screen twice in
+     * quick succession (e.g. a phone call interruption) shouldn't refetch twice.
+     */
+    fun syncCatalogIfStale() {
+        val now = System.currentTimeMillis()
+        if (now - lastCatalogSyncAtMs < STALE_SYNC_THRESHOLD_MS) return
+        lastCatalogSyncAtMs = now
+        viewModelScope.launch {
+            val locationId = prefs.preferences.first().locationId
+            if (!locationId.isNullOrBlank()) shop.syncCatalog(locationId)
+        }
     }
 
     fun refreshPaymentSettings() {
@@ -363,6 +383,10 @@ class QuickChargeViewModel @Inject constructor(
         // A bad number is the one failure where re-sending unchanged is pointless.
         if (failure == StkFailure.InvalidNumber) return
         charge()
+    }
+
+    private companion object {
+        const val STALE_SYNC_THRESHOLD_MS = 60_000L
     }
 }
 

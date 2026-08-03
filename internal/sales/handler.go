@@ -85,7 +85,7 @@ func (h *Handler) saleReceiptESCPOS(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := h.receipts.RenderESCPOS(r.Context(), tenantID, doc, saleID)
+	body, err := h.receipts.RenderESCPOS(r.Context(), tenantID, doc, saleID, r.URL.Query().Get("paper"))
 	if err != nil {
 		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
 		return

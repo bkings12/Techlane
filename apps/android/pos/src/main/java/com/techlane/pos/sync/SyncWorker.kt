@@ -54,16 +54,21 @@ class SyncScheduler @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
     fun schedulePeriodicSync() {
-        val request = PeriodicWorkRequestBuilder<CatalogSyncWorker>(6, TimeUnit.HOURS)
+        // 30 minutes, not 6 hours — this is the last-resort net for a phone left
+        // idle or backgrounded; the charge screen also syncs on its own whenever
+        // it's opened or resumed (see QuickChargeViewModel.syncCatalogIfStale).
+        val request = PeriodicWorkRequestBuilder<CatalogSyncWorker>(30, TimeUnit.MINUTES)
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build(),
             )
             .build()
+        // UPDATE (not KEEP) so phones that already had the old 6-hour job
+        // scheduled from an earlier install pick up the new interval too.
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             CatalogSyncWorker.NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
+            ExistingPeriodicWorkPolicy.UPDATE,
             request,
         )
     }

@@ -115,13 +115,16 @@ class PrinterRepository @Inject constructor(
     }
 
     /** A Quick Charge / POS sale receipt, for the customer at the counter. */
-    suspend fun printSaleReceipt(saleId: String): Result<Unit> = fetchAndPrint { api.saleReceiptEscPos(saleId) }
+    suspend fun printSaleReceipt(saleId: String): Result<Unit> =
+        fetchAndPrint { paper -> api.saleReceiptEscPos(saleId, paper) }
 
     /** A repair's final receipt — what the customer gets when they collect the device. */
-    suspend fun printRepairReceipt(repairId: String): Result<Unit> = fetchAndPrint { api.repairReceiptEscPos(repairId) }
+    suspend fun printRepairReceipt(repairId: String): Result<Unit> =
+        fetchAndPrint { paper -> api.repairReceiptEscPos(repairId, paper) }
 
     /** The slip handed over at intake, reprintable from the job if the original was lost or unreadable. */
-    suspend fun printIntakeSlip(repairId: String): Result<Unit> = fetchAndPrint { api.repairIntakeSlipEscPos(repairId) }
+    suspend fun printIntakeSlip(repairId: String): Result<Unit> =
+        fetchAndPrint { paper -> api.repairIntakeSlipEscPos(repairId, paper) }
 
     /**
      * Best-effort background print for "Auto-print receipts". Fire-and-forget
@@ -138,12 +141,12 @@ class PrinterRepository @Inject constructor(
         }
     }
 
-    private suspend fun fetchAndPrint(fetch: suspend () -> ResponseBody): Result<Unit> {
+    private suspend fun fetchAndPrint(fetch: suspend (paper: String) -> ResponseBody): Result<Unit> {
         val prefs = preferencesStore.preferences.first()
         val device = prefs.device ?: return notConfigured()
         liveStatus.value = PrinterConnectionState.Printing
         return try {
-            val rendered = fetch().use { it.bytes() }
+            val rendered = fetch(prefs.paperWidth.millimetres.toString()).use { it.bytes() }
             val payload = EscPosSanitizer.stripTrailingCut(rendered)
             connection.printBytes(device.address, payload).reportResult(device)
         } catch (e: Exception) {

@@ -6,13 +6,23 @@ import (
 	"unicode"
 )
 
-// 80mm Font A character columns. Using 32 made item/total rows look
-// left-squeezed on POS-80 (header centered; body short of the paper width).
-const escposCols = 42
+// escposColsFor returns the Font A character columns for paper, mirroring the
+// widths renderThermal (html.go) uses for the same two sizes: 42 cols reads
+// right on 80mm; forcing that onto a 58mm/32-col printer is what pushed
+// customer details and line items past the physical paper width.
+func escposColsFor(paper string) int {
+	if paper == PaperThermal58 {
+		return 32
+	}
+	return 42
+}
 
 // BuildESCPOS builds a counter ESC/POS slip matching the thermal HTML letterhead
 // (shop, slogan, address, phone/email/website, TIN) without CR overstrike.
-func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
+// paper is normalized against set.DefaultPaper the same way RenderHTML does.
+func BuildESCPOS(shop Shop, doc Document, set Settings, paper string) []byte {
+	paper = NormalizePaper(paper, set.DefaultPaper)
+	cols := escposColsFor(paper)
 	payments := append([]PaymentLine(nil), doc.Payments...)
 	doc.applySettings(set)
 	// Counter thermal always shows tender lines even if HTML receipts hide them.
@@ -34,7 +44,7 @@ func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
 		if s == "" {
 			return
 		}
-		for _, part := range escposWrap(s, escposCols) {
+		for _, part := range escposWrap(s, cols) {
 			w(part + "\n")
 		}
 	}
@@ -72,7 +82,7 @@ func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
 	if shop.TIN != "" {
 		wrapCenter("PIN/TIN: " + shop.TIN)
 	}
-	w(escposRule())
+	w(escposRule(cols))
 
 	// Document title + meta (still centered)
 	title := strings.TrimSpace(doc.Title)
@@ -93,27 +103,33 @@ func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
 	if doc.StatusNote != "" {
 		wrapCenter(doc.StatusNote)
 	}
-	w(escposRule())
+	w(escposRule(cols))
 
 	// —— Customer / branch (full-width rows) ——
+	// Each row is its own label:value pair rather than packed onto one line —
+	// at 32 cols (58mm) a shared line runs out of room for the value.
 	left()
 	if doc.CustomerName != "" {
-		w(escposKV("Customer", trimPad(doc.CustomerName, escposCols-10)))
+		w(escposKV("Customer", trimPad(doc.CustomerName, cols-10), cols))
 	}
 	if doc.CustomerPhone != "" {
-		w(escposKV("Phone", doc.CustomerPhone))
+		w(escposKV("Phone", trimPad(doc.CustomerPhone, cols-8), cols))
 	}
 	if doc.Branch != "" {
-		w(escposKV("Branch", trimPad(doc.Branch, escposCols-8)))
+		w(escposKV("Branch", trimPad(doc.Branch, cols-8), cols))
 	}
 	for _, row := range doc.Meta {
 		if strings.TrimSpace(row.Value) == "" {
 			continue
 		}
-		w(escposKV(trimPad(row.Label, 12), trimPad(row.Value, escposCols-14)))
+		labelWidth := 12
+		if cols < 32 {
+			labelWidth = 8
+		}
+		w(escposKV(trimPad(row.Label, labelWidth), trimPad(row.Value, cols-labelWidth-2), cols))
 	}
 	if doc.CustomerName != "" || doc.CustomerPhone != "" || doc.Branch != "" || len(doc.Meta) > 0 {
-		w(escposRule())
+		w(escposRule(cols))
 	}
 
 	// —— Lines ——
@@ -126,35 +142,35 @@ func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
 		hasMoney = true
 		amt := money(doc.Currency, line.Amount)
 		if line.Qty > 1 {
-			for _, part := range escposWrap(desc, escposCols) {
+			for _, part := range escposWrap(desc, cols) {
 				w(part + "\n")
 			}
-			w(escposKV(fmt.Sprintf("  %g x %s", line.Qty, money(doc.Currency, line.UnitPrice)), amt))
+			w(escposKV(fmt.Sprintf("  %g x %s", line.Qty, money(doc.Currency, line.UnitPrice)), amt, cols))
 		} else {
-			w(escposKV(trimPad(desc, escposCols-len(amt)-1), amt))
+			w(escposKV(trimPad(desc, cols-len(amt)-1), amt, cols))
 		}
 		if d := strings.TrimSpace(line.Detail); d != "" {
-			for _, part := range escposWrap(d, escposCols) {
-				w("  " + trimPad(part, escposCols-2) + "\n")
+			for _, part := range escposWrap(d, cols) {
+				w("  " + trimPad(part, cols-2) + "\n")
 			}
 		}
 	}
 	if hasMoney || doc.Total > 0.009 || doc.Paid > 0.009 {
-		w(escposRule())
+		w(escposRule(cols))
 
 		// —— Totals ——
 		if set.ShowVATBreakdown && doc.hasVAT() {
-			w(escposKV("Subtotal", money(doc.Currency, doc.Subtotal)))
-			w(escposKV(doc.vatLabel(), money(doc.Currency, doc.VATAmount)))
+			w(escposKV("Subtotal", money(doc.Currency, doc.Subtotal), cols))
+			w(escposKV(doc.vatLabel(), money(doc.Currency, doc.VATAmount), cols))
 		}
 		cmd(0x1d, 0x21, 0x10) // double height total
-		w(escposKV("TOTAL", money(doc.Currency, doc.Total)))
+		w(escposKV("TOTAL", money(doc.Currency, doc.Total), cols))
 		cmd(0x1d, 0x21, 0x00)
 		if doc.showBalance(set) || doc.Paid > 0 {
-			w(escposKV("Paid", money(doc.Currency, doc.Paid)))
+			w(escposKV("Paid", money(doc.Currency, doc.Paid), cols))
 		}
 		if doc.showBalance(set) && doc.Balance > 0.009 {
-			w(escposKV("Balance", money(doc.Currency, doc.Balance)))
+			w(escposKV("Balance", money(doc.Currency, doc.Balance), cols))
 		}
 
 		for _, p := range doc.Payments {
@@ -165,13 +181,13 @@ func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
 				}
 				label = label + " " + ref
 			}
-			w(escposKV(trimPad(label, escposCols-12), money(doc.Currency, p.Amount)))
+			w(escposKV(trimPad(label, cols-12), money(doc.Currency, p.Amount), cols))
 		}
 	}
 
 	if notes := strings.TrimSpace(doc.Notes); notes != "" {
-		w(escposRule())
-		for _, part := range escposWrap("Notes: "+notes, escposCols) {
+		w(escposRule(cols))
+		for _, part := range escposWrap("Notes: "+notes, cols) {
 			w(part + "\n")
 		}
 	}
@@ -180,7 +196,7 @@ func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
 		payload := strings.TrimSpace(doc.Callout.QRPayload)
 		hasValue := strings.TrimSpace(doc.Callout.Value) != ""
 		if payload != "" || hasValue {
-			w(escposRule())
+			w(escposRule(cols))
 			center()
 			if label := strings.TrimSpace(doc.Callout.Label); label != "" {
 				wrapCenter(label)
@@ -204,7 +220,7 @@ func BuildESCPOS(shop Shop, doc Document, set Settings) []byte {
 
 	// —— Footer (centered) ——
 	center()
-	w(escposRule())
+	w(escposRule(cols))
 	thanks := strings.TrimSpace(set.ThankYouText)
 	if thanks == "" {
 		thanks = "Thank you"
@@ -258,9 +274,9 @@ func money(currency string, amount float64) string {
 	return fmt.Sprintf("%s %.2f", cur, amount)
 }
 
-func escposRule() string {
+func escposRule(width int) string {
 	// Solid rule reads darker/cleaner than sparse dashes on thermal paper.
-	return strings.Repeat("=", escposCols) + "\n"
+	return strings.Repeat("=", width) + "\n"
 }
 
 func escposLine(s string) string {
@@ -271,10 +287,9 @@ func escposLine(s string) string {
 	return s + "\n"
 }
 
-func escposKV(label, value string) string {
+func escposKV(label, value string, width int) string {
 	label = escposClean(label)
 	value = escposClean(value)
-	width := escposCols
 	if len(label)+1+len(value) <= width {
 		pad := width - len(label) - len(value)
 		if pad < 1 {
