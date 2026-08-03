@@ -46,7 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.techlane.pos.core.designsystem.component.TlButton
-import com.techlane.pos.core.designsystem.component.TlSecondaryButton
+import com.techlane.pos.core.designsystem.component.TlNeutralButton
 import com.techlane.pos.core.designsystem.component.TlTextField
 import com.techlane.pos.core.designsystem.theme.TlTheme
 import com.techlane.pos.domain.model.PhotoKind
@@ -246,7 +246,7 @@ private fun CaptionStep(
             )
             Box(Modifier.weight(1f))
             TlButton(text = "Save photo", onClick = onSave, modifier = Modifier.fillMaxWidth())
-            TlSecondaryButton(text = "Retake", onClick = onRetake, modifier = Modifier.fillMaxWidth())
+            TlNeutralButton(text = "Retake", onClick = onRetake, modifier = Modifier.fillMaxWidth())
         }
     }
 }
@@ -272,7 +272,7 @@ private fun PermissionPrompt(onGrant: () -> Unit, onCancel: () -> Unit) {
                 modifier = Modifier.padding(vertical = TlTheme.spacing.md),
             )
             TlButton(text = "Allow camera", onClick = onGrant, modifier = Modifier.fillMaxWidth())
-            TlSecondaryButton(text = "Not now", onClick = onCancel, modifier = Modifier.fillMaxWidth())
+            TlNeutralButton(text = "Not now", onClick = onCancel, modifier = Modifier.fillMaxWidth())
         }
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
+import com.techlane.core.display.ProvideDisplayCompat
 import com.techlane.pos.core.designsystem.theme.TechLanePosTheme
 import com.techlane.pos.core.designsystem.theme.ThemeMode
 import com.techlane.pos.data.remote.SessionExpiryNotifier
@@ -56,7 +57,12 @@ class MainActivity : FragmentActivity() {
             LaunchedEffect(Unit) { themeResolved = true }
 
             TechLanePosTheme(themeMode = themeMode) {
-                PosApp(signedIn = signedIn)
+                // Shrinks density and caps fontScale at 1x on short POS-terminal
+                // panels (e.g. PDQ card machines) — same fix Ops/Customer/Supplier
+                // already apply via :mobile-core, previously missing here.
+                ProvideDisplayCompat {
+                    PosApp(signedIn = signedIn)
+                }
             }
         }
     }

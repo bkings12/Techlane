@@ -34,7 +34,7 @@ import com.techlane.pos.core.designsystem.component.TlBanner
 import com.techlane.pos.core.designsystem.component.TlButton
 import com.techlane.pos.core.designsystem.component.TlDangerButton
 import com.techlane.pos.core.designsystem.component.TlDivider
-import com.techlane.pos.core.designsystem.component.TlSecondaryButton
+import com.techlane.pos.core.designsystem.component.TlNeutralButton
 import com.techlane.pos.core.designsystem.component.TlTextField
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.PillShape
@@ -125,7 +125,7 @@ fun StatusPickerBottomSheet(
                     },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                TlSecondaryButton(
+                TlNeutralButton(
                     text = "Back",
                     onClick = { confirming = null },
                     modifier = Modifier.fillMaxWidth(),
@@ -167,7 +167,7 @@ fun StatusPickerBottomSheet(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                TlSecondaryButton(
+                TlNeutralButton(
                     text = "Back",
                     onClick = { confirming = null },
                     modifier = Modifier.fillMaxWidth(),

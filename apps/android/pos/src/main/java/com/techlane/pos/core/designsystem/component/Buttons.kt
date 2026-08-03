@@ -69,8 +69,44 @@ fun TlButton(
     }
 }
 
+/**
+ * A secondary but still-affirmative action ("Print receipt", "Add part",
+ * "Select printer") — soft brand-tinted surface, not just an outline, so it
+ * reads as "do this" rather than "leave this screen". For Cancel/Back/Dismiss
+ * use [TlNeutralButton] instead.
+ */
 @Composable
 fun TlSecondaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    icon: ImageVector? = null,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.heightIn(min = TlTheme.sizes.controlHeight),
+        enabled = enabled && !loading,
+        shape = MaterialTheme.shapes.small,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            disabledContainerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+            disabledContentColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f),
+        ),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
+    ) {
+        ButtonContent(text = text, loading = loading, icon = icon, large = false)
+    }
+}
+
+/**
+ * Cancel/Back/Dismiss/Close — a neutral surface that never competes with the
+ * screen's real primary or secondary action.
+ */
+@Composable
+fun TlNeutralButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -83,35 +119,19 @@ fun TlSecondaryButton(
         modifier = modifier.heightIn(min = TlTheme.sizes.controlHeight),
         enabled = enabled && !loading,
         shape = MaterialTheme.shapes.small,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        border = androidx.compose.foundation.BorderStroke(1.dp, TlTheme.colors.hairline),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
     ) {
         ButtonContent(text = text, loading = loading, icon = icon, large = false)
     }
 }
 
-/** Gold accent — reserved for the single "money" action on a screen. */
-@Composable
-fun TlAccentButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    loading: Boolean = false,
-    icon: ImageVector? = null,
-    large: Boolean = true,
-) = TlButton(
-    text = text,
-    onClick = onClick,
-    modifier = modifier,
-    enabled = enabled,
-    loading = loading,
-    icon = icon,
-    large = large,
-    containerColor = TlTheme.colors.accent,
-    contentColor = TlTheme.colors.onAccent,
-)
-
+/**
+ * Destructive action (Sign out, Remove, Forget printer, Cancel job). Defaults
+ * to a subtle danger surface — solid red is reserved for [prominent] uses,
+ * the rare confirmation where under-selling the risk would be the mistake
+ * (e.g. a final "yes, delete this for good").
+ */
 @Composable
 fun TlDangerButton(
     text: String,
@@ -120,6 +140,7 @@ fun TlDangerButton(
     enabled: Boolean = true,
     loading: Boolean = false,
     icon: ImageVector? = null,
+    prominent: Boolean = false,
 ) = TlButton(
     text = text,
     onClick = onClick,
@@ -127,8 +148,8 @@ fun TlDangerButton(
     enabled = enabled,
     loading = loading,
     icon = icon,
-    containerColor = MaterialTheme.colorScheme.error,
-    contentColor = MaterialTheme.colorScheme.onError,
+    containerColor = if (prominent) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.errorContainer,
+    contentColor = if (prominent) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.error,
 )
 
 @Composable

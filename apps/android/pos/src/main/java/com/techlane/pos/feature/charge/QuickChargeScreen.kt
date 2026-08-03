@@ -49,9 +49,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.techlane.pos.core.designsystem.component.TlAccentButton
 import com.techlane.pos.core.designsystem.component.TlAmountField
 import com.techlane.pos.core.designsystem.component.TlBanner
+import com.techlane.pos.core.designsystem.component.TlButton
 import com.techlane.pos.core.designsystem.component.TlCard
 import com.techlane.pos.core.designsystem.component.TlDivider
 import com.techlane.pos.core.designsystem.component.TlPhoneField
@@ -130,13 +130,14 @@ fun QuickChargeScreen(
         },
         footer = {
             TlBanner(message = state.validationError ?: state.blockedReason, tone = TlTone.Warning)
-            TlAccentButton(
+            TlButton(
                 text = when (state.method) {
                     PaymentMethod.MpesaStk -> "Send M-Pesa prompt · ${formatKes(state.amount)}"
                     PaymentMethod.Cash -> "Record cash · ${formatKes(state.amount)}"
                 },
                 onClick = viewModel::charge,
                 enabled = state.canCharge,
+                large = true,
                 modifier = Modifier.fillMaxWidth(),
             )
         },

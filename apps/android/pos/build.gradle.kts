@@ -161,6 +161,9 @@ dependencies {
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
+    // Density/fontScale normalization for short POS-terminal screens (see MainActivity)
+    implementation(project(":mobile-core"))
+
     // Compose + Material 3
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
