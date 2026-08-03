@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.techlane.core.PrintSupport
 import com.techlane.ops.TechLaneApp
@@ -242,16 +243,19 @@ fun BranchPicker(
 }
 
 @Composable
-fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
+fun PosScreen(
+    branchId: String?,
+    modifier: Modifier = Modifier,
+    canOverridePrice: Boolean = false,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = LocalSnackbarHost.current
     var locations by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var locationId by rememberSaveable { mutableStateOf<String?>(null) }
     var catalog by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
-    // The cart itself — and the just-completed sale/payment, for reprinting a receipt
-    // after the screen recreates — survive rotation and process death.
-    var cart by rememberSaveable(stateSaver = StringIntMapSaver) { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    // Catalog cart lines (qty + optional bargained price) survive rotation / process death.
+    var cart by rememberSaveable(stateSaver = PosCartLineListSaver) { mutableStateOf<List<PosCartLine>>(emptyList()) }
     var sales by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var query by rememberSaveable { mutableStateOf("") }
     var method by rememberSaveable { mutableStateOf("cash") }
@@ -275,6 +279,12 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
     var cashReceived by rememberSaveable { mutableStateOf("") }
     var loadingCatalog by remember { mutableStateOf(true) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
+
+    // Catalog line price edit (bargain) — mirrors web POS edit-price panel.
+    var editingVariantId by rememberSaveable { mutableStateOf<String?>(null) }
+    var editPrice by rememberSaveable { mutableStateOf("") }
+    var editReason by rememberSaveable { mutableStateOf("") }
+    var editError by remember { mutableStateOf<String?>(null) }
 
     // Quick sale: an item not in stock, sourced from a supplier on the spot. The
     // customer only ever sees description + sell price on the receipt — unitCost/
@@ -421,8 +431,9 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
             lastPayment = result.optJSONObject("payment")
             lastCompleted = result.optBoolean("completed")
             if (lastCompleted) {
-                cart = emptyMap()
+                cart = emptyList()
                 quickSaleLines = emptyList()
+                editingVariantId = null
                 reloadCatalog()
                 lastSale?.optString("id")?.takeIf { it.isNotBlank() }?.let { id ->
                     runCatching { printSaleReceipt(id) }
@@ -445,8 +456,16 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
         val max = item.optInt("available_qty")
         if (max <= 0) return
         if (cart.isEmpty()) cashReceived = ""
-        val next = ((cart[id] ?: 0) + 1).coerceAtMost(max)
-        cart = cart + (id to next)
+        val listPrice = item.optDouble("sell_price", 0.0)
+        val idx = cart.indexOfFirst { it.variantId == id }
+        cart = if (idx >= 0) {
+            val line = cart[idx]
+            cart.toMutableList().also {
+                it[idx] = line.copy(qty = (line.qty + 1).coerceAtMost(max))
+            }
+        } else {
+            cart + PosCartLine(variantId = id, qty = 1, listPrice = listPrice)
+        }
         lastSale = null
         lastPayment = null
         lastCompleted = false
@@ -455,7 +474,44 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
     }
 
     fun setQty(variantId: String, qty: Int) {
-        cart = if (qty <= 0) cart - variantId else cart + (variantId to qty)
+        cart = if (qty <= 0) {
+            if (editingVariantId == variantId) editingVariantId = null
+            cart.filterNot { it.variantId == variantId }
+        } else {
+            cart.map { if (it.variantId == variantId) it.copy(qty = qty) else it }
+        }
+    }
+
+    fun beginEditPrice(line: PosCartLine) {
+        editingVariantId = line.variantId
+        editPrice = (line.overridePrice ?: line.listPrice).let { p ->
+            if (p == p.toLong().toDouble()) p.toLong().toString() else p.toString()
+        }
+        editReason = line.overrideReason
+        editError = null
+    }
+
+    fun applyEditPrice(variantId: String) {
+        val price = editPrice.toDoubleOrNull()
+        val reason = editReason.trim()
+        if (price == null || price <= 0) {
+            editError = "Enter a positive price"
+            return
+        }
+        if (reason.isBlank()) {
+            editError = "Reason is required when changing price"
+            return
+        }
+        cart = cart.map { line ->
+            if (line.variantId != variantId) line
+            else if (kotlin.math.abs(price - line.listPrice) <= 0.009) {
+                line.copy(overridePrice = null, overrideReason = "")
+            } else {
+                line.copy(overridePrice = price, overrideReason = reason)
+            }
+        }
+        editingVariantId = null
+        editError = null
     }
 
     fun isTerminalStkError(message: String): Boolean {
@@ -476,13 +532,13 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
             it.optString("barcode"),
         ).any { value -> value.contains(query, ignoreCase = true) }
     }
-    val cartLines = cart.filterValues { it > 0 }.mapNotNull { (id, qty) ->
-        catalogById(id)?.let { it to qty }
+    val cartLines = cart.filter { it.qty > 0 }.mapNotNull { line ->
+        catalogById(line.variantId)?.let { item -> item to line }
     }
     val quickSaleCount = quickSaleLines.sumOf { it.optInt("quantity") }
     val quickSaleTotal = quickSaleLines.sumOf { it.optDouble("unit_price") * it.optInt("quantity") }
-    val cartItemCount = cartLines.sumOf { it.second } + quickSaleCount
-    val total = cartLines.sumOf { (item, qty) -> item.optDouble("sell_price", 0.0) * qty } + quickSaleTotal
+    val cartItemCount = cartLines.sumOf { it.second.qty } + quickSaleCount
+    val total = cartLines.sumOf { (_, line) -> line.unitPrice() * line.qty } + quickSaleTotal
     val cashAmount = cashReceived.toDoubleOrNull() ?: 0.0
     val changeDue = (cashAmount - total).coerceAtLeast(0.0)
 
@@ -491,8 +547,8 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
         val payMethod = payment?.optString("method").orEmpty()
         return when {
             stkFailed -> "STK failed or cancelled"
-            completed && payMethod == "cash" && status == "pending_handover" ->
-                "Paid · cash recorded in till"
+            completed && payMethod == "cash" && status in setOf("confirmed", "allocated") ->
+                "Paid · cash recorded"
             completed -> "Sale complete"
             payMethod == "mpesa_stk" && stkPolling -> "Waiting for customer PIN…"
             payMethod == "mpesa_stk" -> "STK sent — waiting for payment"
@@ -535,8 +591,9 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
         lastCompleted = true
         snackbarHostState?.let { host -> scope.launch { host.showSnackbar("Sale completed") } }
         stkFailed = false
-        cart = emptyMap()
+        cart = emptyList()
         quickSaleLines = emptyList()
+        editingVariantId = null
         reloadCatalog()
         refreshSales()
         runCatching { printSaleReceipt(saleId) }
@@ -863,7 +920,7 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
                 } else {
                     filtered.forEach { item ->
                         val id = item.optString("variant_id")
-                        val inCart = cart[id] ?: 0
+                        val inCart = cart.firstOrNull { it.variantId == id }?.qty ?: 0
                         val available = item.optInt("available_qty")
                         Surface(
                             onClick = { if (available > 0 && !showWait) addToCart(item) },
@@ -898,7 +955,7 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
                                     color = Brand.Navy,
                                 )
                                 if (inCart > 0) {
-                                    Spacer(Modifier.padding(start = 8.dp))
+                                    Spacer(modifier.padding(start = 8.dp))
                                     PillBadge("×$inCart", Brand.Navy)
                                 } else {
                                     Text("  ADD", color = Brand.Navy, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
@@ -912,31 +969,110 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
                 if (checkoutMode) {
                 if (cartLines.isNotEmpty()) {
                     BrandSectionTitle("Cart")
-                    cartLines.forEach { (item, qty) ->
-                        val id = item.optString("variant_id")
+                    cartLines.forEach { (item, line) ->
+                        val id = line.variantId
+                        val qty = line.qty
                         val max = item.optInt("available_qty")
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(item.optString("product_name"), fontWeight = FontWeight.Medium)
-                                Text(
-                                    "KES ${(item.optDouble("sell_price") * qty).toInt()}",
-                                    color = Brand.TextSecondary,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
+                        val bargained = line.isBargained()
+                        val unit = line.unitPrice()
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(item.optString("product_name"), fontWeight = FontWeight.Medium)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (bargained) {
+                                            Text(
+                                                "KES ${(line.listPrice * qty).toInt()}",
+                                                color = Brand.TextMuted,
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    textDecoration = TextDecoration.LineThrough,
+                                                ),
+                                            )
+                                        }
+                                        Text(
+                                            "KES ${(unit * qty).toInt()}",
+                                            color = Brand.TextSecondary,
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                    if (bargained) {
+                                        Text(
+                                            "Was KES ${line.listPrice.toInt()} · now KES ${unit.toInt()} each",
+                                            color = Brand.TextMuted,
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
+                                }
+                                OutlinedButton(
+                                    onClick = { setQty(id, qty - 1) },
+                                    enabled = !showWait,
+                                ) { Text("−") }
+                                Text("$qty", fontWeight = FontWeight.Bold)
+                                OutlinedButton(
+                                    onClick = { setQty(id, (qty + 1).coerceAtMost(max)) },
+                                    enabled = !showWait && qty < max,
+                                ) { Text("+") }
                             }
-                            OutlinedButton(
-                                onClick = { setQty(id, qty - 1) },
-                                enabled = !showWait,
-                            ) { Text("−") }
-                            Text("$qty", fontWeight = FontWeight.Bold)
-                            OutlinedButton(
-                                onClick = { setQty(id, (qty + 1).coerceAtMost(max)) },
-                                enabled = !showWait && qty < max,
-                            ) { Text("+") }
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (canOverridePrice) {
+                                    TextButton(
+                                        onClick = { beginEditPrice(line) },
+                                        enabled = !showWait,
+                                    ) { Text("Edit price") }
+                                }
+                                if (bargained) {
+                                    TextButton(
+                                        onClick = {
+                                            cart = cart.map {
+                                                if (it.variantId == id) it.copy(overridePrice = null, overrideReason = "")
+                                                else it
+                                            }
+                                            if (editingVariantId == id) editingVariantId = null
+                                        },
+                                        enabled = !showWait,
+                                    ) { Text("Reset price") }
+                                }
+                            }
+                            if (editingVariantId == id) {
+                                OutlinedTextField(
+                                    value = editPrice,
+                                    onValueChange = { editPrice = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                                    label = { Text("New price (KES)") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    singleLine = true,
+                                    enabled = !showWait,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                OutlinedTextField(
+                                    value = editReason,
+                                    onValueChange = { editReason = it },
+                                    label = { Text("Reason") },
+                                    placeholder = { Text("e.g. Regular customer discount") },
+                                    singleLine = true,
+                                    enabled = !showWait,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                editError?.let { Text(it, color = Brand.Danger, style = MaterialTheme.typography.bodySmall) }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    GoldButton(
+                                        text = "Apply",
+                                        onClick = { applyEditPrice(id) },
+                                        enabled = !showWait,
+                                    )
+                                    OutlinedButton(
+                                        onClick = { editingVariantId = null; editError = null },
+                                        enabled = !showWait,
+                                    ) { Text("Cancel") }
+                                }
+                            }
                         }
                     }
                 }
@@ -1055,8 +1191,18 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
                     onClick = {
                         val branch = branchId
                         val location = locationId
-                        val catalogJson = cart.filterValues { it > 0 }.map { (variantId, qty) ->
-                            JSONObject().put("variant_id", variantId).put("quantity", qty)
+                        val catalogJson = cart.filter { it.qty > 0 }.map { line ->
+                            val obj = JSONObject()
+                                .put("variant_id", line.variantId)
+                                .put("quantity", line.qty)
+                            if (line.isBargained()) {
+                                obj.put("override_price", line.overridePrice)
+                                obj.put(
+                                    "override_reason",
+                                    line.overrideReason.ifBlank { "Price override" },
+                                )
+                            }
+                            obj
                         }
                         val quickSaleJson = quickSaleLines.map { line ->
                             val obj = JSONObject()
@@ -1175,8 +1321,9 @@ fun PosScreen(branchId: String?, modifier: Modifier = Modifier) {
                                                 lastPayment = pay
                                                 lastCompleted = true
                                                 snackbarHostState?.let { host -> scope.launch { host.showSnackbar("Sale completed") } }
-                                                cart = emptyMap()
+                                                cart = emptyList()
                                                 quickSaleLines = emptyList()
+                                                editingVariantId = null
                                                 reloadCatalog()
                                                 refreshSales()
                                                 runCatching { printSaleReceipt(sale.getString("id")) }
@@ -1433,7 +1580,7 @@ fun C2BExceptionsScreen(modifier: Modifier = Modifier) {
                 items = (0 until result.length()).map { result.getJSONObject(it) }
                 val payResult = withContext(Dispatchers.IO) { ApiClient.listPayments() }
                 payments = (0 until payResult.length()).map { payResult.getJSONObject(it) }
-                    .filter { it.optString("status") in setOf("pending", "pending_handover", "provisional") }
+                    .filter { it.optString("status") in setOf("pending", "initiated", "provisional") }
                 error = null
             } catch (e: Exception) {
                 error = e.message

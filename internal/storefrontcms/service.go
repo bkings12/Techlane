@@ -125,6 +125,10 @@ type Settings struct {
 	PayCTAPaybill   string `json:"pay_cta_paybill"`
 	PayCTACash      string `json:"pay_cta_cash"`
 
+	// Bargain via WhatsApp — sourced from identity.shop_profiles on public content.
+	BargainEnabled bool   `json:"bargain_enabled"`
+	WhatsAppNumber string `json:"whatsapp_number,omitempty"`
+
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

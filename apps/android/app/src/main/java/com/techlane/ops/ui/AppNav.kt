@@ -228,6 +228,23 @@ fun AppNav(
     }
 }
 
+private fun friendlyLoginError(e: Exception): String {
+    val raw = e.message?.trim().orEmpty()
+    val lower = raw.lowercase()
+    return when {
+        e is java.net.UnknownHostException || lower.contains("unable to resolve host") ->
+            "No internet — check mobile data / Wi‑Fi and try again."
+        e is java.net.SocketTimeoutException || lower.contains("timeout") ->
+            "Server took too long — try again."
+        e is javax.net.ssl.SSLHandshakeException || lower.contains("ssl") || lower.contains("certificat") ->
+            "Secure connection failed. Update Android System WebView / date & time, then retry."
+        e is java.net.ConnectException || lower.contains("failed to connect") ->
+            "Could not reach TechLane servers. Check internet and try again."
+        raw.isBlank() -> "Sign in failed. Check email/password and internet."
+        else -> raw
+    }
+}
+
 @Composable
 fun LoginScreen(onSignedIn: () -> Unit, sessionExpired: Boolean = false, modifier: Modifier = Modifier) {
     var email by remember { mutableStateOf("") }
@@ -351,7 +368,7 @@ fun LoginScreen(onSignedIn: () -> Unit, sessionExpired: Boolean = false, modifie
                                         }
                                     }
                                 } catch (e: Exception) {
-                                    error = e.message
+                                    error = friendlyLoginError(e)
                                 } finally {
                                     busy = false
                                 }
@@ -548,7 +565,10 @@ fun MainTabs(onSignedOut: () -> Unit, modifier: Modifier = Modifier) {
                         onOpenJobConsumed = { pendingJobId = null },
                         onOpenPos = { if (canSell) tab = "pos" },
                     )
-                    "pos" -> PosScreen(selectedBranchId)
+                    "pos" -> PosScreen(
+                        branchId = selectedBranchId,
+                        canOverridePrice = owner || "sales.price_override" in permissions,
+                    )
                     "inventory" -> InventoryLookupScreen(selectedBranchId)
                     "cash" -> CashScreen(selectedBranchId)
                     "pickup" -> PickupScreen()
@@ -772,7 +792,6 @@ fun HomeScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var showMoreMetrics by remember { mutableStateOf(false) }
     var unmatchedPayments by remember { mutableStateOf(0) }
-    var pendingCash by remember { mutableStateOf(0.0) }
     var readyOrders by remember { mutableStateOf(0) }
     var quickOpenCount by remember { mutableStateOf(0) }
     var unreadNotifications by remember { mutableStateOf(0) }
@@ -813,7 +832,6 @@ fun HomeScreen(
             }
             if (canCash) {
                 unmatchedPayments = runCatching { withContext(Dispatchers.IO) { ApiClient.listC2B("unmatched").length() } }.getOrDefault(0)
-                pendingCash = runCatching { withContext(Dispatchers.IO) { ApiClient.pendingCashTotal() } }.getOrDefault(0.0)
             }
             unreadNotifications = runCatching { withContext(Dispatchers.IO) { ApiClient.listNotifications(true).length() } }.getOrDefault(0)
             if (canSell) {
@@ -1090,12 +1108,6 @@ fun HomeScreen(
                     Text("Ready for customers", color = Brand.TextSecondary)
                     Text(readyCount.toString(), fontWeight = FontWeight.Bold)
                 }
-                if (canCash) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Cash in till", color = Brand.TextSecondary)
-                        Text("KES " + pendingCash.toInt(), fontWeight = FontWeight.Bold, color = if (pendingCash > 0) Brand.Warning else Brand.TextPrimary)
-                    }
-                }
             }
 
             OutlinedButton(onClick = { showMoreMetrics = !showMoreMetrics }, modifier = Modifier.fillMaxWidth()) {
@@ -1312,10 +1324,11 @@ fun JobsScreen(
         val displayedJobs = jobs.sortedBy { job ->
             val promised = runCatching { Instant.parse(job.optString("promised_by")) }.getOrNull()
             when {
-                promised != null && promised.isBefore(Instant.now()) && job.optString("status") !in setOf("completed", "collected") -> 0
-                job.optBoolean("customer_waiting") -> 1
-                job.optString("status") in setOf("ready_for_pickup", "completed") -> 2
-                else -> 3
+                jobNeedsFinishHandover(job) -> 0
+                promised != null && promised.isBefore(Instant.now()) && job.optString("status") !in setOf("completed", "collected") -> 1
+                job.optBoolean("customer_waiting") -> 2
+                job.optString("status") in setOf("ready_for_pickup", "completed") -> 3
+                else -> 4
             }
         }
         PullToRefreshBox(
@@ -1355,6 +1368,18 @@ fun JobsScreen(
                     if (job.optString("service_type") == "quick_replacement") {
                         Text("Quick replacement", style = MaterialTheme.typography.labelMedium, color = Brand.GoldDark, fontWeight = FontWeight.SemiBold)
                     }
+                    if (job.optString("service_type") == "quick_fix") {
+                        Text("Same-day fix", style = MaterialTheme.typography.labelMedium, color = Brand.GoldDark, fontWeight = FontWeight.SemiBold)
+                    }
+                    val needsFinishHandover = jobNeedsFinishHandover(job)
+                    if (needsFinishHandover) {
+                        Text(
+                            "Payment received — finish handover",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Brand.Danger,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                     Text(
                         deviceLabel,
                         style = MaterialTheme.typography.bodyMedium,
@@ -1366,16 +1391,19 @@ fun JobsScreen(
                         Text(if (overdue) "Overdue promise · action required" else "Promised " + timeAgo(job.optString("promised_by")).removeSuffix(" ago"), color = if (overdue) Brand.Danger else Brand.TextSecondary, style = MaterialTheme.typography.bodySmall, fontWeight = if (overdue) FontWeight.SemiBold else FontWeight.Normal)
                     }
                     Text(
-                        when (job.optString("status")) {
-                            "intake" -> if (job.optString("service_type") == "quick_replacement") "Next · start fitting or wait for stock" else "Next · diagnose"
-                            "diagnosed" -> "Next · agree price and start work"
-                            "waiting_parts" -> "Next · receive part and resume"
-                            "in_progress" -> if (job.optString("service_type") == "quick_replacement") "Next · fit and test" else "Next · finish repair and test"
-                            "ready_for_pickup" -> "Next · final check"
-                            "completed" -> "Next · payment and collection"
+                        when {
+                            needsFinishHandover -> "Next · hand device back and print receipt"
+                            job.optString("status") == "intake" -> if (job.optString("service_type") == "quick_replacement") "Next · start fitting or wait for stock" else "Next · diagnose"
+                            job.optString("status") == "diagnosed" -> "Next · agree price and start work"
+                            job.optString("status") == "waiting_parts" -> "Next · receive part and resume"
+                            job.optString("status") == "in_progress" -> if (job.optString("service_type") == "quick_replacement") "Next · fit and test" else "Next · finish repair and test"
+                            job.optString("status") == "ready_for_pickup" -> "Next · final check"
+                            job.optString("status") == "completed" -> "Next · payment and collection"
                             else -> ""
                         },
-                        color = Brand.Navy, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium,
+                        color = if (needsFinishHandover) Brand.Danger else Brand.Navy,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2707,10 +2735,12 @@ fun JobDetailScreen(
                         val p = withContext(Dispatchers.IO) { ApiClient.confirmMpesaPayment(paymentId) }
                         val status = p.optString("status")
                         if (status == "allocated" || status == "confirmed") {
-                            message = "Payment successful"
+                            message = "Payment successful — finish handover"
                             snackbarHostState?.let { host ->
-                                launch { host.showSnackbar("Payment successful") }
+                                launch { host.showSnackbar("Payment successful — finish handover") }
                             }
+                            promptHandover = true
+                            detailTab = 0
                             refresh()
                             return@launch
                         }
@@ -2725,7 +2755,23 @@ fun JobDetailScreen(
                         }
                     }
                 }
-                error = "STK timed out — tap Check payment to try again"
+                error = "STK timed out — checking payment status…"
+                val latest = runCatching {
+                    withContext(Dispatchers.IO) { ApiClient.confirmMpesaPayment(paymentId) }
+                }.getOrNull()
+                if (latest != null &&
+                    (latest.optString("status") == "allocated" || latest.optString("status") == "confirmed")
+                ) {
+                    message = "Payment successful — finish handover"
+                    snackbarHostState?.let { host ->
+                        launch { host.showSnackbar("Payment successful — finish handover") }
+                    }
+                    promptHandover = true
+                    detailTab = 0
+                    refresh()
+                } else {
+                    error = "STK timed out — tap Check payment to try again"
+                }
             } finally {
                 stkPolling = false
             }
@@ -2735,7 +2781,7 @@ fun JobDetailScreen(
     LaunchedEffect(job, payments) {
         val j = job ?: return@LaunchedEffect
         val paid = payments
-            .filter { it.optString("status") in setOf("allocated", "confirmed", "pending_handover", "provisional") }
+            .filter { it.optString("status") in setOf("allocated", "confirmed", "provisional") }
             .sumOf { it.optDouble("amount", 0.0) }
         val due = when {
             j.has("balance_due") && !j.isNull("balance_due") -> j.optDouble("balance_due", 0.0)
@@ -2761,7 +2807,7 @@ fun JobDetailScreen(
             status == "cancelled" || status == "unrepairable"
         if (!collectableForPay) return@LaunchedEffect
         val paid = payments
-            .filter { it.optString("status") in setOf("allocated", "confirmed", "pending_handover", "provisional") }
+            .filter { it.optString("status") in setOf("allocated", "confirmed", "provisional") }
             .sumOf { it.optDouble("amount", 0.0) }
         val due = when {
             jobObj.has("balance_due") && !jobObj.isNull("balance_due") -> jobObj.optDouble("balance_due", 0.0)
@@ -2774,6 +2820,15 @@ fun JobDetailScreen(
         }
         if (due > 0.009) {
             detailTab = 1
+        } else if (
+            jobObj.optJSONObject("handover") == null &&
+            paid > 0.009 &&
+            status in setOf("completed", "ready_for_pickup") &&
+            canCollect
+        ) {
+            // Paid but device still in shop — surface handover (e.g. quick-repair STK finished off-screen).
+            promptHandover = true
+            detailTab = 0
         }
     }
 
@@ -2866,7 +2921,7 @@ fun JobDetailScreen(
         val closureOptions = allNext.filter { it == "cancelled" || it == "unrepairable" }
         val nextList = allNext - closureOptions.toSet()
         val paidTotal = payments
-            .filter { it.optString("status") in setOf("allocated", "confirmed", "pending_handover", "provisional") }
+            .filter { it.optString("status") in setOf("allocated", "confirmed", "provisional") }
             .sumOf { it.optDouble("amount", 0.0) }
         // Prefer server amount_due / balance_due so estimate + sale-lines match web / handover.
         val amountDue = when {
@@ -2907,10 +2962,6 @@ fun JobDetailScreen(
             it.optString("status") in setOf("pending", "approved")
         }
         val forwardStatuses = nextList.filter { it != "collected" }
-
-        val handover = j.optJSONObject("handover")
-        val collectable = jobStatus == "ready_for_pickup" || jobStatus == "completed" ||
-            jobStatus == "cancelled" || jobStatus == "unrepairable"
 
         when (detailTab) {
             0 -> {
@@ -3193,6 +3244,34 @@ fun JobDetailScreen(
         val handover = j.optJSONObject("handover")
         val collectable = jobStatus == "ready_for_pickup" || jobStatus == "completed" ||
             jobStatus == "cancelled" || jobStatus == "unrepairable"
+        if (handover == null && collectable && paymentLocked && paidTotal > 0.009) {
+            Surface(color = Brand.GoldTint, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Payment received — finish handover",
+                        fontWeight = FontWeight.Bold,
+                        color = Brand.NavyDark,
+                    )
+                    Text(
+                        "M-Pesa (or cash) is settled, but the device is still in the shop. Complete collection below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Brand.NavyDark,
+                    )
+                    if (canCollect) {
+                        GoldButton(
+                            text = "Go to handover",
+                            onClick = {
+                                promptHandover = true
+                                scope.launch {
+                                    handoverBringIntoView.bringIntoView()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        }
         if (handover != null) {
             BrandSectionTitle("Handed over")
             BrandCard {
@@ -3216,6 +3295,31 @@ fun JobDetailScreen(
                 handover.optString("id_number").takeIf { it.isNotBlank() && it != "null" }?.let {
                     Text("ID recorded: $it", style = MaterialTheme.typography.bodySmall, color = Brand.TextSecondary)
                 }
+                GoldButton(
+                    text = if (busy) "Opening printer…" else "Print receipt",
+                    onClick = {
+                        busy = true
+                        scope.launch {
+                            try {
+                                val html = withContext(Dispatchers.IO) {
+                                    PrintSupport.fetchText(
+                                        "${com.techlane.ops.BuildConfig.API_BASE}/repairs/$jobId/receipt.html",
+                                        TechLaneApp.instance.tokenStore.accessToken,
+                                    )
+                                }
+                                PrintSupport.printHtml(context, html, "Repair receipt")
+                                message = "Printer sheet opened — tap your printer"
+                            } catch (e: Exception) {
+                                error = e.message ?: "Could not print receipt"
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                    enabled = !busy,
+                    loading = busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         } else if (collectable && canCollect) {
             if (!canTakePayment && balanceDue > 0.009) {
@@ -4294,11 +4398,7 @@ fun JobDetailScreen(
 @Composable
 fun CashScreen(selectedBranchId: String? = null, modifier: Modifier = Modifier) {
     var userId by remember { mutableStateOf("") }
-    var pendingCash by remember { mutableStateOf(0.0) }
-    var handovers by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var refunds by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var amount by rememberSaveable { mutableStateOf("") }
-    var countById by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -4309,21 +4409,10 @@ fun CashScreen(selectedBranchId: String? = null, modifier: Modifier = Modifier) 
             try {
                 val me = withContext(Dispatchers.IO) { ApiClient.me() }
                 userId = me.optString("id")
-                pendingCash = withContext(Dispatchers.IO) { ApiClient.pendingCashTotal() }
-                val items = withContext(Dispatchers.IO) { ApiClient.listCashHandovers() }
-                val list = (0 until items.length()).map { items.getJSONObject(it) }
-                handovers = list
-                countById = list.associate { h ->
-                    val id = h.getString("id")
-                    id to (countById[id] ?: h.optDouble("amount", 0.0).toInt().toString())
-                }
                 val refItems = withContext(Dispatchers.IO) {
                     runCatching { ApiClient.listRefunds() }.getOrElse { org.json.JSONArray() }
                 }
                 refunds = (0 until refItems.length()).map { refItems.getJSONObject(it) }
-                if (amount.isBlank() && pendingCash > 0) {
-                    amount = pendingCash.toInt().toString()
-                }
                 error = null
             } catch (e: Exception) {
                 error = e.message
@@ -4340,140 +4429,16 @@ fun CashScreen(selectedBranchId: String? = null, modifier: Modifier = Modifier) 
     ) {
         BrandHero(
             title = "Till",
-            subtitle = "Track cash received, transfer custody, and close the shift.",
+            subtitle = "Refund requests and payment follow-ups.",
             appLabel = "Ops",
-            bottomContent = {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    HeroStat("Expected", "KES ${pendingCash.toInt()}", Modifier.weight(1f))
-                }
-            },
         )
         OpsShellChrome()
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            OutlinedTextField(
-                value = amount,
-                onValueChange = { amount = it },
-                label = { Text("Amount to transfer (KES)") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(500, 1000, 2000, 5000).forEach { value ->
-                    FilterChip(
-                        selected = amount.toIntOrNull() == value,
-                        onClick = { amount = value.toString() },
-                        label = { Text("KES " + value) },
-                    )
-                }
-            }
-            GoldButton(
-                text = if (busy) "Working…" else "Transfer cash",
-                onClick = {
-                    val value = amount.toDoubleOrNull()
-                    if (value == null || value <= 0) {
-                        error = "Enter a positive amount"
-                        return@GoldButton
-                    }
-                    busy = true
-                    message = null
-                    error = null
-                    scope.launch {
-                        try {
-                            withContext(Dispatchers.IO) {
-                                ApiClient.requestCashHandover(value, selectedBranchId)
-                            }
-                            message = "Cash transfer requested"
-                            amount = ""
-                            refresh()
-                        } catch (e: Exception) {
-                            error = e.message
-                        } finally {
-                            busy = false
-                        }
-                    }
-                },
-                enabled = !busy,
-                loading = busy,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            FeedbackBanner(message = null, error = error)
-            message?.let { Text(it, color = Brand.Navy) }
-        }
-
-        BrandSectionTitle("Cash transfers", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        FeedbackBanner(message = message, error = error, modifier = Modifier.padding(horizontal = 16.dp))
         LazyColumn(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f),
         ) {
-            items(handovers, key = { it.getString("id") }) { h ->
-                val id = h.getString("id")
-                val declared = h.optDouble("amount", 0.0)
-                val status = h.optString("status")
-                val fromMe = h.optString("from_user_id") == userId
-                val shortage = h.optDouble("shortage_amount", 0.0)
-                BrandCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("KES ${declared.toInt()}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        PillBadge(status.replaceFirstChar { it.uppercase() }, if (status == "confirmed") Brand.Success else Brand.Warning)
-                        if (status == "confirmed" && shortage > 0) {
-                            Text(
-                                "Shortage KES ${shortage.toInt()}",
-                                color = Brand.Danger,
-                            )
-                        }
-                        if (status == "requested" && fromMe) {
-                            Text(
-                                "Waiting for the receiving staff member to confirm the count.",
-                                color = Brand.TextSecondary,
-                            )
-                        }
-                        if (status == "requested" && !fromMe) {
-                            OutlinedTextField(
-                                value = countById[id].orEmpty(),
-                                onValueChange = { v -> countById = countById + (id to v) },
-                                label = { Text("Counted cash (KES)") },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            val counted = countById[id]?.toDoubleOrNull() ?: declared
-                            val shortPreview = (declared - counted).coerceAtLeast(0.0)
-                            if (shortPreview > 0) {
-                                Text("Will record shortage KES ${shortPreview.toInt()}")
-                            }
-                            GoldButton(
-                                text = "Confirm received",
-                                onClick = {
-                                    busy = true
-                                    error = null
-                                    scope.launch {
-                                        try {
-                                            withContext(Dispatchers.IO) {
-                                                ApiClient.confirmCashHandover(id, countById[id]?.toDoubleOrNull())
-                                            }
-                                            message = "Handover confirmed"
-                                            refresh()
-                                        } catch (e: Exception) {
-                                            error = e.message
-                                        } finally {
-                                            busy = false
-                                        }
-                                    }
-                                },
-                                enabled = !busy,
-                                loading = busy,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                    }
-                }
-            }
-
             item {
                 BrandSectionTitle("Refunds")
                 Text(
@@ -4550,6 +4515,21 @@ private fun syncCommandLabel(command: String): String = when (command) {
     "parts.request" -> "Parts request"
     "payments.cash_provisional" -> "Cash payment"
     else -> command.replace(95.toChar(), 32.toChar()).replace(46.toChar(), 32.toChar()).replaceFirstChar { it.uppercase() }
+}
+
+/** Paid (or zero-balance) job still waiting for device collection. */
+private fun jobNeedsFinishHandover(job: JSONObject): Boolean {
+    val status = job.optString("status")
+    if (status != "completed" && status != "ready_for_pickup") return false
+    if (job.optJSONObject("handover") != null) return false
+    val paid = job.optDouble("paid_total", 0.0)
+    if (paid <= 0.009) return false
+    val balance = if (job.has("balance_due") && !job.isNull("balance_due")) {
+        job.optDouble("balance_due", 0.0)
+    } else {
+        Double.NaN
+    }
+    return balance.isNaN() || balance <= 0.009
 }
 
 

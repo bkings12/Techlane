@@ -60,13 +60,9 @@ export function ReportsPage() {
               <span>Open risk</span>
               <strong>{data.risk_open_total}</strong>
             </div>
-            <div className={`leakage-tile ${data.shortage_amount_period > 0 ? "warn" : ""}`}>
-              <span>Cash shortages</span>
-              <strong>{formatMoney(data.shortage_amount_period)}</strong>
-            </div>
-            <div className="leakage-tile">
-              <span>Provisional cash</span>
-              <strong>{formatMoney(data.payments_cash_provisional)}</strong>
+            <div className={`leakage-tile ${data.payments_stk_pending > 0 ? "warn" : ""}`}>
+              <span>STK pending</span>
+              <strong>{formatMoney(data.payments_stk_pending)}</strong>
             </div>
             <div className="leakage-tile">
               <span>Supplier credit</span>
@@ -103,10 +99,8 @@ export function ReportsPage() {
                 <dd>
                   {formatMoney(data.sales_completed_period)} ({data.sales_count_period})
                 </dd>
-                <dt>Open handovers</dt>
-                <dd>{data.handovers_open}</dd>
               </dl>
-              <Link to="/payments">Payments & cash →</Link>
+              <Link to="/payments">Payments →</Link>
             </section>
           </div>
 
@@ -132,9 +126,7 @@ export function ReportsPage() {
                     {data.risk_cash_shortage} open
                   </Badge>
                 </div>
-                <p className="muted">
-                  Short counts in period: {formatMoney(data.shortage_amount_period)}
-                </p>
+                <p className="muted">Historical till-count shortage alerts still open on the risk board.</p>
               </li>
               <li className="part-card">
                 <div className="part-head">

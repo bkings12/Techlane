@@ -10,7 +10,11 @@ import org.json.JSONObject
 
 object ApiClient {
     private val json = "application/json; charset=utf-8".toMediaType()
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private val refreshLock = Any()
     @Volatile private var sessionExpiredListener: (() -> Unit)? = null
 
@@ -27,7 +31,10 @@ object ApiClient {
     }
 
     fun login(email: String, password: String): LoginResult {
-        val body = JSONObject(mapOf("email" to email, "password" to password)).toString()
+        val body = JSONObject()
+            .put("email", email.trim().lowercase())
+            .put("password", password)
+            .toString()
             .toRequestBody(json)
         val req = Request.Builder()
             .url("${BuildConfig.API_BASE}/auth/login")
@@ -139,9 +146,10 @@ object ApiClient {
         return get("/inventory/balances$query").optJSONArray("items") ?: org.json.JSONArray()
     }
 
-    /** A catalog line ({variant_id, quantity}) or a quick-sale line — item not in
-     * stock, sourced on the spot ({description, quantity, unit_price} plus optional
-     * internal-only unit_cost/supplier_id that never reach the customer receipt). */
+    /** A catalog line ({variant_id, quantity} plus optional override_price/
+     * override_reason) or a quick-sale line — item not in stock, sourced on the
+     * spot ({description, quantity, unit_price} plus optional internal-only
+     * unit_cost/supplier_id that never reach the customer receipt). */
     fun posCheckout(
         branchId: String,
         locationId: String,
@@ -190,8 +198,6 @@ object ApiClient {
 
     fun matchC2B(id: String, paymentId: String): JSONObject =
         post("/payments/c2b/$id/match", JSONObject().put("payment_id", paymentId))
-
-    fun pendingCashTotal(): Double = get("/cash/pending-total").optDouble("amount", 0.0)
 
     fun getRepair(id: String): JSONObject = get("/repairs/$id")
 
@@ -483,24 +489,6 @@ object ApiClient {
     fun confirmMpesaPayment(id: String, providerRef: String = ""): JSONObject {
         // Typed provider_ref is ignored server-side; STK Query is the source of truth.
         return reconcileMpesa(id)
-    }
-
-    fun listCashHandovers(status: String? = null): org.json.JSONArray {
-        val q = if (status.isNullOrBlank()) "" else "?status=$status"
-        return get("/cash/handovers$q").optJSONArray("items") ?: org.json.JSONArray()
-    }
-
-    fun requestCashHandover(amount: Double, branchId: String?, toUserId: String? = null): JSONObject {
-        val payload = JSONObject().put("amount", amount)
-        if (!branchId.isNullOrBlank()) payload.put("branch_id", branchId)
-        if (!toUserId.isNullOrBlank()) payload.put("to_user_id", toUserId)
-        return post("/cash/handovers", payload)
-    }
-
-    fun confirmCashHandover(id: String, countedAmount: Double?): JSONObject {
-        val payload = JSONObject()
-        if (countedAmount != null) payload.put("counted_amount", countedAmount)
-        return post("/cash/handovers/$id/confirm", payload)
     }
 
     fun listRefunds(status: String? = null): org.json.JSONArray {

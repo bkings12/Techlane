@@ -45,3 +45,6 @@ tmp/
 
 # Server-only static assets (never rsync --delete without preserving)
 /web-dist/
+
+# Claude Code local config — contains machine-specific SSH/host details
+.claude/

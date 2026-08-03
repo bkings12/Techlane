@@ -50,8 +50,9 @@ type Callout struct {
 	Label string
 	Value string
 	Note  string
-	// QRDataURI is an optional data:image/png;base64,… rendered above the code
-	// so the counter can scan the slip instead of typing digits.
+	// QRPayload is the raw text/URL encoded into a thermal QR (preferred for ESC/POS).
+	QRPayload string
+	// QRDataURI is an optional data:image/png;base64,… for HTML/PDF receipts.
 	QRDataURI string
 }
 

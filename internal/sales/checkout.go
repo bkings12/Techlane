@@ -35,15 +35,16 @@ type POSPaymentResult struct {
 }
 
 type CheckoutInput struct {
-	TenantID   uuid.UUID
-	BranchID   uuid.UUID
-	LocationID uuid.UUID
-	Items      []SaleItemInput
-	Method     string
-	Phone      string
-	AccountRef string
-	ActorID    uuid.UUID
-	CorrID     uuid.UUID
+	TenantID           uuid.UUID
+	BranchID           uuid.UUID
+	LocationID         uuid.UUID
+	Items              []SaleItemInput
+	Method             string
+	Phone              string
+	AccountRef         string
+	ActorID            uuid.UUID
+	CorrID             uuid.UUID
+	AllowPriceOverride bool
 }
 
 type CheckoutResult struct {
@@ -70,6 +71,7 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*CheckoutResu
 	sale, err := s.CreateSale(ctx, CreateSaleInput{
 		TenantID: in.TenantID, BranchID: in.BranchID, Channel: "pos",
 		Items: in.Items, ActorID: in.ActorID, CorrID: in.CorrID,
+		AllowPriceOverride: in.AllowPriceOverride,
 	})
 	if err != nil {
 		return nil, err

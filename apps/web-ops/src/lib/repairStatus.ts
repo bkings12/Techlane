@@ -70,7 +70,7 @@ export function statusTone(status: string): "success" | "warning" | "danger" | "
     return "success";
   if (isClosureStatus(status) || status.includes("fail") || status === "orphan" || status === "rejected")
     return "danger";
-  if (status === "waiting_parts" || status === "pending" || status === "provisional" || status === "pending_handover")
+  if (status === "waiting_parts" || status === "pending" || status === "provisional")
     return "pending";
   return "info";
 }

@@ -81,6 +81,16 @@ func DefaultTemplateDefs() []TemplateDef {
 			DefaultBody: "{{shop_name}}: Hi {{customer_name}}. Your {{device_label}} ({{job_code}}) is ready. Bring your receipt to collect your device. Balance due: {{currency}} {{balance}}. See you at {{pickup_place}}.",
 		},
 		{
+			Key:         "repair.quick_thanks",
+			Label:       "Same-day fix thanks",
+			Description: "Sent after a quick / same-day counter fix — short thanks, no collection/receipt wording.",
+			Audience:    "customer",
+			Helpers: []string{
+				"shop_name", "customer_name", "job_code", "device_label",
+			},
+			DefaultBody: "{{shop_name}}: Asante {{customer_name}}! Thank you for choosing {{shop_name}}. Karibu tena.",
+		},
+		{
 			Key:         "estimate.pending",
 			Label:       "Estimate ready",
 			Description: "Sent to the customer when a repair estimate is created.",
@@ -141,13 +151,17 @@ func DefaultWhatsAppBody(key string) (string, bool) {
 	case "repair.wait_bench":
 		return "{{shop_name}}: Hi {{customer_name}}. Your {{device_label}} ({{job_code}}) is being looked at now. {{wait_line}} Issue: {{problem_summary}}. {{pricing_line}} We'll call you when ready.", true
 	case "repair.ready":
-		return "{{shop_name}}: Hi {{customer_name}}. Your {{device_label}} ({{job_code}}) is ready. Balance due: {{currency}} {{balance}}. See you at {{pickup_place}}.", true
+		return "{{shop_name}}: Hi {{customer_name}}. Your {{device_label}} ({{job_code}}) is ready. Bring your receipt to collect. Balance due: {{currency}} {{balance}}. See you at {{pickup_place}}.", true
+	case "repair.quick_thanks":
+		return "{{shop_name}}: Asante {{customer_name}}! Thank you for choosing {{shop_name}}. Karibu tena.", true
 	case "payment.confirmed":
 		return "{{shop_name}}: We received {{currency}} {{amount}} for {{job_code}}. Remaining balance: {{currency}} {{balance}}. Asante!", true
 	case "repair.collected":
 		return "{{shop_name}}: {{job_code}} — your {{device_label}} was collected by {{collected_by}} at {{pickup_place}}. Thank you!", true
 	case "repair.status_changed":
 		return "{{shop_name}}: Hi {{customer_name}}. {{job_code}} ({{device_label}}) is {{status_label}}. We'll message you when it's ready.", true
+	case "order.placed":
+		return "{{shop_name}}: New online order {{order_ref}} — {{currency}} {{total}} ({{fulfilment}}, {{item_count}} item(s)) from {{customer_name}} {{customer_phone}}. {{delivery_line}}", true
 	default:
 		return "", false
 	}

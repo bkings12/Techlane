@@ -389,7 +389,7 @@ export async function createRepair(body: {
   intake_accessories?: string[];
   intake_condition?: string;
   device_passcode?: string;
-  service_type?: "repair" | "quick_replacement";
+  service_type?: "repair" | "quick_replacement" | "quick_fix";
   customer_credit?: boolean;
   credit_due_date?: string;
 }) {
@@ -844,10 +844,26 @@ export async function createPayment(body: {
 
 /** Reconcile STK via Daraja Query API (typed provider_ref is ignored server-side). */
 export async function reconcileMpesaPayment(id: string) {
-  return api<Payment>(`/payments/${id}/mpesa/reconcile`, {
+  const headers = new Headers({ "Content-Type": "application/json", Accept: "application/json" });
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_BASE}/payments/${id}/mpesa/reconcile`, {
     method: "POST",
+    headers,
     body: JSON.stringify({}),
   });
+  // 202 = still waiting on customer/Daraja (was 409; both mean "keep polling").
+  if (res.status === 202 || res.status === 409) {
+    throw new ConflictError(await parseErrorMessage(res));
+  }
+  if (!res.ok) {
+    if (res.status === 401) {
+      notifySessionExpired();
+      throw new SessionExpiredError(await parseErrorMessage(res));
+    }
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json() as Promise<Payment>;
 }
 
 /** @deprecated use reconcileMpesaPayment */
@@ -857,37 +873,6 @@ export async function confirmMpesaPayment(id: string, _providerRef?: string) {
 
 export async function getPayment(id: string) {
   return api<Payment>(`/payments/${id}`);
-}
-
-export type CashHandover = {
-  id: string;
-  branch_id: string;
-  from_user_id: string;
-  to_user_id?: string;
-  amount: number;
-  status: string;
-  shortage_amount?: number;
-  created_at: string;
-  confirmed_at?: string;
-};
-
-export async function listCashHandovers(status?: string) {
-  const q = status ? `?status=${encodeURIComponent(status)}` : "";
-  return api<{ items: CashHandover[] }>(`/cash/handovers${q}`);
-}
-
-export async function pendingCashTotal() {
-  return api<{ amount: number }>("/cash/pending-total");
-}
-
-export async function requestCashHandover(body: { branch_id?: string; to_user_id?: string; amount: number }) {
-  return api<CashHandover>("/cash/handovers", { method: "POST", body: JSON.stringify(body) });
-}
-
-export async function confirmCashHandover(id: string, countedAmount?: number) {
-  const body =
-    countedAmount === undefined ? "{}" : JSON.stringify({ counted_amount: countedAmount });
-  return api<CashHandover>(`/cash/handovers/${id}/confirm`, { method: "POST", body });
 }
 
 export async function listAllPayments() {
@@ -967,12 +952,9 @@ export type ReportSummary = {
   repairs_collectible_value: number;
   repairs_unpriced: number;
   payments_allocated_period: number;
-  payments_cash_provisional: number;
   payments_stk_pending: number;
   sales_completed_period: number;
   sales_count_period: number;
-  handovers_open: number;
-  shortage_amount_period: number;
   supplier_credit_outstanding: number;
   risk_open_total: number;
   risk_orphan_parts: number;
@@ -1542,11 +1524,15 @@ export type SaleItem = {
 export type Sale = {
   id: string;
   branch_id: string;
+  customer_id?: string;
+  customer_name?: string;
   channel: string;
   status: string;
   subtotal: number;
   total: number;
   created_at?: string;
+  payment_method?: string;
+  payment_id?: string;
   items?: SaleItem[];
 };
 
@@ -2108,32 +2094,146 @@ export async function previewReceipt(
 }
 
 async function openPrintable(path: string) {
+  // Open immediately when a user gesture is still active (Print button).
+  // After await fetch, window.open is often blocked or stuck on about:blank.
+  const preview = window.open("about:blank", "_blank");
+  if (preview) {
+    try {
+      preview.document.write("<!doctype html><title>Loading receipt…</title><p style='font:14px system-ui'>Loading receipt…</p>");
+      preview.document.close();
+    } catch {
+      /* ignore — some browsers restrict write until later */
+    }
+  }
+
   const headers = new Headers({ Accept: "text/html" });
   const token = getAccessToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_BASE}${path}`, { headers });
-  if (!res.ok) {
-    throw new Error(await parseErrorMessage(res));
+  let html: string;
+  try {
+    const res = await fetch(`${API_BASE}${path}`, { headers });
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res));
+    }
+    html = await res.text();
+  } catch (err) {
+    preview?.close();
+    throw err;
   }
-  const html = await res.text();
-  const win = window.open("", "_blank", "noopener,noreferrer");
-  if (!win) throw new Error("Pop-up blocked — allow pop-ups to print the receipt");
-  win.document.write(html);
-  win.document.close();
+
+  if (preview && !preview.closed) {
+    preview.document.open();
+    preview.document.write(html);
+    preview.document.close();
+    return;
+  }
+
+  // Auto-print path (e.g. STK completed after polling) — no user gesture for a tab.
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("title", "Receipt");
+  iframe.style.cssText =
+    "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none";
+  iframe.src = url;
+  document.body.appendChild(iframe);
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    iframe.addEventListener("load", finish, { once: true });
+    window.setTimeout(finish, 1500);
+  });
+
+  try {
+    iframe.contentWindow?.focus();
+    iframe.contentWindow?.print();
+  } finally {
+    // Keep the frame around until the print dialog can snapshot it.
+    window.setTimeout(() => {
+      iframe.remove();
+      URL.revokeObjectURL(url);
+    }, 60_000);
+  }
 }
 
-/** Open a printable customer receipt in a new tab. */
-export async function openRepairReceipt(repairId: string, paper?: ReceiptPaper) {
+/** Open a printable customer receipt — prefers local ESC/POS thermal agent. */
+export async function openRepairReceipt(repairId: string, paper?: ReceiptPaper, opts?: { force?: boolean }) {
+  if (await tryThermalPrint(`/repairs/${repairId}/receipt.escpos`, `repair:${repairId}`, opts?.force)) {
+    return;
+  }
   const query = paper ? `?paper=${paper}` : "";
   return openPrintable(`/repairs/${repairId}/receipt.html${query}`);
 }
 
-export async function openIntakeSlip(repairId: string) {
+export async function openIntakeSlip(repairId: string, opts?: { force?: boolean }) {
+  if (await tryThermalPrint(`/repairs/${repairId}/intake-slip.escpos`, `intake:${repairId}`, opts?.force)) {
+    return;
+  }
   return openPrintable(`/repairs/${repairId}/intake-slip.html`);
 }
 
-/** Open a printable POS sale receipt in a new tab. */
-export async function openSaleReceipt(saleId: string, paper?: ReceiptPaper) {
+/** Dedupe thermal prints — STK poll / double-clicks can fire more than once. */
+const recentThermalPrints = new Map<string, number>();
+
+async function tryThermalPrint(apiPath: string, dedupeKey: string, force?: boolean): Promise<boolean> {
+  try {
+    const health = await fetch("http://127.0.0.1:9199/health", { method: "GET" });
+    if (!health.ok) return false;
+
+    const now = Date.now();
+    if (!force) {
+      const last = recentThermalPrints.get(dedupeKey) ?? 0;
+      if (now - last < 15_000) return true; // already sent recently
+    }
+    recentThermalPrints.set(dedupeKey, now);
+
+    const headers = new Headers({ Accept: "application/octet-stream" });
+    const token = getAccessToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`${API_BASE}${apiPath}`, { headers });
+    if (!res.ok) {
+      recentThermalPrints.delete(dedupeKey);
+      throw new Error(await parseErrorMessage(res));
+    }
+    const bytes = await res.arrayBuffer();
+    const printed = await fetch("http://127.0.0.1:9199/print", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: bytes,
+    });
+    if (!printed.ok) {
+      recentThermalPrints.delete(dedupeKey);
+      const errBody = await printed.text();
+      throw new Error(errBody || "Thermal print agent failed");
+    }
+    return true;
+  } catch (err) {
+    if (err instanceof TypeError) return false; // agent down
+    if (err instanceof Error && /Thermal print agent|lp |print agent/i.test(err.message)) {
+      throw err;
+    }
+    // Auth / API errors — surface them instead of falling back to HTML garbage.
+    if (err instanceof Error && !/Failed to fetch|NetworkError/i.test(err.message)) {
+      throw err;
+    }
+    return false;
+  }
+}
+
+/** Open a printable POS sale receipt — prefers local ESC/POS thermal agent. */
+export async function openSaleReceipt(
+  saleId: string,
+  paper?: ReceiptPaper,
+  opts?: { force?: boolean },
+) {
+  if (await tryThermalPrint(`/sales/${saleId}/receipt.escpos`, `sale:${saleId}`, opts?.force)) {
+    return;
+  }
   const query = paper ? `?paper=${paper}` : "";
   return openPrintable(`/sales/${saleId}/receipt.html${query}`);
 }
@@ -2222,6 +2322,8 @@ export type ShopProfile = {
   vat_inclusive: boolean;
   currency_code: string;
   locale: string;
+  bargain_enabled?: boolean;
+  whatsapp_number?: string;
 };
 
 export async function getShopProfile() {
@@ -2385,7 +2487,7 @@ export async function ensureStockLocations() {
 }
 
 export type POSCheckoutItem =
-  | { variant_id: string; quantity: number }
+  | { variant_id: string; quantity: number; override_price?: number; override_reason?: string }
   | {
       // Quick sale: not in the catalog. unit_cost/supplier_id are internal-only —
       // sourced together or not at all — and never appear on the customer receipt.

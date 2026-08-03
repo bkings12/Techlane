@@ -2,7 +2,6 @@ package payments
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,13 +60,20 @@ func TestSplitTenderSumValidation(t *testing.T) {
 	}
 }
 
-func TestMockSTKQuerySuccess(t *testing.T) {
-	t.Setenv("MPESA_MOCK", "1")
-	s := &Service{}
-	// loadRawSettings needs DB — unit-test Query path via shouldMock with direct call shape
-	out, err := json.Marshal(stkQueryResp{ResultCode: "0", CheckoutRequestID: "ws_CO_X"})
-	if err != nil || len(out) == 0 {
-		t.Fatal(err)
+func TestStkQueryStillProcessing(t *testing.T) {
+	cases := []struct {
+		code, desc string
+		want       bool
+	}{
+		{"4999", "The transaction is still under processing", true},
+		{"500.001.1001", "The transaction is being processed", true},
+		{"0", "Success", false},
+		{"1032", "Request cancelled by user", false},
+		{"1037", "DS timeout", false},
 	}
-	_ = s
+	for _, tc := range cases {
+		if got := stkQueryStillProcessing(tc.code, tc.desc); got != tc.want {
+			t.Fatalf("code=%q desc=%q got=%v want=%v", tc.code, tc.desc, got, tc.want)
+		}
+	}
 }

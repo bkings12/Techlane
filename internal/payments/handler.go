@@ -35,10 +35,6 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("POST /payments/{id}/bank/confirm", auth(http.HandlerFunc(h.confirmBank)))
 	mux.Handle("GET /store-credits/{customer_id}", auth(http.HandlerFunc(h.getStoreCredit)))
 	mux.Handle("POST /store-credits/{customer_id}/issue", auth(http.HandlerFunc(h.issueStoreCredit)))
-	mux.Handle("GET /cash/pending-total", auth(http.HandlerFunc(h.pendingCashTotal)))
-	mux.Handle("GET /cash/handovers", auth(http.HandlerFunc(h.listHandovers)))
-	mux.Handle("POST /cash/handovers", auth(http.HandlerFunc(h.requestHandover)))
-	mux.Handle("POST /cash/handovers/{id}/confirm", auth(http.HandlerFunc(h.confirmHandover)))
 	mux.Handle("POST /refunds", auth(http.HandlerFunc(h.createRefund)))
 	mux.Handle("GET /refunds", auth(http.HandlerFunc(h.listRefunds)))
 	mux.Handle("POST /refunds/{id}/approve", auth(http.HandlerFunc(h.approveRefund)))
@@ -240,6 +236,14 @@ func (h *Handler) reconcileMpesa(w http.ResponseWriter, r *http.Request) {
 			apierrors.Write(w, http.StatusNotFound, "NOT_FOUND", err.Error(), httpx.CorrelationID(r.Context()))
 			return
 		}
+		// Still waiting on the customer / Daraja — not a conflict; 202 keeps
+		// the browser console clean while POS continues polling.
+		if strings.Contains(err.Error(), "STK pending:") ||
+			strings.Contains(strings.ToLower(err.Error()), "under processing") ||
+			strings.Contains(strings.ToLower(err.Error()), "being processed") {
+			apierrors.Write(w, http.StatusAccepted, "STK_PENDING", err.Error(), httpx.CorrelationID(r.Context()))
+			return
+		}
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))
 		return
 	}
@@ -347,14 +351,25 @@ func (h *Handler) mpesaSTKWebhook(w http.ResponseWriter, r *http.Request) {
 		WHERE payment_id = $2`, string(raw), paymentID)
 	if cb.ResultCode == 0 {
 		mpesaReceipt := ""
+		callbackPhone := ""
 		if cb.CallbackMetadata != nil {
 			for _, it := range cb.CallbackMetadata.Item {
-				if it.Name == "MpesaReceiptNumber" {
-					mpesaReceipt = strings.TrimSpace(fmt.Sprint(it.Value))
-					break
+				switch it.Name {
+				case "MpesaReceiptNumber":
+					mpesaReceipt = metadataItemString(it.Value)
+				case "PhoneNumber":
+					callbackPhone = metadataItemString(it.Value)
 				}
 			}
 		}
+		// Resolve customer onto the draft sale before Confirm runs sale-completion hooks.
+		msisdn := callbackPhone
+		if msisdn == "" {
+			_ = h.svc.pool.QueryRow(r.Context(), `
+				SELECT COALESCE(phone, '') FROM payments.mpesa_stk_transactions WHERE payment_id = $1`,
+				paymentID).Scan(&msisdn)
+		}
+		_ = h.svc.attachMpesaCustomerToSale(r.Context(), tenantID, paymentID, msisdn, "")
 		// Prefer STK Query confirmation; still stamp the real M-Pesa receipt from the callback.
 		if _, err := h.svc.ReconcileSTKPayment(r.Context(), tenantID, paymentID); err != nil {
 			ref := mpesaReceipt
@@ -364,6 +379,9 @@ func (h *Handler) mpesaSTKWebhook(w http.ResponseWriter, r *http.Request) {
 			_, _ = h.svc.ConfirmMpesaWebhook(r.Context(), tenantID, paymentID, ref)
 		} else if mpesaReceipt != "" {
 			_, _ = h.svc.ConfirmMpesaWebhook(r.Context(), tenantID, paymentID, mpesaReceipt)
+		} else {
+			// Query already allocated — still run side effects (complete draft sale).
+			_, _ = h.svc.ConfirmMpesaWebhook(r.Context(), tenantID, paymentID, cb.CheckoutRequestID)
 		}
 	} else {
 		_, _ = h.svc.pool.Exec(r.Context(), `
@@ -459,11 +477,8 @@ func (h *Handler) listC2B(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) matchC2B(w http.ResponseWriter, r *http.Request) {
 	claims, _ := authz.FromContext(r.Context())
 	if !claims.HasPermission("refunds.approve") && !claims.HasPermission("payments.initiate") && !claims.HasPermission("*") {
-		// Managers/accountants typically approve money exceptions; owner has *.
-		if !claims.HasPermission("cash.handover.confirm") {
-			apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "insufficient permission to match C2B", httpx.CorrelationID(r.Context()))
-			return
-		}
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "insufficient permission to match C2B", httpx.CorrelationID(r.Context()))
+		return
 	}
 	c2bID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -488,10 +503,8 @@ func (h *Handler) matchC2B(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) matchC2BToNewSale(w http.ResponseWriter, r *http.Request) {
 	claims, _ := authz.FromContext(r.Context())
 	if !claims.HasPermission("refunds.approve") && !claims.HasPermission("payments.initiate") && !claims.HasPermission("*") {
-		if !claims.HasPermission("cash.handover.confirm") {
-			apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "insufficient permission to match C2B", httpx.CorrelationID(r.Context()))
-			return
-		}
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "insufficient permission to match C2B", httpx.CorrelationID(r.Context()))
+		return
 	}
 	c2bID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -516,75 +529,6 @@ func (h *Handler) matchC2BToNewSale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, pay)
-}
-
-func (h *Handler) pendingCashTotal(w http.ResponseWriter, r *http.Request) {
-	claims, _ := authz.FromContext(r.Context())
-	total, err := h.svc.PendingCashTotal(r.Context(), claims.TenantID, claims.UserID)
-	if err != nil {
-		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
-		return
-	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"amount": total})
-}
-
-func (h *Handler) listHandovers(w http.ResponseWriter, r *http.Request) {
-	claims, _ := authz.FromContext(r.Context())
-	items, err := h.svc.ListCashHandovers(r.Context(), claims.TenantID, r.URL.Query().Get("status"))
-	if err != nil {
-		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
-		return
-	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (h *Handler) requestHandover(w http.ResponseWriter, r *http.Request) {
-	claims, _ := authz.FromContext(r.Context())
-	var req struct {
-		BranchID uuid.UUID  `json:"branch_id"`
-		ToUserID *uuid.UUID `json:"to_user_id"`
-		Amount   float64    `json:"amount"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Amount <= 0 {
-		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "amount required", httpx.CorrelationID(r.Context()))
-		return
-	}
-	if req.BranchID == uuid.Nil && len(claims.BranchIDs) > 0 {
-		req.BranchID, _ = uuid.Parse(claims.BranchIDs[0])
-	}
-	ho, err := h.svc.RequestCashHandover(r.Context(), claims.TenantID, req.BranchID, claims.UserID, req.ToUserID, req.Amount, corrID(r))
-	if err != nil {
-		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))
-		return
-	}
-	httpx.JSON(w, http.StatusCreated, ho)
-}
-
-func (h *Handler) confirmHandover(w http.ResponseWriter, r *http.Request) {
-	claims, _ := authz.FromContext(r.Context())
-	handoverID, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
-		return
-	}
-	var req struct {
-		CountedAmount *float64 `json:"counted_amount"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	ho, err := h.svc.ConfirmCashHandover(r.Context(), claims.TenantID, handoverID, claims.UserID, req.CountedAmount)
-	if err != nil {
-		if errors.Is(err, ErrSelfApproveHandover) {
-			apierrors.Write(w, http.StatusConflict, "CONFLICT", err.Error(), httpx.CorrelationID(r.Context()))
-			return
-		}
-		if strings.Contains(err.Error(), "not found") {
-			apierrors.Write(w, http.StatusNotFound, "NOT_FOUND", err.Error(), httpx.CorrelationID(r.Context()))
-			return
-		}
-		apierrors.Write(w, http.StatusConflict, "CONFLICT", err.Error(), httpx.CorrelationID(r.Context()))
-		return
-	}
-	httpx.JSON(w, http.StatusOK, ho)
 }
 
 func (h *Handler) createRefund(w http.ResponseWriter, r *http.Request) {

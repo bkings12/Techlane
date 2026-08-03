@@ -99,9 +99,31 @@ func (s *Service) QuerySTKStatus(ctx context.Context, tenantID uuid.UUID, checko
 	return &out, nil
 }
 
+// stkQueryStillProcessing reports whether Daraja STK Query says the customer
+// has not finished yet (vs a hard failure like cancel/timeout).
+func stkQueryStillProcessing(resultCode, resultDesc string) bool {
+	code := strings.TrimSpace(resultCode)
+	if code == "4999" || code == "500.001.1001" {
+		return true
+	}
+	d := strings.ToLower(resultDesc)
+	return strings.Contains(d, "being processed") ||
+		strings.Contains(d, "under processing") ||
+		strings.Contains(d, "still processing")
+}
+
 // ReconcileSTKPayment queries Daraja and confirms only when ResultCode is success.
 // Typed provider refs from staff are not accepted as proof of payment.
 func (s *Service) ReconcileSTKPayment(ctx context.Context, tenantID, paymentID uuid.UUID) (*Payment, error) {
+	if pay, err := s.GetPayment(ctx, tenantID, paymentID); err == nil {
+		if pay.Status == "allocated" || pay.Status == "confirmed" {
+			return pay, nil
+		}
+		if pay.Status == "failed" || pay.Status == "cancelled" {
+			return nil, fmt.Errorf("STK not paid: payment %s", pay.Status)
+		}
+	}
+
 	var checkoutID, status, resultCode, resultDesc string
 	err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(checkout_request_id, ''), status,
@@ -135,14 +157,14 @@ func (s *Service) ReconcileSTKPayment(ctx context.Context, tenantID, paymentID u
 		WHERE payment_id = $3`, q.ResultCode, q.ResultDesc, paymentID)
 
 	if q.ResultCode != "0" {
-		if q.ResultCode != "" && q.ResultCode != "500.001.1001" {
-			// Still processing codes vary; treat non-zero as not paid unless "request timeout in progress"
-			if !strings.Contains(strings.ToLower(q.ResultDesc), "being processed") {
-				_, _ = s.pool.Exec(ctx, `
-					UPDATE payments.mpesa_stk_transactions
-					SET status = 'failed', result_code = $1, result_desc = $2, updated_at = now()
-					WHERE payment_id = $3 AND status NOT IN ('confirmed')`, q.ResultCode, q.ResultDesc, paymentID)
-			}
+		if stkQueryStillProcessing(q.ResultCode, q.ResultDesc) {
+			return nil, fmt.Errorf("STK pending: %s %s", q.ResultCode, q.ResultDesc)
+		}
+		if q.ResultCode != "" {
+			_, _ = s.pool.Exec(ctx, `
+				UPDATE payments.mpesa_stk_transactions
+				SET status = 'failed', result_code = $1, result_desc = $2, updated_at = now()
+				WHERE payment_id = $3 AND status NOT IN ('confirmed')`, q.ResultCode, q.ResultDesc, paymentID)
 		}
 		return nil, fmt.Errorf("STK not paid: %s %s", q.ResultCode, q.ResultDesc)
 	}

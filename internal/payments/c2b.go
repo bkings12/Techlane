@@ -95,6 +95,7 @@ func (s *Service) ProcessC2BConfirmation(ctx context.Context, p C2BPayload) erro
 		}
 		if existingPayment != nil && *existingPayment != uuid.Nil {
 			_, _ = s.ConfirmMpesaWebhook(ctx, tenantID, *existingPayment, p.TransID)
+			_ = s.attachMpesaCustomerToSale(ctx, tenantID, *existingPayment, p.MSISDN, joinPersonName(p.FirstName, p.MiddleName, p.LastName))
 			return nil
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -150,7 +151,11 @@ func (s *Service) ProcessC2BConfirmation(ctx context.Context, p C2BPayload) erro
 		return err
 	}
 	_, err = s.ConfirmMpesaWebhook(ctx, tenantID, paymentID, p.TransID)
-	return err
+	if err != nil {
+		return err
+	}
+	_ = s.attachMpesaCustomerToSale(ctx, tenantID, paymentID, p.MSISDN, joinPersonName(p.FirstName, p.MiddleName, p.LastName))
+	return nil
 }
 
 func (s *Service) recordUnmatchedC2B(ctx context.Context, tenantID uuid.UUID, p C2BPayload, raw json.RawMessage) error {
@@ -244,12 +249,14 @@ func (s *Service) MatchC2BToNewSale(ctx context.Context, tenantID, c2bID uuid.UU
 		return nil, fmt.Errorf("quantity must be positive")
 	}
 
-	var status, transID string
+	var status, transID, msisdn, firstName, middleName, lastName string
 	var amount float64
 	err := s.pool.QueryRow(ctx, `
-		SELECT status, COALESCE(trans_id, ''), COALESCE(amount, 0)::float8
+		SELECT status, COALESCE(trans_id, ''), COALESCE(amount, 0)::float8,
+		       COALESCE(msisdn, ''), COALESCE(first_name, ''), COALESCE(middle_name, ''), COALESCE(last_name, '')
 		FROM payments.mpesa_c2b_transactions
-		WHERE tenant_id = $1 AND id = $2`, tenantID, c2bID).Scan(&status, &transID, &amount)
+		WHERE tenant_id = $1 AND id = $2`, tenantID, c2bID).
+		Scan(&status, &transID, &amount, &msisdn, &firstName, &middleName, &lastName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("c2b transaction not found")
@@ -309,6 +316,7 @@ func (s *Service) MatchC2BToNewSale(ctx context.Context, tenantID, c2bID uuid.UU
 	if err != nil {
 		return nil, err
 	}
+	_ = s.attachMpesaCustomerToSale(ctx, tenantID, id, msisdn, joinPersonName(firstName, middleName, lastName))
 	if s.riskHook != nil {
 		_, _ = s.riskHook.ResolveOpenAlertsByEntity(ctx, tenantID, "unmatched_c2b", c2bID, actorID)
 		_, _ = s.riskHook.ResolveOpenAlertsByEntity(ctx, tenantID, "c2b_amount_mismatch", id, actorID)
@@ -351,11 +359,13 @@ func (s *Service) ListC2BTransactions(ctx context.Context, tenantID uuid.UUID, s
 // MatchC2BToPayment links an unmatched/mismatch C2B row to a payment and confirms it.
 func (s *Service) MatchC2BToPayment(ctx context.Context, tenantID, c2bID, paymentID, actorID uuid.UUID) (*Payment, error) {
 	var status string
-	var transID string
+	var transID, msisdn, firstName, middleName, lastName string
 	err := s.pool.QueryRow(ctx, `
-		SELECT status, COALESCE(trans_id, '')
+		SELECT status, COALESCE(trans_id, ''),
+		       COALESCE(msisdn, ''), COALESCE(first_name, ''), COALESCE(middle_name, ''), COALESCE(last_name, '')
 		FROM payments.mpesa_c2b_transactions
-		WHERE tenant_id = $1 AND id = $2`, tenantID, c2bID).Scan(&status, &transID)
+		WHERE tenant_id = $1 AND id = $2`, tenantID, c2bID).
+		Scan(&status, &transID, &msisdn, &firstName, &middleName, &lastName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("c2b transaction not found")
@@ -402,6 +412,7 @@ func (s *Service) MatchC2BToPayment(ctx context.Context, tenantID, c2bID, paymen
 	if err != nil {
 		return nil, err
 	}
+	_ = s.attachMpesaCustomerToSale(ctx, tenantID, paymentID, msisdn, joinPersonName(firstName, middleName, lastName))
 	if s.riskHook != nil {
 		_, _ = s.riskHook.ResolveOpenAlertsByEntity(ctx, tenantID, "unmatched_c2b", c2bID, actorID)
 		_, _ = s.riskHook.ResolveOpenAlertsByEntity(ctx, tenantID, "c2b_amount_mismatch", paymentID, actorID)

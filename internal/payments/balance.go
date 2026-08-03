@@ -15,7 +15,7 @@ func (s *Service) AllocatedTowardPayable(ctx context.Context, tenantID uuid.UUID
 		FROM payments.payment_allocations a
 		JOIN payments.payments p ON p.id = a.payment_id
 		WHERE a.tenant_id = $1 AND a.payable_type = $2 AND a.payable_id = $3
-		  AND p.status IN ('allocated', 'confirmed', 'pending_handover', 'provisional')`,
+		  AND p.status IN ('allocated', 'confirmed', 'provisional')`,
 		tenantID, payableType, payableID).Scan(&paid)
 	return paid, err
 }

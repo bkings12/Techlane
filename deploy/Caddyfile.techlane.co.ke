@@ -8,7 +8,15 @@ git.novaflow.co.ke {
 # --- TechLane hosts ---
 
 app.techlane.co.ke {
-	encode gzip
+	# Don't gzip SSE — buffering breaks EventSource / triggers QUIC errors.
+	@notSSE not path /api/v1/events/stream
+	encode @notSSE gzip
+	@sse path /api/v1/events/stream
+	handle @sse {
+		reverse_proxy 127.0.0.1:8090 {
+			flush_interval -1
+		}
+	}
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8090
 	}
@@ -123,6 +131,17 @@ techlane.co.ke, www.techlane.co.ke {
 }
 
 api.techlane.co.ke {
-	encode gzip
-	reverse_proxy 127.0.0.1:8090
+	# SSE must not be gzipped or buffered — Chrome reports
+	# net::ERR_QUIC_PROTOCOL_ERROR on long-lived compressed streams.
+	@notSSE not path /api/v1/events/stream
+	encode @notSSE gzip
+	@sse path /api/v1/events/stream
+	handle @sse {
+		reverse_proxy 127.0.0.1:8090 {
+			flush_interval -1
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8090
+	}
 }

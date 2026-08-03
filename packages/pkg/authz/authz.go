@@ -118,8 +118,8 @@ func DefaultPermissions(role string) []string {
 			"repairs.authorize_work", "repairs.release_unverified", "repairs.passcode.read", "repairs.edit",
 			"repairs.presets.write",
 			// repairs.price.override stays owner-only via "*"; repairs.edit is manager-safe (reasoned + audited).
-			"parts.approve", "parts.collect", "parts.request", "cash.handover.confirm", "refunds.create", "refunds.approve",
-			"audit.read", "risk.read", "reports.read", "inventory.read", "inventory.adjust", "sales.create", "payments.initiate", "payments.read", "orders.confirm_paid",
+			"parts.approve", "parts.collect", "parts.request", "refunds.create", "refunds.approve",
+			"audit.read", "risk.read", "reports.read", "inventory.read", "inventory.adjust", "sales.create", "sales.price_override", "payments.initiate", "payments.read", "orders.confirm_paid",
 			"commissions.read", "commissions.write", "commissions.approve", "branches.read",
 			"customers.write", "devices.write",
 			"suppliers.read", "suppliers.write", "supplier_credit.reconcile",
@@ -127,7 +127,7 @@ func DefaultPermissions(role string) []string {
 		}
 	case "accountant":
 		return []string{
-			"payments.read", "cash.handover.confirm", "refunds.create", "refunds.approve",
+			"payments.read", "refunds.create", "refunds.approve",
 			"audit.read", "risk.read", "reports.read",
 			"commissions.read", "commissions.approve", "users.read",
 			"suppliers.read", "supplier_credit.reconcile",
@@ -145,7 +145,7 @@ func DefaultPermissions(role string) []string {
 		// release one — but only against a code the owner confirms, never on a vouch.
 		return []string{
 			"repairs.create", "repairs.read", "repairs.collect",
-			"sales.create", "payments.initiate", "cash.receive", "cash.handover.request",
+			"sales.create", "payments.initiate", "cash.receive",
 			"customers.write", "refunds.create", "loyalty.read",
 		}
 	case "branch_admin":

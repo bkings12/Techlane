@@ -190,7 +190,12 @@ fun QuickRepairScreen(branchId: String?, modifier: Modifier = Modifier) {
                         payment = p
                         val status = p.optString("status")
                         if (status == "allocated" || status == "confirmed") {
-                            finishPaidHandover(jobId, current)
+                            // Prefer a fresh job payload so pickup_code is present for handover.
+                            val latestJob = runCatching {
+                                withContext(Dispatchers.IO) { ApiClient.getRepair(jobId) }
+                            }.getOrDefault(current)
+                            job = latestJob
+                            finishPaidHandover(jobId, latestJob)
                             return@launch
                         }
                         if (status == "failed" || status == "cancelled") {
@@ -204,8 +209,23 @@ fun QuickRepairScreen(branchId: String?, modifier: Modifier = Modifier) {
                         }
                     }
                 }
-                payError = "STK timed out — tap Check payment to try again"
-                refreshPayment(jobId)
+                payError = "STK timed out — checking payment status…"
+                val latest = runCatching {
+                    withContext(Dispatchers.IO) { ApiClient.confirmMpesaPayment(paymentId) }
+                }.getOrNull()
+                if (latest != null &&
+                    (latest.optString("status") == "allocated" || latest.optString("status") == "confirmed")
+                ) {
+                    payment = latest
+                    val latestJob = runCatching {
+                        withContext(Dispatchers.IO) { ApiClient.getRepair(jobId) }
+                    }.getOrDefault(current)
+                    job = latestJob
+                    finishPaidHandover(jobId, latestJob)
+                } else {
+                    payError = "STK timed out — tap Check payment to try again"
+                    refreshPayment(jobId)
+                }
             } finally {
                 stkPolling = false
             }
@@ -239,7 +259,7 @@ fun QuickRepairScreen(branchId: String?, modifier: Modifier = Modifier) {
                         branchId = branchId,
                         deviceId = deviceId,
                         problemSummary = problemText,
-                        serviceType = "repair",
+                        serviceType = "quick_fix",
                         customerId = customerId,
                         laborAmount = value,
                     )
@@ -537,7 +557,7 @@ fun QuickRepairScreen(branchId: String?, modifier: Modifier = Modifier) {
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             if (payment?.optString("method") == "mpesa_stk" &&
-                                payment?.optString("status") in setOf("initiated", "pending")
+                                payment?.optString("status") !in setOf("allocated", "confirmed", "failed", "cancelled")
                             ) {
                                 OutlinedButton(
                                     onClick = { reconcile() },
@@ -549,6 +569,36 @@ fun QuickRepairScreen(branchId: String?, modifier: Modifier = Modifier) {
                     } else {
                         FormSection("Paid") {
                             Text("Payment recorded ✓", color = Brand.Success, style = MaterialTheme.typography.titleMedium)
+                            val status = j.optString("status")
+                            val needsHandover = status != "collected" &&
+                                j.optString("pickup_code").takeIf { it.isNotBlank() && it != "null" } != null
+                            if (needsHandover) {
+                                Text(
+                                    "Device still needs handover — open this job from Jobs to finish collection, or tap below.",
+                                    color = Brand.Warning,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                GoldButton(
+                                    text = if (payBusy) "Finishing…" else "Finish handover & print",
+                                    onClick = {
+                                        payBusy = true
+                                        scope.launch {
+                                            try {
+                                                val latest = withContext(Dispatchers.IO) { ApiClient.getRepair(j.getString("id")) }
+                                                job = latest
+                                                finishPaidHandover(latest.getString("id"), latest)
+                                            } catch (e: Exception) {
+                                                payError = e.message ?: "Could not finish handover"
+                                            } finally {
+                                                payBusy = false
+                                            }
+                                        }
+                                    },
+                                    enabled = !payBusy && !printBusy,
+                                    loading = payBusy,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                             GoldButton(
                                 text = if (printBusy) "Opening printer…" else "Print receipt",
                                 onClick = {

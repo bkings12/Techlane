@@ -2,12 +2,21 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useBranch } from "../branch/BranchContext";
 import { Badge, Button, EmptyState, PageHeader } from "../components/ui";
-import { listSales, listStockLocations, openSaleReceipt, reverseSale, type Sale } from "../lib/api";
+import {
+  completeSale,
+  confirmMpesaPayment,
+  getSale,
+  listSales,
+  listStockLocations,
+  openSaleReceipt,
+  reverseSale,
+  type Sale,
+} from "../lib/api";
 
 function saleTone(status: string): "success" | "warning" | "danger" | "info" | "pending" {
   if (status === "completed") return "success";
   if (status === "reversed") return "danger";
-  if (status === "pending" || status === "awaiting_payment") return "pending";
+  if (status === "draft" || status === "pending" || status === "awaiting_payment") return "pending";
   return "info";
 }
 
@@ -17,6 +26,7 @@ export function SalesHistoryPage() {
   const [locationId, setLocationId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busySaleId, setBusySaleId] = useState("");
 
   const refresh = useCallback(async () => {
     const [salesRes, locs] = await Promise.all([
@@ -60,6 +70,34 @@ export function SalesHistoryPage() {
     }
   }
 
+  async function checkAndComplete(sale: Sale) {
+    if (!locationId || !sale.payment_id) {
+      setError("Missing stock location or payment for this draft sale");
+      return;
+    }
+    setBusy(true);
+    setBusySaleId(sale.id);
+    setError("");
+    try {
+      await confirmMpesaPayment(sale.payment_id);
+      // Webhook/hooks may have completed already — only complete if still draft.
+      let current = await getSale(sale.id);
+      if (current.status === "draft") {
+        current = await completeSale(sale.id, locationId);
+      }
+      await refresh();
+      if (current.status !== "draft") {
+        await openSaleReceipt(sale.id).catch(() => undefined);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not complete sale");
+      await refresh().catch(() => undefined);
+    } finally {
+      setBusy(false);
+      setBusySaleId("");
+    }
+  }
+
   return (
     <div className="page">
       <PageHeader
@@ -89,6 +127,7 @@ export function SalesHistoryPage() {
             <thead>
               <tr>
                 <th>Sale</th>
+                <th>Customer</th>
                 <th>When</th>
                 <th>Total</th>
                 <th>Status</th>
@@ -99,6 +138,7 @@ export function SalesHistoryPage() {
               {sales.map((s) => (
                 <tr key={s.id}>
                   <td className="mono">{s.id.slice(0, 8)}…</td>
+                  <td>{s.customer_name || <span className="muted">—</span>}</td>
                   <td className="muted">{s.created_at ? new Date(s.created_at).toLocaleString() : "—"}</td>
                   <td className="mono">KES {s.total.toLocaleString()}</td>
                   <td>
@@ -109,6 +149,16 @@ export function SalesHistoryPage() {
                       <Button type="button" variant="ghost" onClick={() => void printReceipt(s.id)}>
                         Receipt
                       </Button>
+                      {s.status === "draft" && s.payment_method === "mpesa_stk" ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={busy || !locationId || !s.payment_id}
+                          onClick={() => void checkAndComplete(s)}
+                        >
+                          {busySaleId === s.id ? "Checking…" : "Check & complete"}
+                        </Button>
+                      ) : null}
                       {s.status === "completed" ? (
                         <Button
                           type="button"

@@ -66,3 +66,14 @@ func (a SalesQuickSaleAdapter) CreateQuickSale(ctx context.Context, in QuickSale
 	}
 	return a.Svc.CompleteSale(ctx, in.TenantID, sale.ID, in.LocationID, in.ActorID, in.CorrID)
 }
+
+// SalesPaidAdapter completes a draft POS sale after its STK/C2B payment allocates.
+type SalesPaidAdapter struct {
+	Svc interface {
+		CompletePaidDraftSale(ctx context.Context, tenantID, saleID, actorID uuid.UUID) error
+	}
+}
+
+func (a SalesPaidAdapter) OnSalePaymentSettled(ctx context.Context, tenantID, saleID, actorID uuid.UUID) error {
+	return a.Svc.CompletePaidDraftSale(ctx, tenantID, saleID, actorID)
+}

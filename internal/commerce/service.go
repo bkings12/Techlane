@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/techlane/techlane/internal/inventory"
+	"github.com/techlane/techlane/internal/notify"
 	"github.com/techlane/techlane/internal/storefrontcms"
 )
 
@@ -56,19 +57,20 @@ type OrderPlacedNotifier interface {
 }
 
 type OnlineOrderNotify struct {
-	TenantID         uuid.UUID
-	BranchID         uuid.UUID
-	OrderID          uuid.UUID
-	Total            float64
-	Currency         string
-	ShopName         string
-	OwnerPhone       string
-	CustomerName     string
-	CustomerPhone    string
-	FulfilmentType   string
-	CollectionCode   string
-	DeliverySummary  string
-	ItemCount        int
+	TenantID        uuid.UUID
+	BranchID        uuid.UUID
+	OrderID         uuid.UUID
+	Total           float64
+	Currency        string
+	ShopName        string
+	OwnerPhone      string   // legacy single number
+	OwnerPhones     []string // preferred — all shop alert numbers
+	CustomerName    string
+	CustomerPhone   string
+	FulfilmentType  string
+	CollectionCode  string
+	DeliverySummary string
+	ItemCount       int
 }
 
 func NewService(pool *pgxpool.Pool, inv *inventory.Service, storefront *storefrontcms.Service) *Service {
@@ -351,21 +353,42 @@ func (s *Service) notifyOrderPlaced(ctx context.Context, tenantID uuid.UUID, req
 		return
 	}
 	shopName := "Shop"
-	ownerPhone := ""
+	var phoneCandidates []string
 	if s.storefront != nil {
 		if settings, err := s.storefront.GetSettings(ctx, tenantID); err == nil {
 			if n := strings.TrimSpace(settings.ShopDisplayName); n != "" {
 				shopName = n
 			}
-			ownerPhone = strings.TrimSpace(settings.ContactPhone)
+			phoneCandidates = append(phoneCandidates, settings.ContactPhone)
 		}
 	}
-	if ownerPhone == "" {
-		_ = s.pool.QueryRow(ctx, `
-			SELECT COALESCE(NULLIF(TRIM(phone), ''), '')
-			FROM identity.branches WHERE tenant_id=$1 AND id=$2`,
-			tenantID, req.BranchID).Scan(&ownerPhone)
+	// Receipt letterhead + shop WhatsApp often hold the real counter numbers
+	// even when storefront contact_phone was left blank.
+	var receiptPhone, shopWA, branchPhone string
+	_ = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(phone), ''), '')
+		FROM platform.receipt_settings WHERE tenant_id = $1`, tenantID).Scan(&receiptPhone)
+	_ = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(whatsapp_number), ''), '')
+		FROM identity.shop_profiles WHERE tenant_id = $1`, tenantID).Scan(&shopWA)
+	_ = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(phone), ''), '')
+		FROM identity.branches WHERE tenant_id = $1 AND id = $2`,
+		tenantID, req.BranchID).Scan(&branchPhone)
+	phoneCandidates = append(phoneCandidates, receiptPhone, shopWA, branchPhone)
+
+	seen := map[string]struct{}{}
+	var ownerPhones []string
+	for _, raw := range phoneCandidates {
+		for _, p := range notify.SplitPhoneList(raw) {
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			ownerPhones = append(ownerPhones, p)
+		}
 	}
+
 	deliverySummary := ""
 	if req.FulfilmentType == "delivery" {
 		parts := []string{order.DeliveryLocationName}
@@ -383,6 +406,10 @@ func (s *Service) notifyOrderPlaced(ctx context.Context, tenantID uuid.UUID, req
 		}
 		deliverySummary = strings.Join(parts, ", ")
 	}
+	ownerPhone := ""
+	if len(ownerPhones) > 0 {
+		ownerPhone = ownerPhones[0]
+	}
 	_ = s.notifier.NotifyOnlineOrderPlaced(ctx, OnlineOrderNotify{
 		TenantID:        tenantID,
 		BranchID:        req.BranchID,
@@ -391,6 +418,7 @@ func (s *Service) notifyOrderPlaced(ctx context.Context, tenantID uuid.UUID, req
 		Currency:        "KES",
 		ShopName:        shopName,
 		OwnerPhone:      ownerPhone,
+		OwnerPhones:     ownerPhones,
 		CustomerName:    req.CustomerName,
 		CustomerPhone:   req.Phone,
 		FulfilmentType:  req.FulfilmentType,
@@ -454,7 +482,7 @@ func (s *Service) ManualConfirmPaid(ctx context.Context, tenantID, orderID, acto
 			  AND p.tenant_id = $1
 			  AND a.payable_type = 'order' AND a.payable_id = $2
 			  AND p.method IN ('cash_on_pickup', 'cash')
-			  AND p.status IN ('pending', 'pending_handover')`, tenantID, orderID)
+			  AND p.status IN ('pending')`, tenantID, orderID)
 		if allocErr != nil {
 			return allocErr
 		}
@@ -794,6 +822,10 @@ func (s *Service) PublicStorefrontContent(ctx context.Context, tenantID uuid.UUI
 		}
 		out.Banners = banners
 	}
+	_ = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(bargain_enabled, false), COALESCE(whatsapp_number, '')
+		FROM identity.shop_profiles WHERE tenant_id = $1`, tenantID).
+		Scan(&out.Settings.BargainEnabled, &out.Settings.WhatsAppNumber)
 	cats, err := s.inv.ListOnlineCategories(ctx, tenantID)
 	if err != nil {
 		return nil, err

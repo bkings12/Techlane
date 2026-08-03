@@ -483,7 +483,7 @@ func (s *Service) repairPaymentAmounts(ctx context.Context, tenantID, repairID u
 		FROM payments.payments p
 		JOIN payments.payment_allocations a ON a.payment_id = p.id
 		WHERE p.tenant_id = $1 AND a.payable_type = 'repair' AND a.payable_id = $2
-		  AND p.status IN ('allocated', 'confirmed', 'pending_handover', 'provisional')`, tenantID, repairID).Scan(&paid)
+		  AND p.status IN ('allocated', 'confirmed', 'provisional')`, tenantID, repairID).Scan(&paid)
 	if err != nil {
 		return uuid.Nil, 0, 0, "", "", err
 	}

@@ -79,18 +79,11 @@ function OwnerHome() {
     [repairs],
   );
   const openRisk = summary?.risk_open_total ?? alerts.length;
-  const shortages = summary?.shortage_amount_period ?? 0;
-  const provisional = summary?.payments_cash_provisional ?? 0;
   const sales = summary?.sales_completed_period ?? 0;
   const stkPending = summary?.payments_stk_pending ?? 0;
   const ready = summary?.repairs_ready ?? 0;
-  const cashToReconcile = provisional + shortages;
-  const cashTone: "warn" | "danger" | undefined =
-    shortages > 0 ? "warn" : provisional > 0 && days === 1 ? "danger" : undefined;
-  const cashHint =
-    stkPending > 0
-      ? `${stkPending} STK pending`
-      : `${days === 1 ? "Today" : `${days}d`} window`;
+  const cashTone: "warn" | "danger" | undefined = stkPending > 0 ? "warn" : undefined;
+  const cashHint = `${days === 1 ? "Today" : `${days}d`} window`;
 
   // TODO: surface supplier_credit_outstanding / sync backlog in Needs attention when
   // listRiskAlerts emits dedicated kinds (none today for supplier credit or sync).
@@ -144,8 +137,8 @@ function OwnerHome() {
           hint={`${summary?.sales_count_period ?? 0} transactions`}
         />
         <KpiCard
-          label="Cash to reconcile"
-          value={formatMoney(cashToReconcile)}
+          label="STK pending"
+          value={formatMoney(stkPending)}
           icon={KPI_ICONS.cash}
           tone={cashTone}
           to="/payments"
@@ -295,7 +288,7 @@ function CashierHome() {
         </Link>
         <Link to="/payments">
           <strong>Cash & payments</strong>
-          <em>Drawer and handovers</em>
+          <em>Ledger and refunds</em>
         </Link>
         <Link to="/inventory">
           <strong>Stock check</strong>
@@ -326,13 +319,9 @@ function AccountantHome() {
           <span>Allocated (7d)</span>
           <strong>{formatMoney(summary?.payments_allocated_period ?? 0)}</strong>
         </div>
-        <div className="leakage-tile">
-          <span>Provisional cash</span>
-          <strong>{formatMoney(summary?.payments_cash_provisional ?? 0)}</strong>
-        </div>
-        <div className={`leakage-tile ${(summary?.shortage_amount_period ?? 0) > 0 ? "warn" : ""}`}>
-          <span>Shortages</span>
-          <strong>{formatMoney(summary?.shortage_amount_period ?? 0)}</strong>
+        <div className={`leakage-tile ${(summary?.payments_stk_pending ?? 0) > 0 ? "warn" : ""}`}>
+          <span>STK pending</span>
+          <strong>{formatMoney(summary?.payments_stk_pending ?? 0)}</strong>
         </div>
         <div className="leakage-tile">
           <span>Supplier credit</span>
@@ -345,8 +334,8 @@ function AccountantHome() {
           <em>Period snapshot</em>
         </Link>
         <Link to="/payments">
-          <strong>Handovers</strong>
-          <em>Confirm and shortages</em>
+          <strong>Payments</strong>
+          <em>Ledger and refunds</em>
         </Link>
         <Link to="/risk">
           <strong>Risk</strong>

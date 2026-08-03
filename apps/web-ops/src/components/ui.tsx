@@ -6,6 +6,7 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 import { forwardRef, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 function combineClasses(base: string, extra?: string) {
   return extra ? `${base} ${extra}`.trim() : base;
@@ -330,7 +331,9 @@ export function PhotoCaptureField({
   );
 }
 
-/** Non-dismissible wait dialog while STK PIN entry / Daraja Query settles. */
+/** Non-dismissible wait dialog while STK PIN entry / Daraja Query settles.
+ * Portaled to document.body so position:fixed isn't trapped by transformed ancestors
+ * (e.g. the mobile sidebar's translateX containing block). */
 export function StkWaitOverlay({
   visible,
   message = "Waiting for M-Pesa",
@@ -343,7 +346,8 @@ export function StkWaitOverlay({
   success?: string;
 }) {
   if (!visible && !success) return null;
-  return (
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div className="stk-wait-overlay" role="alertdialog" aria-modal="true" aria-live="polite">
       <div className="stk-wait-card">
         {success ? (
@@ -361,12 +365,16 @@ export function StkWaitOverlay({
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
 export function isTerminalStkError(message: string): boolean {
   const m = message.toLowerCase();
+  if (m.includes("stk pending") || m.includes("under processing") || m.includes("being processed") || m.includes("still processing")) {
+    return false;
+  }
   return ["1032", "1037", "cancelled", "canceled", "ds timeout", "request cancelled"].some((t) => m.includes(t));
 }
 

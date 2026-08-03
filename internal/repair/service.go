@@ -701,7 +701,7 @@ func (s *Service) CreateRepair(ctx context.Context, in CreateRepairInput) (*Repa
 	if serviceType == "" {
 		serviceType = "repair"
 	}
-	if serviceType != "repair" && serviceType != "quick_replacement" {
+	if serviceType != "repair" && serviceType != "quick_replacement" && serviceType != "quick_fix" {
 		return nil, fmt.Errorf("invalid service_type")
 	}
 	if in.CustomerCredit {
@@ -917,7 +917,7 @@ func (s *Service) ListRepairs(ctx context.Context, tenantID uuid.UUID, f ListRep
 				WHERE a.tenant_id = j.tenant_id
 				  AND a.payable_type = 'repair'
 				  AND a.payable_id = j.id
-				  AND p.status IN ('allocated', 'confirmed', 'pending_handover', 'provisional')
+				  AND p.status IN ('allocated', 'confirmed', 'provisional')
 			), 0),
 			d.kind, d.brand, d.model, d.imei
 		FROM repair.repair_jobs j
@@ -1700,8 +1700,8 @@ func (s *Service) fireRepairCompletedSideEffects(ctx context.Context, tenantID, 
 }
 
 // outstandingRepairBalance returns the amount still owed on a repair.
-// Provisional / pending_handover cash is already credited inside RepairPaymentContext
-// (counter cash can release the device before the till is closed out) — do not subtract again.
+// Paid amounts (including any legacy provisional rows) are already credited inside
+// RepairPaymentContext — do not subtract again.
 func (s *Service) outstandingRepairBalance(ctx context.Context, tenantID, repairID uuid.UUID) (float64, error) {
 	_, balance, _, _, err := s.RepairPaymentContext(ctx, tenantID, repairID)
 	return balance, err

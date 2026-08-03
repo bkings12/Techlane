@@ -13,8 +13,8 @@ android {
         applicationId = "com.techlane.ops"
         minSdk = 26
         targetSdk = 35
-        versionCode = 33
-        versionName = "0.1.32"
+        versionCode = 36
+        versionName = "0.1.35"
         buildConfigField("String", "API_BASE", "\"http://10.0.2.2:8080/api/v1\"")
     }
 

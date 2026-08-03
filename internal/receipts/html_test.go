@@ -167,15 +167,14 @@ func TestWriteSamples(t *testing.T) {
 
 func TestPrettyStatusCustomerFacing(t *testing.T) {
 	cases := map[string]string{
-		"pending_handover": "Paid",
-		"provisional":      "Paid",
-		"allocated":        "Paid",
-		"confirmed":        "Paid",
-		"pending":          "Pending",
-		"initiated":        "Pending",
-		"failed":           "Failed",
-		"refunded":         "Refunded",
-		"":                 "",
+		"provisional": "Paid",
+		"allocated":   "Paid",
+		"confirmed":   "Paid",
+		"pending":     "Pending",
+		"initiated":   "Pending",
+		"failed":      "Failed",
+		"refunded":    "Refunded",
+		"":            "",
 	}
 	for in, want := range cases {
 		if got := prettyStatus(in); got != want {
@@ -184,17 +183,14 @@ func TestPrettyStatusCustomerFacing(t *testing.T) {
 	}
 }
 
-func TestRenderHTMLCashPendingHandoverPrintsPaid(t *testing.T) {
+func TestRenderHTMLCashConfirmedPrintsPaid(t *testing.T) {
 	doc := SampleDocument(KindRepair, "KES", 1600, true)
 	now := doc.IssuedAt
 	doc.Payments = []PaymentLine{
-		{Method: "cash", Amount: 5500, Status: "pending_handover", At: &now},
+		{Method: "cash", Amount: 5500, Status: "confirmed", At: &now},
 	}
 	out := RenderHTML(sampleShop(), doc, sampleSettings(), PaperThermal80)
 	if !strings.Contains(out, "Paid") {
 		t.Fatal("receipt should show Paid for counter cash")
-	}
-	if strings.Contains(out, "Pending Handover") || strings.Contains(out, "pending_handover") {
-		t.Fatal("receipt must not expose internal till-handover status to the customer")
 	}
 }

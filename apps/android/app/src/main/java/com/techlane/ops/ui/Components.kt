@@ -63,6 +63,47 @@ val StringIntMapSaver: Saver<Map<String, Int>, String> = Saver(
     },
 )
 
+/** Catalog POS cart line — quantity plus an optional bargained sell price. */
+data class PosCartLine(
+    val variantId: String,
+    val qty: Int,
+    val listPrice: Double,
+    val overridePrice: Double? = null,
+    val overrideReason: String = "",
+) {
+    fun unitPrice(): Double = overridePrice ?: listPrice
+
+    fun isBargained(): Boolean {
+        val ov = overridePrice ?: return false
+        return kotlin.math.abs(ov - listPrice) > 0.009
+    }
+
+    fun toJson(): JSONObject {
+        val o = JSONObject()
+            .put("variant_id", variantId)
+            .put("qty", qty)
+            .put("list_price", listPrice)
+            .put("override_reason", overrideReason)
+        if (overridePrice != null) o.put("override_price", overridePrice) else o.put("override_price", JSONObject.NULL)
+        return o
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject) = PosCartLine(
+            variantId = o.getString("variant_id"),
+            qty = o.getInt("qty"),
+            listPrice = o.getDouble("list_price"),
+            overridePrice = if (o.isNull("override_price")) null else o.optDouble("override_price"),
+            overrideReason = o.optString("override_reason"),
+        )
+    }
+}
+
+val PosCartLineListSaver: Saver<List<PosCartLine>, List<String>> = Saver(
+    save = { list -> list.map { it.toJson().toString() } },
+    restore = { list -> list.map { PosCartLine.fromJson(JSONObject(it)) } },
+)
+
 /** Same idea as JsonObjectSaver, for a small list of records (e.g. quick-sale cart
  * lines) — round-trips each element through its string form. */
 val JsonListSaver: Saver<List<JSONObject>, List<String>> = Saver(

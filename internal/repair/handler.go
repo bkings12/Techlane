@@ -68,6 +68,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("PATCH /repairs/{id}", auth(httpx.RequirePermission("repairs.edit")(http.HandlerFunc(h.updateRepairDetails))))
 	mux.Handle("GET /repairs/{id}/receipt", auth(http.HandlerFunc(h.staffRepairReceipt)))
 	mux.Handle("GET /repairs/{id}/receipt.html", auth(http.HandlerFunc(h.staffRepairReceiptHTML)))
+	mux.Handle("GET /repairs/{id}/receipt.escpos", auth(http.HandlerFunc(h.staffRepairReceiptESCPOS)))
 	mux.Handle("GET /repairs/{id}/receipt.pdf", auth(http.HandlerFunc(h.staffRepairReceiptPDF)))
 	mux.Handle("GET /repairs/{id}/tax-invoice.pdf", auth(http.HandlerFunc(h.staffRepairTaxInvoicePDF)))
 	mux.Handle("GET /repairs/{id}/warranty", auth(http.HandlerFunc(h.getWarranty)))
@@ -93,6 +94,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("POST /repairs/collect", auth(http.HandlerFunc(h.collectByPickupCode)))
 	mux.Handle("GET /repairs/by-pickup-code", auth(http.HandlerFunc(h.lookupByPickupCode)))
 	mux.Handle("GET /repairs/{id}/intake-slip.html", auth(http.HandlerFunc(h.staffIntakeSlipHTML)))
+	mux.Handle("GET /repairs/{id}/intake-slip.escpos", auth(http.HandlerFunc(h.staffIntakeSlipESCPOS)))
 	mux.Handle("DELETE /repairs/{id}", auth(http.HandlerFunc(h.deleteRepair)))
 	mux.Handle("POST /repairs/{id}/restore", auth(http.HandlerFunc(h.restoreRepair)))
 	mux.Handle("DELETE /repairs/{id}/purge", auth(http.HandlerFunc(h.purgeRepair)))
@@ -485,6 +487,42 @@ func (h *Handler) staffRepairReceiptHTML(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.writeReceiptHTML(w, r, claims.TenantID, doc, false)
+}
+
+func (h *Handler) staffRepairReceiptESCPOS(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if h.receipts == nil {
+		apierrors.Write(w, http.StatusServiceUnavailable, "UNAVAILABLE", "receipt renderer not configured", httpx.CorrelationID(r.Context()))
+		return
+	}
+	repairID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	doc, err := h.svc.BuildCustomerReceipt(r.Context(), claims.TenantID, repairID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		apierrors.Write(w, status, "RECEIPT_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	body, err := h.receipts.RenderESCPOS(r.Context(), claims.TenantID, doc.ToReceiptDocument(false), doc.RepairID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, doc.JobCode+"-receipt.escpos"))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // writeReceiptHTML renders through the branded engine when it is wired up,
@@ -1690,6 +1728,37 @@ func (h *Handler) staffIntakeSlipHTML(w http.ResponseWriter, r *http.Request) {
 	receipts.SetPrintableHTMLHeaders(w)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(doc.IntakeSlipHTML()))
+}
+
+func (h *Handler) staffIntakeSlipESCPOS(w http.ResponseWriter, r *http.Request) {
+	doc, tenantID, ok := h.loadStaffReceipt(w, r)
+	if !ok {
+		return
+	}
+	if h.receipts == nil {
+		apierrors.Write(w, http.StatusServiceUnavailable, "UNAVAILABLE", "receipt renderer not configured", httpx.CorrelationID(r.Context()))
+		return
+	}
+	h.applyReceiptLetterhead(r.Context(), tenantID, doc)
+	set, err := h.receipts.GetSettings(r.Context(), tenantID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	// Intake has no money / warranty block — short collection reminder only.
+	set.ThankYouText = "Keep this slip for collection."
+	set.WarrantyText = ""
+	set.FooterText = "Final charges appear on your repair receipt."
+	set.ShowVATBreakdown = false
+	set.ShowPayments = false
+	set.ShowBalance = false
+	shop := h.receipts.LoadShop(r.Context(), tenantID, set)
+	body := receipts.BuildESCPOS(shop, doc.ToIntakeDocument(), set)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, doc.JobCode+"-intake.escpos"))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // applyReceiptLetterhead copies slogan / phone / email from receipt settings so

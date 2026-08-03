@@ -95,7 +95,7 @@ function ReviewsSection({ productId }: { productId: string }) {
 export function ProductPage() {
   const { variantId } = useParams();
   const navigate = useNavigate();
-  const { catalog, cart, setQty, addOne, pickup, formatPrice } = useStorefront();
+  const { catalog, cart, setQty, addOne, pickup, formatPrice, content } = useStorefront();
   const selected = variantId ? catalog.find((c) => c.variant_id === variantId) ?? null : null;
 
   useEffect(() => {
@@ -134,6 +134,14 @@ export function ProductPage() {
   const qty = cart[selected.variant_id] ?? 0;
   const onDeal = selected.original_price != null && selected.original_price > selected.sell_price;
   const imageSrc = catalogItemImageURL(selected);
+  const bargainEnabled = !!content?.settings?.bargain_enabled;
+  const whatsappDigits = (content?.settings?.whatsapp_number || "").replace(/\D/g, "");
+  const bargainHref =
+    bargainEnabled && whatsappDigits
+      ? `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(
+          `Hi, I'm interested in ${selected.product_name} (KES ${selected.sell_price.toLocaleString()}) — is the price negotiable?`,
+        )}`
+      : null;
 
   return (
     <section className="wide-page product-detail">
@@ -201,6 +209,11 @@ export function ProductPage() {
               <button type="button" className="btn" disabled={selected.available_qty <= 0} onClick={() => addOne(selected)}>
                 Add to cart
               </button>
+              {bargainHref ? (
+                <a className="btn btn-ghost" href={bargainHref} target="_blank" rel="noreferrer">
+                  Bargain
+                </a>
+              ) : null}
             </div>
             {qty > 0 ? (
               <div className="stack" style={{ justifyContent: "flex-start", marginTop: "0.75rem" }}>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Prefer external-files over cache — OEM cameras often reject cache URIs ("Couldn't access SD card"). -->
+    <external-files-path name="camera_ext" path="camera/" />
+    <files-path name="camera_files" path="camera/" />
+    <cache-path name="camera_cache" path="camera/" />
+</paths>

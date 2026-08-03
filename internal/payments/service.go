@@ -20,6 +20,7 @@ type Service struct {
 	riskHook         RiskHook
 	orderPaidHook    OrderPaidHook
 	repairPaidHook   RepairPaidHook
+	salePaidHook     SalePaidHook
 	outstanding      OutstandingResolver
 	quickSaleCreator QuickSaleCreator
 }
@@ -40,6 +41,15 @@ func (s *Service) SetOrderPaidHook(h OrderPaidHook) {
 
 func (s *Service) SetRepairPaidHook(h RepairPaidHook) {
 	s.repairPaidHook = h
+}
+
+func (s *Service) SetSalePaidHook(h SalePaidHook) {
+	s.salePaidHook = h
+}
+
+// SalePaidHook completes a draft POS sale after its payment allocates (STK webhook path).
+type SalePaidHook interface {
+	OnSalePaymentSettled(ctx context.Context, tenantID, saleID, actorID uuid.UUID) error
 }
 
 func (s *Service) SetOutstandingResolver(fn OutstandingResolver) {
@@ -109,7 +119,12 @@ func (s *Service) notifyPayableHooks(ctx context.Context, tenantID, paymentID, a
 		(payStatus == "allocated" || payStatus == "confirmed") {
 		_ = s.orderPaidHook.OnOrderPaid(ctx, tenantID, payableID, actorID)
 	}
-	// Repairs: cash provisional counts toward handoff; digital waits until allocated.
+	// POS sales: complete draft + deduct stock once STK/C2B money is allocated.
+	if payableType == "sale" && s.salePaidHook != nil &&
+		(payStatus == "allocated" || payStatus == "confirmed") {
+		_ = s.salePaidHook.OnSalePaymentSettled(ctx, tenantID, payableID, actorID)
+	}
+	// Repairs: settled cash/credit counts toward handoff; digital waits until allocated.
 	if payableType == "repair" && s.repairPaidHook != nil {
 		_ = s.repairPaidHook.OnRepairPaymentSettled(ctx, tenantID, payableID, actorID)
 	}
@@ -130,18 +145,6 @@ type Payment struct {
 	CustomerID        *uuid.UUID `json:"customer_id,omitempty"`
 	CustomerName      string     `json:"customer_name,omitempty"`
 	SaleLabel         string     `json:"sale_label,omitempty"`
-}
-
-type CashHandover struct {
-	ID           uuid.UUID  `json:"id"`
-	BranchID     uuid.UUID  `json:"branch_id"`
-	FromUserID   uuid.UUID  `json:"from_user_id"`
-	ToUserID     *uuid.UUID `json:"to_user_id,omitempty"`
-	Amount       float64    `json:"amount"`
-	Status       string     `json:"status"`
-	Shortage     float64    `json:"shortage_amount"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ConfirmedAt  *time.Time `json:"confirmed_at,omitempty"`
 }
 
 type Refund struct {
@@ -415,10 +418,12 @@ func (s *Service) ConfirmMpesaWebhook(ctx context.Context, tenantID, paymentID u
 					WHERE payment_id = $2`, betterRef, paymentID)
 			}
 		}
+		s.afterDigitalPaymentSettled(ctx, tenantID, paymentID, method, uuid.Nil)
 		return &Payment{ID: paymentID, Method: method, Amount: amount, Status: status}, nil
 	}
 
 	if status == "allocated" || status == "confirmed" {
+		s.afterDigitalPaymentSettled(ctx, tenantID, paymentID, method, uuid.Nil)
 		return &Payment{ID: paymentID, Method: method, Amount: amount, Status: status}, nil
 	}
 
@@ -471,183 +476,17 @@ func (s *Service) ConfirmMpesaWebhook(ctx context.Context, tenantID, paymentID u
 	if s.riskHook != nil {
 		_, _ = s.riskHook.ResolveOpenAlertsByEntity(ctx, tenantID, "unverified_payment", paymentID, uuid.Nil)
 	}
-	s.notifyPayableHooks(ctx, tenantID, paymentID, uuid.Nil)
+	// Customer attach before sale completion so receipts can show a resolved name.
+	s.afterDigitalPaymentSettled(ctx, tenantID, paymentID, method, uuid.Nil)
 	s.publishPaymentConfirmed(ctx, tenantID, paymentID, uuid.Nil, uuid.New())
 	return &Payment{ID: paymentID, Method: method, Amount: amount, Status: "allocated"}, nil
 }
 
-func (s *Service) RequestCashHandover(ctx context.Context, tenantID, branchID, fromUser uuid.UUID, toUser *uuid.UUID, amount float64, corrID uuid.UUID) (*CashHandover, error) {
-	if amount <= 0 {
-		return nil, fmt.Errorf("amount must be positive")
-	}
-	id := uuid.New()
-	now := time.Now().UTC()
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO payments.cash_handovers (id, tenant_id, branch_id, from_user_id, to_user_id, amount, status, correlation_id)
-		VALUES ($1, $2, $3, $4, $5, $6, 'requested', $7)`,
-		id, tenantID, branchID, fromUser, toUser, amount, corrID)
-	if err != nil {
-		return nil, err
-	}
-	return &CashHandover{
-		ID: id, BranchID: branchID, FromUserID: fromUser, ToUserID: toUser,
-		Amount: amount, Status: "requested", CreatedAt: now,
-	}, nil
-}
-
-func (s *Service) ListCashHandovers(ctx context.Context, tenantID uuid.UUID, status string) ([]CashHandover, error) {
-	q := `
-		SELECT id, branch_id, from_user_id, to_user_id, amount::float8, status, COALESCE(shortage_amount,0)::float8, created_at, confirmed_at
-		FROM payments.cash_handovers WHERE tenant_id = $1`
-	args := []any{tenantID}
-	if status != "" {
-		q += ` AND status = $2`
-		args = append(args, status)
-	}
-	q += ` ORDER BY created_at DESC LIMIT 100`
-	rows, err := s.pool.Query(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []CashHandover
-	for rows.Next() {
-		var h CashHandover
-		if err := rows.Scan(&h.ID, &h.BranchID, &h.FromUserID, &h.ToUserID, &h.Amount, &h.Status, &h.Shortage, &h.CreatedAt, &h.ConfirmedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, h)
-	}
-	if items == nil {
-		items = []CashHandover{}
-	}
-	return items, nil
-}
-
-func (s *Service) PendingCashTotal(ctx context.Context, tenantID, userID uuid.UUID) (float64, error) {
-	var total float64
-	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount), 0)::float8 FROM payments.payments
-		WHERE tenant_id = $1 AND received_by = $2 AND method = 'cash' AND status = 'pending_handover'`,
-		tenantID, userID).Scan(&total)
-	return total, err
-}
-
-func (s *Service) ConfirmCashHandover(ctx context.Context, tenantID, handoverID, confirmer uuid.UUID, countedAmount *float64) (*CashHandover, error) {
-	var fromUser, branchID uuid.UUID
-	var amount float64
-	var status string
-	var toUser *uuid.UUID
-	var createdAt time.Time
-	err := s.pool.QueryRow(ctx, `
-		SELECT from_user_id, to_user_id, branch_id, amount::float8, status, created_at FROM payments.cash_handovers
-		WHERE tenant_id = $1 AND id = $2`, tenantID, handoverID).
-		Scan(&fromUser, &toUser, &branchID, &amount, &status, &createdAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("handover not found")
-		}
-		return nil, err
-	}
-	if status != "requested" {
-		return nil, fmt.Errorf("handover not in requested state")
-	}
-	if err := ValidateHandoverConfirm(fromUser.String(), confirmer.String()); err != nil {
-		return nil, err
-	}
-
-	counted := amount
-	if countedAmount != nil {
-		if *countedAmount < 0 {
-			return nil, fmt.Errorf("counted_amount cannot be negative")
-		}
-		counted = *countedAmount
-	}
-	shortage := amount - counted
-	if shortage < 0 {
-		shortage = 0 // overage ignored for MVP
-	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	now := time.Now().UTC()
-	_, err = tx.Exec(ctx, `
-		UPDATE payments.cash_handovers
-		SET status = 'confirmed', confirmed_by = $1, confirmed_at = $2, shortage_amount = $3
-		WHERE id = $4`, confirmer, now, shortage, handoverID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Settle provisional cash for the handing-over employee up to the declared handover amount (FIFO).
-	rows, err := tx.Query(ctx, `
-		SELECT id, amount::float8 FROM payments.payments
-		WHERE tenant_id = $1 AND received_by = $2 AND method = 'cash' AND status = 'pending_handover'
-		ORDER BY created_at ASC
-		FOR UPDATE`, tenantID, fromUser)
-	if err != nil {
-		return nil, err
-	}
-	remaining := amount
-	var settleIDs []uuid.UUID
-	for rows.Next() {
-		var pid uuid.UUID
-		var pamt float64
-		if err := rows.Scan(&pid, &pamt); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if remaining <= 0 {
-			break
-		}
-		settleIDs = append(settleIDs, pid)
-		remaining -= pamt
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, pid := range settleIDs {
-		_, err = tx.Exec(ctx, `
-			UPDATE payments.payments SET status = 'allocated', updated_at = now(), version = version + 1
-			WHERE id = $1`, pid)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	if shortage > 0.009 && s.riskHook != nil {
-		et := "cash_handover"
-		eid := handoverID
-		bid := branchID
-		title := fmt.Sprintf("Cash shortage KES %.0f on handover", shortage)
-		_ = s.riskHook.CreateRiskAlert(ctx, tenantID, &bid, "cash_shortage", "high", title, &et, &eid, map[string]any{
-			"handover_id":     handoverID.String(),
-			"from_user_id":    fromUser.String(),
-			"confirmed_by":    confirmer.String(),
-			"declared_amount": amount,
-			"counted_amount":  counted,
-			"shortage_amount": shortage,
-		})
-	}
-
-	for _, pid := range settleIDs {
-		s.notifyPayableHooks(ctx, tenantID, pid, confirmer)
-		s.publishPaymentConfirmed(ctx, tenantID, pid, confirmer, uuid.New())
-	}
-
-	return &CashHandover{
-		ID: handoverID, BranchID: branchID, FromUserID: fromUser, ToUserID: toUser,
-		Amount: amount, Status: "confirmed", Shortage: shortage, CreatedAt: createdAt, ConfirmedAt: &now,
-	}, nil
+// afterDigitalPaymentSettled attaches a customer (when possible) then runs payable hooks
+// such as completing a draft POS sale. Order matters: customer_id must land before CompleteSale.
+func (s *Service) afterDigitalPaymentSettled(ctx context.Context, tenantID, paymentID uuid.UUID, method string, actorID uuid.UUID) {
+	_ = s.attachCustomerForDigitalPayment(ctx, tenantID, paymentID, method)
+	s.notifyPayableHooks(ctx, tenantID, paymentID, actorID)
 }
 
 func (s *Service) ConfirmMpesaByCheckout(ctx context.Context, tenantID uuid.UUID, checkoutRequestID, providerRef string) (*Payment, error) {

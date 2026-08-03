@@ -300,8 +300,11 @@ func clientIP(r *http.Request) string {
 		}
 		return strings.TrimSpace(fwd)
 	}
+	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+		return strings.TrimSpace(ip)
+	}
 	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
+		return strings.TrimSpace(ip)
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -807,16 +810,18 @@ func (h *Handler) putShopProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		LegalName    *string `json:"legal_name"`
-		TIN          *string `json:"tin"`
-		AddressLine1 *string `json:"address_line1"`
-		AddressLine2 *string `json:"address_line2"`
-		City         *string `json:"city"`
-		Country      *string `json:"country"`
-		VATRateBPS   *int    `json:"vat_rate_bps"`
-		VATInclusive *bool   `json:"vat_inclusive"`
-		CurrencyCode *string `json:"currency_code"`
-		Locale       *string `json:"locale"`
+		LegalName      *string `json:"legal_name"`
+		TIN            *string `json:"tin"`
+		AddressLine1   *string `json:"address_line1"`
+		AddressLine2   *string `json:"address_line2"`
+		City           *string `json:"city"`
+		Country        *string `json:"country"`
+		VATRateBPS     *int    `json:"vat_rate_bps"`
+		VATInclusive   *bool   `json:"vat_inclusive"`
+		CurrencyCode   *string `json:"currency_code"`
+		Locale         *string `json:"locale"`
+		BargainEnabled *bool   `json:"bargain_enabled"`
+		WhatsAppNumber *string `json:"whatsapp_number"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
@@ -827,6 +832,7 @@ func (h *Handler) putShopProfile(w http.ResponseWriter, r *http.Request) {
 		AddressLine2: req.AddressLine2, City: req.City, Country: req.Country,
 		VATRateBPS: req.VATRateBPS, VATInclusive: req.VATInclusive,
 		CurrencyCode: req.CurrencyCode, Locale: req.Locale,
+		BargainEnabled: req.BargainEnabled, WhatsAppNumber: req.WhatsAppNumber,
 	})
 	if err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))

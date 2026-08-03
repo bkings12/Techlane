@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/techlane/techlane/internal/payments"
 	"github.com/techlane/techlane/internal/repair"
 	"github.com/techlane/techlane/packages/pkg/idempotency"
 )
@@ -15,12 +14,6 @@ func TestRepairStatusTransitions(t *testing.T) {
 	}
 	if err := repair.ValidateStatusTransition(repair.StatusIntake, repair.StatusCompleted); err == nil {
 		t.Fatal("expected invalid transition")
-	}
-}
-
-func TestHandoverSelfApprove(t *testing.T) {
-	if err := payments.ValidateHandoverConfirm("a", "a"); err != payments.ErrSelfApproveHandover {
-		t.Fatalf("expected ErrSelfApproveHandover, got %v", err)
 	}
 }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
 import { useBranch } from "../branch/BranchContext";
 import { Badge, Button, EmptyState, ICONS, Input, SearchInput, StkWaitOverlay, isTerminalStkError } from "../components/ui";
 import {
@@ -9,6 +10,7 @@ import {
   downloadSaleReceiptPDF,
   getPayment,
   getPaymentSettings,
+  getSale,
   listPOSCatalog,
   listStockLocations,
   listSuppliers,
@@ -21,6 +23,14 @@ import {
   type StockLocation,
   type Supplier,
 } from "../lib/api";
+import {
+  clearPersistedCart,
+  loadHeldSales,
+  loadPersistedCart,
+  saveHeldSales,
+  savePersistedCart,
+  type HeldSale,
+} from "../lib/posCartStorage";
 
 // A cart line is either a catalog item (variantId set, stock-backed) or a quick
 // sale — something sold on the spot that isn't in inventory. unitCost/supplierId
@@ -31,6 +41,8 @@ type CartLine = {
   description: string;
   sku?: string;
   unitPrice: number;
+  listPrice?: number;
+  overrideReason?: string;
   qty: number;
   variantId?: string;
   availableQty?: number;
@@ -39,16 +51,29 @@ type CartLine = {
   supplierName?: string;
 };
 
+function canPerm(permissions: string[] | undefined, code: string) {
+  return !!permissions?.includes("*") || !!permissions?.includes(code);
+}
+
 function newLineId() {
   return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `line-${Date.now()}-${Math.random()}`;
 }
 
 export function POSPage() {
+  const { user } = useAuth();
   const { branchId, setBranchId, branches } = useBranch();
+  const canOverridePrice = canPerm(user?.permissions, "sales.price_override");
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [locations, setLocations] = useState<StockLocation[]>([]);
   const [locationId, setLocationId] = useState("");
-  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cart, setCart] = useState<CartLine[]>(() => loadPersistedCart());
+  const [heldSales, setHeldSales] = useState<HeldSale[]>(() => loadHeldSales());
+  const [holdNote, setHoldNote] = useState("");
+  const [showHoldForm, setShowHoldForm] = useState(false);
+  const [editingLineId, setEditingLineId] = useState<string | null>(null);
+  const [editPrice, setEditPrice] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const [editError, setEditError] = useState("");
   const [method, setMethod] = useState("cash");
   const [phone, setPhone] = useState("");
   const [cfg, setCfg] = useState<PaymentProviderSettings | null>(null);
@@ -74,11 +99,35 @@ export function POSPage() {
   const [stkSuccess, setStkSuccess] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef(false);
+  /** STK success path can race (poll + finish + effect remount) and fire print 3×. */
+  const autoPrintedSaleIdsRef = useRef(new Set<string>());
 
-  const printReceipt = useCallback(async (saleId: string) => {
+  useEffect(() => {
+    savePersistedCart(cart);
+  }, [cart]);
+
+  useEffect(() => {
+    saveHeldSales(heldSales);
+  }, [heldSales]);
+
+  const refreshSaleCustomer = useCallback(async (saleId: string) => {
     try {
-      await openSaleReceipt(saleId);
+      const sale = await getSale(saleId);
+      setLast((prev) => (prev && prev.sale.id === saleId ? { ...prev, sale } : prev));
+    } catch {
+      /* ignore — name is best-effort after M-Pesa attach */
+    }
+  }, []);
+
+  const printReceipt = useCallback(async (saleId: string, opts?: { force?: boolean }) => {
+    if (!opts?.force) {
+      if (autoPrintedSaleIdsRef.current.has(saleId)) return;
+      autoPrintedSaleIdsRef.current.add(saleId);
+    }
+    try {
+      await openSaleReceipt(saleId, undefined, { force: opts?.force });
     } catch (err) {
+      if (!opts?.force) autoPrintedSaleIdsRef.current.delete(saleId);
       setError(err instanceof Error ? err.message : "Could not open the receipt");
     }
   }, []);
@@ -138,6 +187,7 @@ export function POSPage() {
           description: item.product_name,
           sku: item.sku,
           unitPrice: item.sell_price,
+          listPrice: item.sell_price,
           qty: 1,
           variantId: item.variant_id,
           availableQty: item.available_qty,
@@ -145,6 +195,42 @@ export function POSPage() {
       ];
     });
     setLast(null);
+  }
+
+  function beginEditPrice(line: CartLine) {
+    setEditingLineId(line.id);
+    setEditPrice(String(line.unitPrice));
+    setEditReason(line.overrideReason ?? "");
+    setEditError("");
+  }
+
+  function applyEditPrice(lineId: string) {
+    const price = Number(editPrice);
+    const reason = editReason.trim();
+    if (!Number.isFinite(price) || price <= 0) {
+      setEditError("Enter a positive price");
+      return;
+    }
+    const line = cart.find((l) => l.id === lineId);
+    const list = line?.listPrice ?? line?.unitPrice ?? 0;
+    if (Math.abs(price - list) > 0.009 && !reason) {
+      setEditError("Reason required when changing the catalog price");
+      return;
+    }
+    setCart((prev) =>
+      prev.map((l) =>
+        l.id === lineId
+          ? {
+              ...l,
+              unitPrice: price,
+              listPrice: l.listPrice ?? l.unitPrice,
+              overrideReason: Math.abs(price - (l.listPrice ?? l.unitPrice)) > 0.009 ? reason : undefined,
+            }
+          : l,
+      ),
+    );
+    setEditingLineId(null);
+    setEditError("");
   }
 
   function addQuickSaleLine(e: FormEvent) {
@@ -191,8 +277,48 @@ export function POSPage() {
 
   function clearCart() {
     setCart([]);
+    clearPersistedCart();
     setCashReceived("");
     setLast(null);
+  }
+
+  function holdCurrentSale() {
+    if (cart.length === 0) return;
+    const held: HeldSale = {
+      id: newLineId(),
+      note: holdNote.trim() || `Held · ${cart.length} item${cart.length === 1 ? "" : "s"}`,
+      heldAt: new Date().toISOString(),
+      items: cart.map((l) => ({ ...l })),
+    };
+    setHeldSales((prev) => [held, ...prev]);
+    setCart([]);
+    clearPersistedCart();
+    setHoldNote("");
+    setShowHoldForm(false);
+    setCashReceived("");
+  }
+
+  function resumeHeldSale(held: HeldSale) {
+    if (cart.length > 0) {
+      // Park the active cart first so we don't lose it.
+      setHeldSales((prev) => [
+        {
+          id: newLineId(),
+          note: "Auto-held before resume",
+          heldAt: new Date().toISOString(),
+          items: cart.map((l) => ({ ...l })),
+        },
+        ...prev.filter((h) => h.id !== held.id),
+      ]);
+    } else {
+      setHeldSales((prev) => prev.filter((h) => h.id !== held.id));
+    }
+    setCart(held.items.map((l) => ({ ...l })));
+    setShowHoldForm(false);
+  }
+
+  function discardHeldSale(id: string) {
+    setHeldSales((prev) => prev.filter((h) => h.id !== id));
   }
 
   async function runCheckout(items: POSCheckoutItem[], chargeMethod: string, chargePhone?: string) {
@@ -211,8 +337,10 @@ export function POSPage() {
       setCashReceived("");
       if (result.completed) {
         setCart([]);
+        clearPersistedCart();
         const cat = await listPOSCatalog(locationId);
         setCatalog(cat.items ?? []);
+        void refreshSaleCustomer(result.sale.id);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Checkout failed");
@@ -226,7 +354,13 @@ export function POSPage() {
     await runCheckout(
       cart.map((l) =>
         l.variantId
-          ? { variant_id: l.variantId, quantity: l.qty }
+          ? {
+              variant_id: l.variantId,
+              quantity: l.qty,
+              ...(l.listPrice != null && Math.abs(l.unitPrice - l.listPrice) > 0.009
+                ? { override_price: l.unitPrice, override_reason: l.overrideReason || "Price override" }
+                : {}),
+            }
           : {
               description: l.description,
               quantity: l.qty,
@@ -258,13 +392,21 @@ export function POSPage() {
     setBusy(true);
     setError("");
     try {
-      await confirmMpesaPayment(last.payment.id);
-      const sale = await completeSale(last.sale.id, locationId);
-      setLast({ ...last, sale, completed: true, payment: { ...last.payment, status: "allocated" } });
+      let pay = await getPayment(last.payment.id);
+      if (pay.status !== "allocated" && pay.status !== "confirmed") {
+        pay = await confirmMpesaPayment(last.payment.id);
+      }
+      let sale = await getSale(last.sale.id);
+      if (sale.status === "draft") {
+        sale = await completeSale(last.sale.id, locationId);
+      }
+      setLast({ ...last, sale, completed: true, payment: { ...pay, status: pay.status } });
       setCart([]);
+      clearPersistedCart();
       const cat = await listPOSCatalog(locationId);
       setCatalog(cat.items ?? []);
       void printReceipt(sale.id);
+      void refreshSaleCustomer(sale.id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Complete failed";
       setError(msg);
@@ -276,7 +418,7 @@ export function POSPage() {
     }
   }
 
-  // Auto-poll STK like the Android counter — cashier stays with the customer.
+  // Auto-poll STK — backend completes the sale on webhook; this loop is UI feedback.
   useEffect(() => {
     if (!last || last.completed || last.payment.method !== "mpesa_stk" || !locationId) return;
     if (pollingRef.current) return;
@@ -290,14 +432,31 @@ export function POSPage() {
         await new Promise((r) => window.setTimeout(r, 2500));
         if (cancelled) break;
         try {
-          await confirmMpesaPayment(last.payment.id);
-          const sale = await completeSale(last.sale.id, locationId);
+          // Prefer GET — webhook often confirms + completes before Daraja Query does.
+          let pay = await getPayment(last.payment.id);
+          if (pay.status !== "allocated" && pay.status !== "confirmed") {
+            // Nudge Daraja every few ticks in case the callback is delayed.
+            if (i % 3 === 2) {
+              pay = await confirmMpesaPayment(last.payment.id);
+            } else {
+              continue;
+            }
+          }
+          // Sale completion is durable on the webhook; poll the sale status first.
+          let sale = await getSale(last.sale.id);
+          if (sale.status === "draft" && (pay.status === "allocated" || pay.status === "confirmed")) {
+            // Safety net if webhook raced or never arrived.
+            sale = await completeSale(last.sale.id, locationId);
+          }
+          if (sale.status === "draft") continue;
           if (cancelled) break;
-          setLast({ ...last, sale, completed: true, payment: { ...last.payment, status: "allocated" } });
+          setLast({ ...last, sale, completed: true, payment: { ...pay, status: pay.status } });
           setCart([]);
+          clearPersistedCart();
           const cat = await listPOSCatalog(locationId);
           setCatalog(cat.items ?? []);
           void printReceipt(sale.id);
+          void refreshSaleCustomer(sale.id);
           setStkSuccess("Payment successful — sale complete");
           window.setTimeout(() => setStkSuccess(""), 2500);
           break;
@@ -321,7 +480,7 @@ export function POSPage() {
       pollingRef.current = false;
       setStkPolling(false);
     };
-  }, [last?.sale?.id, last?.payment?.id, last?.completed, last?.payment?.method, locationId, printReceipt]);
+  }, [last?.sale?.id, last?.payment?.id, last?.completed, last?.payment?.method, locationId, printReceipt, refreshSaleCustomer]);
 
   async function finishC2B() {
     if (!last?.sale || !last.payment) return;
@@ -335,8 +494,10 @@ export function POSPage() {
       const sale = await completeSale(last.sale.id, locationId);
       setLast({ ...last, sale, completed: true, payment: { ...pay } });
       setCart([]);
+      clearPersistedCart();
       const cat = await listPOSCatalog(locationId);
       setCatalog(cat.items ?? []);
+      void refreshSaleCustomer(sale.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Complete failed");
     } finally {
@@ -519,70 +680,30 @@ export function POSPage() {
               <span className="cart-eyebrow">Current sale</span>
               <h2>Cart <small>{cartUnits} {cartUnits === 1 ? "item" : "items"}</small></h2>
             </div>
-            {cart.length > 0 ? <button type="button" className="cart-clear" onClick={clearCart}>Clear</button> : null}
+            <div className="cart-head-actions">
+              {cart.length > 0 ? (
+                <button type="button" className="cart-hold" onClick={() => setShowHoldForm((v) => !v)}>
+                  Hold
+                </button>
+              ) : null}
+              {cart.length > 0 ? <button type="button" className="cart-clear" onClick={clearCart}>Clear</button> : null}
+            </div>
           </div>
 
-          {!showQuickStk ? (
-            <button type="button" className="linkish" onClick={() => setShowQuickStk(true)}>
-              Quick STK — amount only
-            </button>
-          ) : (
-            <form className="form-grid" onSubmit={sendQuickStk} style={{ padding: "0.75rem", border: "1px solid var(--gray-200)", borderRadius: 7, marginBottom: "0.75rem" }}>
-              <p className="muted" style={{ margin: 0, gridColumn: "1 / -1" }}>
-                Skip the cart — just send an STK prompt for an amount and phone number.
-              </p>
+          {showHoldForm && cart.length > 0 ? (
+            <div className="cart-hold-form">
               <label>
-                Amount (KES)
-                <Input type="number" min={0} value={qStkAmount} onChange={(e) => setQStkAmount(e.target.value)} autoFocus />
+                Hold note (optional)
+                <Input value={holdNote} onChange={(e) => setHoldNote(e.target.value)} placeholder="e.g. Customer stepping outside" />
               </label>
-              <label>
-                Customer phone
-                <Input value={qStkPhone} onChange={(e) => setQStkPhone(e.target.value)} placeholder="07XXXXXXXX" />
-              </label>
-              {qStkError ? <p className="form-error">{qStkError}</p> : null}
               <div className="btn-row">
-                <Button type="submit" disabled={busy}>{busy ? "Sending…" : "Send STK"}</Button>
-                <Button type="button" variant="ghost" onClick={() => { setShowQuickStk(false); setQStkError(""); }}>Cancel</Button>
+                <Button type="button" onClick={holdCurrentSale}>Park cart</Button>
+                <Button type="button" variant="ghost" onClick={() => { setShowHoldForm(false); setHoldNote(""); }}>Cancel</Button>
               </div>
-            </form>
-          )}
+            </div>
+          ) : null}
 
-          {cart.length === 0 ? (
-            <EmptyState title="Empty cart" body="Tap catalog tiles to add." />
-          ) : (
-            <ul className="part-list">
-              {cart.map((l) => (
-                <li key={l.id} className="part-card">
-                  <div className="part-head">
-                    <strong>
-                      {l.description}
-                      {!l.variantId ? <Badge tone="pending">Quick sale</Badge> : null}
-                    </strong>
-                    <span>KES {(l.unitPrice * l.qty).toLocaleString()}</span>
-                  </div>
-                  <div className="cart-line-foot">
-                    <span className="mono">
-                      {l.sku ? `${l.sku} · ` : ""}KES {l.unitPrice.toLocaleString()} each
-                    </span>
-                    <div className="qty-stepper" aria-label={"Quantity for " + l.description}>
-                      <button type="button" onClick={() => setQty(l.id, l.qty - 1)} aria-label="Decrease quantity">−</button>
-                      <strong>{l.qty}</strong>
-                      <button type="button" onClick={() => setQty(l.id, Math.min(l.qty + 1, l.availableQty || 99))} aria-label="Increase quantity">+</button>
-                    </div>
-                    <button type="button" className="cart-remove" onClick={() => removeFromCart(l.id)}>Remove</button>
-                  </div>
-                  {l.supplierId ? (
-                    <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.78rem" }}>
-                      Internal only — from {l.supplierName ?? "supplier"} @ KES {(l.unitCost ?? 0).toLocaleString()} each ·
-                      margin KES {((l.unitPrice - (l.unitCost ?? 0)) * l.qty).toLocaleString()}
-                    </p>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <form className="form-grid" onSubmit={checkout}>
+          <form className="form-grid cart-checkout" onSubmit={checkout}>
             <div className="pos-total">
               <span className="muted">Total</span>
               <strong>KES {total.toLocaleString()}</strong>
@@ -625,6 +746,133 @@ export function POSPage() {
             </Button>
           </form>
 
+          <div className="cart-rail-extras">
+            {!showQuickStk ? (
+              <button type="button" className="linkish" onClick={() => setShowQuickStk(true)}>
+                Quick STK — amount only
+              </button>
+            ) : (
+              <form className="form-grid" onSubmit={sendQuickStk}>
+                <p className="muted" style={{ margin: 0, gridColumn: "1 / -1" }}>
+                  Skip the cart — just send an STK prompt for an amount and phone number.
+                </p>
+                <label>
+                  Amount (KES)
+                  <Input type="number" min={0} value={qStkAmount} onChange={(e) => setQStkAmount(e.target.value)} autoFocus />
+                </label>
+                <label>
+                  Customer phone
+                  <Input value={qStkPhone} onChange={(e) => setQStkPhone(e.target.value)} placeholder="07XXXXXXXX" />
+                </label>
+                {qStkError ? <p className="form-error">{qStkError}</p> : null}
+                <div className="btn-row">
+                  <Button type="submit" disabled={busy}>{busy ? "Sending…" : "Send STK"}</Button>
+                  <Button type="button" variant="ghost" onClick={() => { setShowQuickStk(false); setQStkError(""); }}>Cancel</Button>
+                </div>
+              </form>
+            )}
+          </div>
+
+          {cart.length === 0 ? (
+            <EmptyState title="Empty cart" body="Tap catalog tiles to add." />
+          ) : (
+            <ul className="part-list">
+              {cart.map((l) => {
+                const bargained =
+                  l.listPrice != null && Math.abs(l.unitPrice - l.listPrice) > 0.009;
+                return (
+                  <li key={l.id} className="part-card">
+                    <div className="part-head">
+                      <strong>
+                        {l.description}
+                        {!l.variantId ? <Badge tone="pending">Quick sale</Badge> : null}
+                      </strong>
+                      <span className="cart-line-price">
+                        {bargained ? (
+                          <>
+                            <s className="muted">KES {(l.listPrice! * l.qty).toLocaleString()}</s>{" "}
+                            KES {(l.unitPrice * l.qty).toLocaleString()}
+                          </>
+                        ) : (
+                          <>KES {(l.unitPrice * l.qty).toLocaleString()}</>
+                        )}
+                      </span>
+                    </div>
+                    <div className="cart-line-foot">
+                      <span className="mono">
+                        {l.sku ? `${l.sku} · ` : ""}
+                        {bargained ? (
+                          <>
+                            <s>KES {l.listPrice!.toLocaleString()}</s> KES {l.unitPrice.toLocaleString()} each
+                          </>
+                        ) : (
+                          <>KES {l.unitPrice.toLocaleString()} each</>
+                        )}
+                      </span>
+                      <div className="qty-stepper" aria-label={"Quantity for " + l.description}>
+                        <button type="button" onClick={() => setQty(l.id, l.qty - 1)} aria-label="Decrease quantity">−</button>
+                        <strong>{l.qty}</strong>
+                        <button type="button" onClick={() => setQty(l.id, Math.min(l.qty + 1, l.availableQty || 99))} aria-label="Increase quantity">+</button>
+                      </div>
+                      {canOverridePrice && l.variantId ? (
+                        <button type="button" className="cart-edit-price" onClick={() => beginEditPrice(l)}>
+                          Edit price
+                        </button>
+                      ) : null}
+                      <button type="button" className="cart-remove" onClick={() => removeFromCart(l.id)}>Remove</button>
+                    </div>
+                    {editingLineId === l.id ? (
+                      <div className="cart-price-edit">
+                        <label>
+                          New price (KES)
+                          <Input type="number" min={0} value={editPrice} onChange={(e) => setEditPrice(e.target.value)} />
+                        </label>
+                        <label>
+                          Reason
+                          <Input value={editReason} onChange={(e) => setEditReason(e.target.value)} placeholder="e.g. Regular customer discount" />
+                        </label>
+                        {editError ? <p className="form-error">{editError}</p> : null}
+                        <div className="btn-row">
+                          <Button type="button" onClick={() => applyEditPrice(l.id)}>Apply</Button>
+                          <Button type="button" variant="ghost" onClick={() => { setEditingLineId(null); setEditError(""); }}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {l.supplierId ? (
+                      <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.78rem" }}>
+                        Internal only — from {l.supplierName ?? "supplier"} @ KES {(l.unitCost ?? 0).toLocaleString()} each ·
+                        margin KES {((l.unitPrice - (l.unitCost ?? 0)) * l.qty).toLocaleString()}
+                      </p>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {heldSales.length > 0 ? (
+            <div className="cart-held">
+              <span className="cart-eyebrow">Held sales</span>
+              <ul>
+                {heldSales.map((h) => (
+                  <li key={h.id}>
+                    <div>
+                      <strong>{h.note}</strong>
+                      <span className="muted">
+                        {h.items.length} item{h.items.length === 1 ? "" : "s"} ·{" "}
+                        {new Date(h.heldAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <div className="chip-row">
+                      <Button type="button" variant="secondary" onClick={() => resumeHeldSale(h)}>Resume</Button>
+                      <Button type="button" variant="ghost" onClick={() => discardHeldSale(h.id)}>Discard</Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           {last ? (
             <div className="action-block" style={{ marginTop: "1rem" }}>
               <p className="muted">Last sale</p>
@@ -635,6 +883,12 @@ export function POSPage() {
                     {last.completed ? "completed" : last.sale.status}
                   </Badge>
                 </dd>
+                {last.sale.customer_name ? (
+                  <>
+                    <dt>Customer</dt>
+                    <dd>{last.sale.customer_name}</dd>
+                  </>
+                ) : null}
                 <dt>Total</dt>
                 <dd>KES {last.sale.total.toLocaleString()}</dd>
                 <dt>Payment</dt>
@@ -664,7 +918,7 @@ export function POSPage() {
                 </Button>
               ) : null}
               <div className="chip-row" style={{ marginTop: "0.6rem" }}>
-                <Button type="button" variant="secondary" onClick={() => void printReceipt(last.sale.id)}>
+                <Button type="button" variant="secondary" onClick={() => void printReceipt(last.sale.id, { force: true })}>
                   Print receipt
                 </Button>
                 <Button type="button" variant="ghost" onClick={() => void downloadSaleReceiptPDF(last.sale.id)}>

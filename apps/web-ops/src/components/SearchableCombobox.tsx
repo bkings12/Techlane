@@ -21,6 +21,7 @@ export type SearchableComboboxProps = {
   onSearch?: (query: string) => void;
   value: string;
   onSelect: (option: ComboOption) => void;
+  onQueryChange?: (query: string) => void;
   onAddNew?: (input: { primary: string; secondary?: string }) => Promise<ComboOption>;
   addNewFields?: { primary: string; secondary?: string };
   loading?: boolean;
@@ -34,6 +35,7 @@ export function SearchableCombobox({
   onSearch,
   value,
   onSelect,
+  onQueryChange,
   onAddNew,
   addNewFields,
   loading = false,
@@ -70,6 +72,12 @@ export function SearchableCombobox({
     return () => window.clearTimeout(t);
   }, [query, onSearch]);
 
+  const onQueryChangeRef = useRef(onQueryChange);
+  onQueryChangeRef.current = onQueryChange;
+  useEffect(() => {
+    onQueryChangeRef.current?.(query);
+  }, [query]);
+
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!rootRef.current?.contains(e.target as Node)) {
@@ -82,8 +90,10 @@ export function SearchableCombobox({
   }, []);
 
   useEffect(() => {
-    setHighlight(0);
-  }, [filtered.length, query]);
+    // Prefer the first real match over a leading "Walk-in" / empty sentinel when searching.
+    const firstReal = filtered.findIndex((o) => o.value && !o.value.startsWith("__"));
+    setHighlight(firstReal >= 0 ? firstReal : 0);
+  }, [filtered, query]);
 
   function displayValue() {
     if (open) return query;
@@ -181,6 +191,15 @@ export function SearchableCombobox({
               setAdding((v) => !v);
               setOpen(false);
               setAddError("");
+              // Prefill Add New from whatever was typed in the search box.
+              if (query.trim() && !primary) {
+                const digits = query.replace(/\D/g, "");
+                if (digits.length >= 9 && addNewFields?.secondary) {
+                  setSecondary(query.trim());
+                } else {
+                  setPrimary(query.trim());
+                }
+              }
             }}
           >
             <Icon d="M12 5v14" extra={<path d="M5 12h14" />} size={16} />
@@ -197,7 +216,7 @@ export function SearchableCombobox({
               </li>
             ) : filtered.length === 0 ? (
               <li className="searchable-combo-empty" role="presentation">
-                No matches
+                No matches{onAddNew ? " — tap + to add" : ""}
               </li>
             ) : (
               filtered.map((opt, i) => (

@@ -32,6 +32,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("GET /sales", auth(http.HandlerFunc(h.listSales)))
 	mux.Handle("GET /sales/{id}", auth(http.HandlerFunc(h.getSale)))
 	mux.Handle("GET /sales/{id}/receipt.html", auth(http.HandlerFunc(h.saleReceiptHTML)))
+	mux.Handle("GET /sales/{id}/receipt.escpos", auth(http.HandlerFunc(h.saleReceiptESCPOS)))
 	mux.Handle("GET /sales/{id}/receipt.pdf", auth(http.HandlerFunc(h.saleReceiptPDF)))
 	mux.Handle("POST /sales/{id}/complete", auth(http.HandlerFunc(h.completeSale)))
 	mux.Handle("POST /sales/{id}/reverse", auth(http.HandlerFunc(h.reverseSale)))
@@ -77,6 +78,23 @@ func (h *Handler) saleReceiptHTML(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(body))
+}
+
+func (h *Handler) saleReceiptESCPOS(w http.ResponseWriter, r *http.Request) {
+	doc, tenantID, saleID, ok := h.loadSaleReceipt(w, r)
+	if !ok {
+		return
+	}
+	body, err := h.receipts.RenderESCPOS(r.Context(), tenantID, doc, saleID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, doc.Reference+"-receipt.escpos"))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 func (h *Handler) saleReceiptPDF(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +154,7 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		TenantID: claims.TenantID, BranchID: req.BranchID, LocationID: req.LocationID,
 		Items: req.Items, Method: req.Method, Phone: req.Phone, AccountRef: req.AccountRef,
 		ActorID: claims.UserID, CorrID: corrID(r),
+		AllowPriceOverride: claims.HasPermission("sales.price_override"),
 	})
 	if err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))
@@ -159,6 +178,7 @@ func (h *Handler) createSale(w http.ResponseWriter, r *http.Request) {
 	sale, err := h.svc.CreateSale(r.Context(), CreateSaleInput{
 		TenantID: claims.TenantID, BranchID: req.BranchID, CustomerID: req.CustomerID,
 		Channel: req.Channel, Items: req.Items, ActorID: claims.UserID, CorrID: corrID(r),
+		AllowPriceOverride: claims.HasPermission("sales.price_override"),
 	})
 	if err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))

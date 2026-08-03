@@ -712,13 +712,11 @@ func paymentRefLabel(p PaymentLine) string {
 }
 
 // prettyStatus maps internal payment statuses onto customer-facing labels.
-// Cash recorded at the counter is "pending_handover" until the till is closed —
-// that is an internal tech↔cashier concern and must never print on a receipt.
 func prettyStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "":
 		return ""
-	case "pending_handover", "provisional", "allocated", "confirmed":
+	case "provisional", "allocated", "confirmed":
 		return "Paid"
 	case "initiated", "requested", "pending":
 		return "Pending"

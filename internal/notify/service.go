@@ -347,6 +347,9 @@ func (s *Service) enqueueReachable(
 	if phone == "" {
 		return
 	}
+	if norm, err := NormalizeRecipientPhone(phone); err == nil {
+		phone = norm
+	}
 	useWA, alsoSMS := false, true
 	if s.whatsapp != nil {
 		useWA, alsoSMS = s.whatsapp.ShouldNotify(ctx, tenantID, audience)
@@ -364,6 +367,16 @@ func (s *Service) enqueueReachable(
 			TemplateKey: templateKey, Payload: payload,
 		})
 	}
+}
+
+// EnqueueReachable queues WhatsApp and/or SMS for a phone based on shop settings.
+func (s *Service) EnqueueReachable(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	audience, phone, templateKey string,
+	payload map[string]any,
+) {
+	s.enqueueReachable(ctx, tenantID, audience, phone, templateKey, payload)
 }
 
 func (s *Service) maybeRememberWhatsAppPending(ctx context.Context, tenantID uuid.UUID, phone, templateKey string, payload map[string]any) {
@@ -451,6 +464,7 @@ func payloadFromRepair(info RepairNotifyInfo) map[string]any {
 		"problem_summary":  info.ProblemSummary,
 		"status":           info.Status,
 		"status_label":     PrettyStatus(info.Status),
+		"service_type":     info.ServiceType,
 		"branch_name":      info.BranchName,
 		"branch_location":  info.BranchLocation,
 		"pickup_place":     info.PickupPlace,
@@ -474,6 +488,17 @@ func (s *Service) onRepairCreated(ctx context.Context, e events.Envelope, lookup
 	if err != nil || info.Phone == "" {
 		return
 	}
+	// Same-day counter fixes stay with the customer — no "leave device / pickup code" SMS.
+	if IsQuickCounterFix(info.ServiceType) {
+		payload := payloadFromRepair(info)
+		payload["repair_job_id"] = repairID.String()
+		_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
+			fmt.Sprintf("Quick fix · %s", info.JobCode),
+			fmt.Sprintf("Same-day fix %s created — customer stays at the counter.", info.JobCode),
+			"repair.quick_thanks", payload)
+		return
+	}
+	var branchID *uuid.UUID = e.BranchID
 	if jc, ok := e.Payload["job_code"].(string); ok && strings.TrimSpace(jc) != "" {
 		info.JobCode = jc
 	}
@@ -502,7 +527,7 @@ func (s *Service) onRepairCreated(ctx context.Context, e events.Envelope, lookup
 			info.WaitMinutes = t
 		}
 	}
-	_, _, _ = s.enqueueRepairIntakeSMS(ctx, e.TenantID, e.BranchID, repairID, info)
+	_, _, _ = s.enqueueRepairIntakeSMS(ctx, e.TenantID, branchID, repairID, info)
 }
 
 // ResendRepairIntakeSMS re-queues the intake / wait-bench SMS using the customer's
@@ -514,6 +539,9 @@ func (s *Service) ResendRepairIntakeSMS(ctx context.Context, tenantID, repairID 
 	}
 	if strings.TrimSpace(info.Phone) == "" {
 		return "", "", fmt.Errorf("customer has no phone number on file")
+	}
+	if IsQuickCounterFix(info.ServiceType) {
+		return "", "", fmt.Errorf("same-day fixes use a thank-you SMS, not intake")
 	}
 	var branchID *uuid.UUID
 	templateKey, phone, err = s.enqueueRepairIntakeSMS(ctx, tenantID, branchID, repairID, info)
@@ -639,6 +667,15 @@ func (s *Service) onRepairCompleted(ctx context.Context, e events.Envelope, look
 	}
 	payload := payloadFromRepair(info)
 	payload["repair_job_id"] = repairID.String()
+	// Same-day till jobs: short thanks only — never "bring your receipt to collect".
+	if IsQuickCounterFix(info.ServiceType) {
+		s.enqueueReachable(ctx, e.TenantID, "customer", info.Phone, "repair.quick_thanks", payload)
+		_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
+			fmt.Sprintf("Quick fix done · %s", info.JobCode),
+			fmt.Sprintf("Thank-you SMS sent for same-day fix %s.", info.JobCode),
+			"repair.quick_thanks", payload)
+		return
+	}
 	s.enqueueReachable(ctx, e.TenantID, "customer", info.Phone, "repair.ready", payload)
 	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
 		fmt.Sprintf("Repair %s ready", info.JobCode),
@@ -706,6 +743,7 @@ func (s *Service) onPaymentConfirmed(ctx context.Context, e events.Envelope, loo
 	if method, ok := e.Payload["method"].(string); ok && strings.TrimSpace(method) != "" {
 		payload["method"] = method
 	}
+	var serviceType string
 	if repairID != nil {
 		if info, iErr := lookup.RepairNotifyInfo(ctx, e.TenantID, *repairID); iErr == nil {
 			for k, v := range payloadFromRepair(info) {
@@ -715,8 +753,17 @@ func (s *Service) onPaymentConfirmed(ctx context.Context, e events.Envelope, loo
 			if currency != "" {
 				payload["currency"] = currency
 			}
+			serviceType = info.ServiceType
 		}
 		payload["repair_job_id"] = repairID.String()
+	}
+	// Quick fixes already get a single thank-you on complete — skip payment SMS.
+	if IsQuickCounterFix(serviceType) {
+		_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
+			fmt.Sprintf("Payment confirmed · %s", jobCode),
+			fmt.Sprintf("Payment of %s %s received for quick fix %s.", currency, amount, jobCode),
+			"payment.confirmed", payload)
+		return
 	}
 	s.enqueueReachable(ctx, e.TenantID, "customer", phone, "payment.confirmed", payload)
 	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
@@ -734,10 +781,22 @@ func (s *Service) onRepairCollected(ctx context.Context, e events.Envelope, look
 	if err != nil || info.Phone == "" {
 		return
 	}
+	// Quick fix already thanked on complete.
+	if IsQuickCounterFix(info.ServiceType) {
+		payload := payloadFromRepair(info)
+		payload["repair_job_id"] = repairID.String()
+		_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
+			fmt.Sprintf("Quick fix collected · %s", info.JobCode),
+			fmt.Sprintf("Device handed back for same-day fix %s.", info.JobCode),
+			"repair.collected", payload)
+		return
+	}
 	payload := payloadFromRepair(info)
 	payload["repair_job_id"] = repairID.String()
 	if who, ok := e.Payload["collected_by"].(string); ok && strings.TrimSpace(who) != "" {
 		payload["collected_by"] = who
+	} else if name, ok := e.Payload["collected_by_name"].(string); ok && strings.TrimSpace(name) != "" {
+		payload["collected_by"] = name
 	} else {
 		payload["collected_by"] = "the customer"
 	}

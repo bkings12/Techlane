@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useBranch } from "../branch/BranchContext";
 import { CommandPalette, useCommandPalette } from "../components/CommandPalette";
@@ -102,6 +102,7 @@ const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
     id: "money",
     label: "Money",
     items: [
+      { to: "/pos", label: "Sell", short: "Sell", roles: ["owner", "manager", "cashier"] },
       { to: "/payments", label: "Transactions", short: "Pay", roles: ["owner", "manager", "cashier", "accountant"] },
       { to: "/orders", label: "Orders", short: "Orders", roles: ["owner", "manager", "cashier"] },
     ],
@@ -237,6 +238,11 @@ export function AppShell() {
     location.pathname === "/pos" ||
     location.pathname === "/counter" ||
     location.pathname.startsWith("/counter/");
+  const canSell = canSee(
+    { to: "/pos", label: "Sell", roles: ["owner", "manager", "cashier"] },
+    user?.roles,
+    primaryRole,
+  );
 
   return (
     <div
@@ -315,6 +321,13 @@ export function AppShell() {
               </>
             ) : null}
           </div>
+
+          {canSell ? (
+            <Link to="/pos" className="sidebar-sell-cta" title="Sell">
+              {NAV_ICONS["/pos"]}
+              <span>Sell</span>
+            </Link>
+          ) : null}
 
           <button type="button" className="sidebar-search-trigger" onClick={() => setPaletteOpen(true)} title="Search">
             <Icon d="m21 21-4.34-4.34" extra={<circle cx="11" cy="11" r="7" />} size={16} />

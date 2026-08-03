@@ -3,6 +3,7 @@ package httpx
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,10 +78,18 @@ func (rl *IPRateLimiter) Middleware(next http.Handler) http.Handler {
 
 func requestIP(r *http.Request) string {
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return fwd
+		// Clients behind Cloudflare/Caddy send "client, proxy, …" — rate-limit on the
+		// original client, not the whole chain (which can change per hop).
+		if i := strings.IndexByte(fwd, ','); i >= 0 {
+			return strings.TrimSpace(fwd[:i])
+		}
+		return strings.TrimSpace(fwd)
+	}
+	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+		return strings.TrimSpace(ip)
 	}
 	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
+		return strings.TrimSpace(ip)
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

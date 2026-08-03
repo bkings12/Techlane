@@ -33,13 +33,10 @@ type Summary struct {
 	RepairsUnpriced         int     `json:"repairs_unpriced"`
 
 	PaymentsAllocatedPeriod float64 `json:"payments_allocated_period"`
-	PaymentsCashProvisional float64 `json:"payments_cash_provisional"`
 	PaymentsSTKPending      float64 `json:"payments_stk_pending"`
 	SalesCompletedPeriod    float64 `json:"sales_completed_period"`
 	SalesCountPeriod        int     `json:"sales_count_period"`
 
-	HandoversOpen             int     `json:"handovers_open"`
-	ShortageAmountPeriod      float64 `json:"shortage_amount_period"`
 	SupplierCreditOutstanding float64 `json:"supplier_credit_outstanding"`
 
 	RiskOpenTotal     int `json:"risk_open_total"`
@@ -155,7 +152,7 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID, days int) (*S
 					WHERE a.tenant_id = j.tenant_id
 					  AND a.payable_type = 'repair'
 					  AND a.payable_id = j.id
-					  AND p.status IN ('allocated', 'confirmed', 'pending_handover', 'provisional')
+					  AND p.status IN ('allocated', 'confirmed', 'provisional')
 				), 0) AS paid
 			FROM repair.repair_jobs j
 			WHERE j.tenant_id = $1
@@ -177,24 +174,16 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID, days int) (*S
 
 	_ = s.pool.QueryRow(ctx, `
 		SELECT
-			COALESCE(SUM(amount) FILTER (WHERE status = 'allocated' AND created_at >= $2), 0)::float8,
-			COALESCE(SUM(amount) FILTER (WHERE method = 'cash' AND status = 'pending_handover'), 0)::float8,
+			COALESCE(SUM(amount) FILTER (WHERE status IN ('allocated', 'confirmed') AND created_at >= $2), 0)::float8,
 			COALESCE(SUM(amount) FILTER (WHERE method = 'mpesa_stk' AND status IN ('initiated', 'pending')), 0)::float8
 		FROM payments.payments WHERE tenant_id = $1`, tenantID, since).
-		Scan(&out.PaymentsAllocatedPeriod, &out.PaymentsCashProvisional, &out.PaymentsSTKPending)
+		Scan(&out.PaymentsAllocatedPeriod, &out.PaymentsSTKPending)
 
 	_ = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(total), 0)::float8, COUNT(*)
 		FROM sales.sales
 		WHERE tenant_id = $1 AND status = 'completed' AND created_at >= $2`, tenantID, since).
 		Scan(&out.SalesCompletedPeriod, &out.SalesCountPeriod)
-
-	_ = s.pool.QueryRow(ctx, `
-		SELECT
-			COUNT(*) FILTER (WHERE status = 'requested'),
-			COALESCE(SUM(shortage_amount) FILTER (WHERE status = 'confirmed' AND confirmed_at >= $2), 0)::float8
-		FROM payments.cash_handovers WHERE tenant_id = $1`, tenantID, since).
-		Scan(&out.HandoversOpen, &out.ShortageAmountPeriod)
 
 	_ = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(CASE

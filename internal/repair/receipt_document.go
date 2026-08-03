@@ -76,14 +76,48 @@ func (d *CustomerReceiptDocument) ToReceiptDocument(taxInvoice bool) receipts.Do
 	if d.PickupCode != "" && d.Status != "collected" {
 		payload := PickupQRPayload(d.PickupCode)
 		callout := &receipts.Callout{
-			Label: "Bring this code when collecting",
-			Value: d.PickupCode,
-			Note:  "Scan the QR or type the code at the counter. Device is released only after payment.",
+			Label:     "Bring this code when collecting",
+			Value:     d.PickupCode,
+			Note:      "Scan the QR or type the code at the counter. Device is released only after payment.",
+			QRPayload: payload,
 		}
 		if uri, err := receipts.QRDataURIPNG(payload); err == nil {
 			callout.QRDataURI = uri
 		}
 		doc.Callout = callout
+	}
+	return doc
+}
+
+// ToIntakeDocument is the short check-in ticket for thermal printers (no prices).
+func (d *CustomerReceiptDocument) ToIntakeDocument() receipts.Document {
+	doc := receipts.Document{
+		Kind:          receipts.KindRepair,
+		Title:         "Intake slip",
+		Reference:     d.JobCode,
+		Number:        d.JobCode,
+		IssuedAt:      d.IssuedAt,
+		Currency:      d.Currency,
+		CustomerName:  d.CustomerName,
+		CustomerPhone: d.CustomerPhone,
+		Notes:         d.ProblemSummary,
+		Branch:        d.BranchName,
+	}
+	doc.Meta = []receipts.MetaRow{
+		{Label: "Job", Value: d.JobCode},
+		{Label: "Device", Value: capitalize(d.DeviceLabel)},
+	}
+	if d.IMEI != "" {
+		doc.Meta = append(doc.Meta, receipts.MetaRow{Label: "IMEI / serial", Value: d.IMEI})
+	}
+	if d.PickupCode != "" {
+		payload := PickupQRPayload(d.PickupCode)
+		// Match HTML intake: QR on the slip; PK- code stays on SMS.
+		doc.Callout = &receipts.Callout{
+			Label:     "Scan when collecting",
+			Note:      "Your pickup code was sent by SMS. Final charges appear on your repair receipt.",
+			QRPayload: payload,
+		}
 	}
 	return doc
 }

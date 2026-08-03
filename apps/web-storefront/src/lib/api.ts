@@ -110,6 +110,8 @@ export type StorefrontSettings = {
   pay_cta_stk?: string;
   pay_cta_paybill?: string;
   pay_cta_cash?: string;
+  bargain_enabled?: boolean;
+  whatsapp_number?: string;
 };
 
 export type StorefrontBanner = {

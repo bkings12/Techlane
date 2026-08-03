@@ -153,6 +153,8 @@ func (s *Service) ShouldNotify(ctx context.Context, tenantID uuid.UUID, audience
 		if !suppliers {
 			return false, true
 		}
+	case "owner", "shop":
+		// Shop/ops alerts (online orders, etc.): any time WhatsApp is enabled.
 	default:
 		return false, true
 	}

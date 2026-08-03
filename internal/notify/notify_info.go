@@ -1,5 +1,7 @@
 package notify
 
+import "strings"
+
 // RepairNotifyInfo is everything an SMS template may need about a job.
 type RepairNotifyInfo struct {
 	JobCode         string
@@ -10,6 +12,7 @@ type RepairNotifyInfo struct {
 	DeviceLabel     string
 	ProblemSummary  string
 	Status          string
+	ServiceType     string // repair | quick_fix | quick_replacement
 	BranchName      string
 	BranchLocation  string
 	PickupPlace     string // "ShopName & location" for SMS "see you at …"
@@ -21,4 +24,14 @@ type RepairNotifyInfo struct {
 	CustomerWaiting bool
 	WaitMinutes     int    // estimated wait when CustomerWaiting
 	WaitLine        string // ready-made wait-bench sentence
+}
+
+// IsQuickCounterFix is true for same-day till jobs (device fixed and returned now).
+func IsQuickCounterFix(serviceType string) bool {
+	switch strings.ToLower(strings.TrimSpace(serviceType)) {
+	case "quick_fix", "quick_replacement":
+		return true
+	default:
+		return false
+	}
 }

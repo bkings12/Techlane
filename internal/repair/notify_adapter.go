@@ -25,6 +25,7 @@ func (a NotifyAdapter) RepairNotifyInfo(ctx context.Context, tenantID, repairID 
 	if info.JobCode == "" {
 		info.JobCode = job.ID.String()[:8]
 	}
+	info.ServiceType = strings.TrimSpace(job.ServiceType)
 	info.PickupCode = strings.TrimSpace(job.PickupCode)
 	info.Status = job.Status
 	info.ProblemSummary = strings.TrimSpace(job.ProblemSummary)

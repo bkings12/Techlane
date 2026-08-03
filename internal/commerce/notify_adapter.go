@@ -26,18 +26,18 @@ func (a NotifyAdapter) NotifyOnlineOrderPlaced(ctx context.Context, in OnlineOrd
 		shortID = shortID[:8]
 	}
 	payload := map[string]any{
-		"shop_name":         in.ShopName,
-		"customer_name":     in.CustomerName,
-		"customer_phone":    in.CustomerPhone,
-		"order_id":          in.OrderID.String(),
-		"order_ref":         "ORD-" + shortID,
-		"total":             fmt.Sprintf("%.0f", in.Total),
-		"currency":          in.Currency,
-		"fulfilment":        fulfilment,
-		"item_count":        fmt.Sprintf("%d", in.ItemCount),
-		"collection_code":   in.CollectionCode,
-		"delivery_address":  in.DeliverySummary,
-		"delivery_line":     "",
+		"shop_name":        in.ShopName,
+		"customer_name":    in.CustomerName,
+		"customer_phone":   in.CustomerPhone,
+		"order_id":         in.OrderID.String(),
+		"order_ref":        "ORD-" + shortID,
+		"total":            fmt.Sprintf("%.0f", in.Total),
+		"currency":         in.Currency,
+		"fulfilment":       fulfilment,
+		"item_count":       fmt.Sprintf("%d", in.ItemCount),
+		"collection_code":  in.CollectionCode,
+		"delivery_address": in.DeliverySummary,
+		"delivery_line":    "",
 	}
 	if in.DeliverySummary != "" {
 		payload["delivery_line"] = "Deliver to: " + in.DeliverySummary + "."
@@ -52,16 +52,13 @@ func (a NotifyAdapter) NotifyOnlineOrderPlaced(ctx context.Context, in OnlineOrd
 	}
 	_ = a.Svc.PostStaffInbox(ctx, in.TenantID, &branchID, title, body, "order.placed", payload)
 
-	phone := strings.TrimSpace(in.OwnerPhone)
-	if phone == "" {
-		return nil
+	phones := append([]string(nil), in.OwnerPhones...)
+	if len(phones) == 0 && strings.TrimSpace(in.OwnerPhone) != "" {
+		phones = notify.SplitPhoneList(in.OwnerPhone)
 	}
-	_, err := a.Svc.Enqueue(ctx, notify.EnqueueInput{
-		TenantID:    in.TenantID,
-		Channel:     notify.ChannelSMS,
-		Recipient:   phone,
-		TemplateKey: "order.placed",
-		Payload:     payload,
-	})
-	return err
+	for _, phone := range phones {
+		// SMS always; WhatsApp too when the shop has WhatsApp enabled + connected.
+		a.Svc.EnqueueReachable(ctx, in.TenantID, "owner", phone, "order.placed", payload)
+	}
+	return nil
 }

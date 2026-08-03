@@ -35,6 +35,8 @@ export function ShopProfilePage() {
         vat_inclusive: form.vat_inclusive,
         currency_code: form.currency_code,
         locale: form.locale,
+        bargain_enabled: form.bargain_enabled ?? false,
+        whatsapp_number: form.whatsapp_number ?? "",
       });
       setForm(saved);
       setOk("Saved");
@@ -144,6 +146,26 @@ export function ShopProfilePage() {
         <p className="hint">
           Currency and locale control how amounts, dates, and numbers are formatted across the dashboard.
         </p>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={form.bargain_enabled ?? false}
+            onChange={(e) => setForm((f) => ({ ...f, bargain_enabled: e.target.checked }))}
+          />
+          Allow customers to bargain (WhatsApp button on product pages)
+        </label>
+        {form.bargain_enabled ? (
+          <label>
+            WhatsApp number (with country code, digits only)
+            <Input
+              value={form.whatsapp_number ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, whatsapp_number: e.target.value }))}
+              placeholder="2547XXXXXXXX"
+              required
+            />
+            <span className="hint">Opens a pre-filled chat when a shopper taps Bargain on the storefront.</span>
+          </label>
+        ) : null}
         <Button type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save"}
         </Button>

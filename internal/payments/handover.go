@@ -1,28 +1,12 @@
 package payments
 
-import (
-	"errors"
-	"fmt"
-)
-
-var ErrSelfApproveHandover = errors.New("confirmer cannot be the same as from_user")
-
-func ValidateHandoverConfirm(fromUserID, confirmerID string) error {
-	if fromUserID == "" || confirmerID == "" {
-		return fmt.Errorf("from_user and confirmer required")
-	}
-	if fromUserID == confirmerID {
-		return ErrSelfApproveHandover
-	}
-	return nil
-}
-
+// IsCashMethod is till cash taken at the counter (immediate custody).
 func IsCashMethod(method string) bool {
 	return method == "cash"
 }
 
 // IsCashOnPickup is storefront branch pickup paid in cash at the counter
-// (not cash-on-delivery and not till cash that needs dual-control handover).
+// (not cash-on-delivery).
 func IsCashOnPickup(method string) bool {
 	return method == "cash_on_pickup"
 }
@@ -41,7 +25,8 @@ func InitialPaymentStatus(method string) string {
 		return "pending"
 	}
 	if IsCashMethod(method) {
-		return "pending_handover"
+		// Cash is physically in hand at the point of sale — no async confirmation.
+		return "confirmed"
 	}
 	if method == "store_credit" {
 		return "allocated"

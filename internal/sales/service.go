@@ -17,14 +17,24 @@ type InventoryMover interface {
 	ApplyMovement(ctx context.Context, tenantID, variantID, locationID uuid.UUID, qtyDelta int, reason, refType string, refID, actorID, corrID uuid.UUID) error
 }
 
+// AuditSink records bargained-price events. Implemented by audit.Service.
+type AuditSink interface {
+	Record(ctx context.Context, tenantID uuid.UUID, actorID *uuid.UUID, action, entityType string, entityID *uuid.UUID, payload map[string]any, corrID uuid.UUID) error
+}
+
 type Service struct {
 	pool      *pgxpool.Pool
 	inventory InventoryMover
 	payments  PaymentTaker
+	auditSink AuditSink
 }
 
 func NewService(pool *pgxpool.Pool, inventory InventoryMover) *Service {
 	return &Service{pool: pool, inventory: inventory}
+}
+
+func (s *Service) SetAuditSink(sink AuditSink) {
+	s.auditSink = sink
 }
 
 type SaleItemInput struct {
@@ -38,6 +48,11 @@ type SaleItemInput struct {
 	UnitPrice   *float64   `json:"unit_price,omitempty"`
 	UnitCost    *float64   `json:"unit_cost,omitempty"`
 	SupplierID  *uuid.UUID `json:"supplier_id,omitempty"`
+	// OverridePrice bargains a catalog line below (or above) list; requires
+	// sales.price_override and a non-empty OverrideReason. List price is still
+	// looked up server-side — never trusted from the client.
+	OverridePrice  *float64 `json:"override_price,omitempty"`
+	OverrideReason string   `json:"override_reason,omitempty"`
 }
 
 type SaleItem struct {
@@ -46,6 +61,7 @@ type SaleItem struct {
 	Description string     `json:"description,omitempty"`
 	Quantity    int        `json:"quantity"`
 	UnitPrice   float64    `json:"unit_price"`
+	ListPrice   *float64   `json:"list_price,omitempty"`
 	LineTotal   float64    `json:"line_total"`
 	UnitCost    *float64   `json:"unit_cost,omitempty"`
 	SupplierID  *uuid.UUID `json:"supplier_id,omitempty"`
@@ -53,24 +69,29 @@ type SaleItem struct {
 }
 
 type Sale struct {
-	ID        uuid.UUID  `json:"id"`
-	BranchID  uuid.UUID  `json:"branch_id"`
-	Channel   string     `json:"channel"`
-	Status    string     `json:"status"`
-	Subtotal  float64    `json:"subtotal"`
-	Total     float64    `json:"total"`
-	CreatedAt time.Time  `json:"created_at"`
-	Items     []SaleItem `json:"items,omitempty"`
+	ID            uuid.UUID  `json:"id"`
+	BranchID      uuid.UUID  `json:"branch_id"`
+	CustomerID    *uuid.UUID `json:"customer_id,omitempty"`
+	CustomerName  string     `json:"customer_name,omitempty"`
+	Channel       string     `json:"channel"`
+	Status        string     `json:"status"`
+	Subtotal      float64    `json:"subtotal"`
+	Total         float64    `json:"total"`
+	CreatedAt     time.Time  `json:"created_at"`
+	PaymentMethod string     `json:"payment_method,omitempty"`
+	PaymentID     *uuid.UUID `json:"payment_id,omitempty"`
+	Items         []SaleItem `json:"items,omitempty"`
 }
 
 type CreateSaleInput struct {
-	TenantID   uuid.UUID
-	BranchID   uuid.UUID
-	CustomerID *uuid.UUID
-	Channel    string
-	Items      []SaleItemInput
-	ActorID    uuid.UUID
-	CorrID     uuid.UUID
+	TenantID           uuid.UUID
+	BranchID           uuid.UUID
+	CustomerID         *uuid.UUID
+	Channel            string
+	Items              []SaleItemInput
+	ActorID            uuid.UUID
+	CorrID             uuid.UUID
+	AllowPriceOverride bool // set by handler after claims.HasPermission("sales.price_override")
 }
 
 func (s *Service) CreateSale(ctx context.Context, in CreateSaleInput) (*Sale, error) {
@@ -83,6 +104,13 @@ func (s *Service) CreateSale(ctx context.Context, in CreateSaleInput) (*Sale, er
 
 	var subtotal float64
 	lineItems := make([]SaleItem, 0, len(in.Items))
+	type priceOverrideAudit struct {
+		variantID uuid.UUID
+		list      float64
+		charged   float64
+		reason    string
+	}
+	var overrides []priceOverrideAudit
 	for _, it := range in.Items {
 		if it.Quantity <= 0 {
 			return nil, fmt.Errorf("invalid quantity")
@@ -92,7 +120,31 @@ func (s *Service) CreateSale(ctx context.Context, in CreateSaleInput) (*Sale, er
 			if err != nil {
 				return nil, fmt.Errorf("variant %s: %w", it.VariantID, err)
 			}
-			line := SaleItem{VariantID: it.VariantID, Quantity: it.Quantity, UnitPrice: price, LineTotal: price * float64(it.Quantity)}
+			charged := price
+			var listPtr *float64
+			if it.OverridePrice != nil {
+				if !in.AllowPriceOverride {
+					return nil, fmt.Errorf("sales.price_override permission required to change catalog price")
+				}
+				reason := strings.TrimSpace(it.OverrideReason)
+				if reason == "" {
+					return nil, fmt.Errorf("override_reason required when override_price is set")
+				}
+				if *it.OverridePrice <= 0 {
+					return nil, fmt.Errorf("override_price must be positive")
+				}
+				charged = *it.OverridePrice
+				lp := price
+				listPtr = &lp
+				overrides = append(overrides, priceOverrideAudit{
+					variantID: it.VariantID, list: price, charged: charged, reason: reason,
+				})
+			}
+			line := SaleItem{
+				VariantID: it.VariantID, Quantity: it.Quantity,
+				UnitPrice: charged, ListPrice: listPtr,
+				LineTotal: charged * float64(it.Quantity),
+			}
 			subtotal += line.LineTotal
 			lineItems = append(lineItems, line)
 			continue
@@ -151,9 +203,9 @@ func (s *Service) CreateSale(ctx context.Context, in CreateSaleInput) (*Sale, er
 			description = &li.Description
 		}
 		_, err = tx.Exec(ctx, `
-			INSERT INTO sales.sale_items (id, tenant_id, sale_id, variant_id, description, quantity, unit_price, line_total, unit_cost, supplier_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-			itemID, in.TenantID, id, variantID, description, li.Quantity, li.UnitPrice, li.LineTotal, li.UnitCost, li.SupplierID)
+			INSERT INTO sales.sale_items (id, tenant_id, sale_id, variant_id, description, quantity, unit_price, list_price, line_total, unit_cost, supplier_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			itemID, in.TenantID, id, variantID, description, li.Quantity, li.UnitPrice, li.ListPrice, li.LineTotal, li.UnitCost, li.SupplierID)
 		if err != nil {
 			return nil, err
 		}
@@ -175,14 +227,32 @@ func (s *Service) CreateSale(ctx context.Context, in CreateSaleInput) (*Sale, er
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	if s.auditSink != nil {
+		actor := in.ActorID
+		for _, ov := range overrides {
+			vid := ov.variantID
+			_ = s.auditSink.Record(ctx, in.TenantID, &actor, "sales.price_override", "sale", &id, map[string]any{
+				"variant_id":     vid.String(),
+				"list_price":     ov.list,
+				"override_price": ov.charged,
+				"reason":         ov.reason,
+			}, in.CorrID)
+		}
+	}
 	return &Sale{ID: id, BranchID: in.BranchID, Channel: in.Channel, Status: "draft", Subtotal: subtotal, Total: subtotal, Items: lineItems}, nil
 }
 
 func (s *Service) CompleteSale(ctx context.Context, tenantID, saleID, locationID, actorID, corrID uuid.UUID) (*Sale, error) {
 	var sale Sale
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, branch_id, channel, status, subtotal, total FROM sales.sales WHERE tenant_id = $1 AND id = $2`,
-		tenantID, saleID).Scan(&sale.ID, &sale.BranchID, &sale.Channel, &sale.Status, &sale.Subtotal, &sale.Total)
+		SELECT s.id, s.branch_id, s.customer_id, COALESCE(c.full_name, ''),
+		       s.channel, s.status, s.subtotal, s.total
+		FROM sales.sales s
+		LEFT JOIN repair.customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
+		WHERE s.tenant_id = $1 AND s.id = $2`,
+		tenantID, saleID).Scan(
+		&sale.ID, &sale.BranchID, &sale.CustomerID, &sale.CustomerName,
+		&sale.Channel, &sale.Status, &sale.Subtotal, &sale.Total)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("sale not found")
@@ -228,6 +298,60 @@ func (s *Service) CompleteSale(ctx context.Context, tenantID, saleID, locationID
 	return &sale, nil
 }
 
+// CompletePaidDraftSale finishes a draft sale after its payment has allocated.
+// Used by the payments STK webhook so completion does not depend on an open browser tab.
+// Picks the branch counter location for stock deduction; no-ops if the sale is already past draft.
+func (s *Service) CompletePaidDraftSale(ctx context.Context, tenantID, saleID, actorID uuid.UUID) error {
+	var status string
+	var branchID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT status, branch_id FROM sales.sales WHERE tenant_id = $1 AND id = $2`,
+		tenantID, saleID).Scan(&status, &branchID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if status != "draft" {
+		return nil
+	}
+	locationID, err := s.defaultCounterLocation(ctx, tenantID, branchID)
+	if err != nil {
+		return err
+	}
+	_, err = s.CompleteSale(ctx, tenantID, saleID, locationID, actorID, uuid.New())
+	if err != nil && strings.Contains(err.Error(), "not in draft") {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) defaultCounterLocation(ctx context.Context, tenantID, branchID uuid.UUID) (uuid.UUID, error) {
+	var locationID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT id FROM inventory.stock_locations
+		WHERE tenant_id = $1 AND location_type = 'counter'
+		  AND (branch_id = $2 OR branch_id IS NULL)
+		ORDER BY CASE WHEN branch_id = $2 THEN 0 ELSE 1 END, created_at
+		LIMIT 1`, tenantID, branchID).Scan(&locationID)
+	if err == nil {
+		return locationID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, err
+	}
+	err = s.pool.QueryRow(ctx, `
+		SELECT id FROM inventory.stock_locations
+		WHERE tenant_id = $1
+		ORDER BY CASE location_type WHEN 'counter' THEN 0 ELSE 1 END, created_at
+		LIMIT 1`, tenantID).Scan(&locationID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("no stock location to complete sale: %w", err)
+	}
+	return locationID, nil
+}
+
 func (s *Service) ReverseSale(ctx context.Context, tenantID, saleID, locationID, actorID, corrID uuid.UUID) (*Sale, error) {
 	var sale Sale
 	err := s.pool.QueryRow(ctx, `
@@ -271,8 +395,14 @@ func (s *Service) ReverseSale(ctx context.Context, tenantID, saleID, locationID,
 func (s *Service) GetSale(ctx context.Context, tenantID, saleID uuid.UUID) (*Sale, error) {
 	var sale Sale
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, branch_id, channel, status, subtotal, total, created_at FROM sales.sales WHERE tenant_id = $1 AND id = $2`,
-		tenantID, saleID).Scan(&sale.ID, &sale.BranchID, &sale.Channel, &sale.Status, &sale.Subtotal, &sale.Total, &sale.CreatedAt)
+		SELECT s.id, s.branch_id, s.customer_id, COALESCE(c.full_name, ''),
+		       s.channel, s.status, s.subtotal, s.total, s.created_at
+		FROM sales.sales s
+		LEFT JOIN repair.customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
+		WHERE s.tenant_id = $1 AND s.id = $2`,
+		tenantID, saleID).Scan(
+		&sale.ID, &sale.BranchID, &sale.CustomerID, &sale.CustomerName,
+		&sale.Channel, &sale.Status, &sale.Subtotal, &sale.Total, &sale.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("sale not found")
@@ -308,21 +438,33 @@ func (s *Service) ListSales(ctx context.Context, tenantID uuid.UUID, branchID *u
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	q := `SELECT id, branch_id, channel, status, subtotal, total, created_at
-		FROM sales.sales WHERE tenant_id = $1`
+	q := `SELECT s.id, s.branch_id, s.customer_id, COALESCE(c.full_name, ''),
+		s.channel, s.status, s.subtotal, s.total, s.created_at,
+		COALESCE(pay.method, ''), pay.payment_id
+		FROM sales.sales s
+		LEFT JOIN repair.customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
+		LEFT JOIN LATERAL (
+			SELECT p.method, p.id AS payment_id
+			FROM payments.payment_allocations a
+			JOIN payments.payments p ON p.id = a.payment_id
+			WHERE a.tenant_id = s.tenant_id AND a.payable_type = 'sale' AND a.payable_id = s.id
+			ORDER BY p.created_at DESC
+			LIMIT 1
+		) pay ON true
+		WHERE s.tenant_id = $1`
 	args := []any{tenantID}
 	n := 2
 	if branchID != nil {
-		q += fmt.Sprintf(" AND branch_id = $%d", n)
+		q += fmt.Sprintf(" AND s.branch_id = $%d", n)
 		args = append(args, *branchID)
 		n++
 	}
 	if status != "" {
-		q += fmt.Sprintf(" AND status = $%d", n)
+		q += fmt.Sprintf(" AND s.status = $%d", n)
 		args = append(args, status)
 		n++
 	}
-	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", n)
+	q += fmt.Sprintf(" ORDER BY s.created_at DESC LIMIT $%d", n)
 	args = append(args, limit)
 
 	rows, err := s.pool.Query(ctx, q, args...)
@@ -333,9 +475,15 @@ func (s *Service) ListSales(ctx context.Context, tenantID uuid.UUID, branchID *u
 	items := make([]Sale, 0)
 	for rows.Next() {
 		var sale Sale
-		if err := rows.Scan(&sale.ID, &sale.BranchID, &sale.Channel, &sale.Status, &sale.Subtotal, &sale.Total, &sale.CreatedAt); err != nil {
+		var paymentID *uuid.UUID
+		if err := rows.Scan(
+			&sale.ID, &sale.BranchID, &sale.CustomerID, &sale.CustomerName,
+			&sale.Channel, &sale.Status, &sale.Subtotal, &sale.Total, &sale.CreatedAt,
+			&sale.PaymentMethod, &paymentID,
+		); err != nil {
 			return nil, err
 		}
+		sale.PaymentID = paymentID
 		items = append(items, sale)
 	}
 	return items, rows.Err()

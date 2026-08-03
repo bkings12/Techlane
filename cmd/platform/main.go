@@ -141,6 +141,7 @@ func main() {
 		}
 	}
 	salesSvc := sales.NewService(pool, invSvc)
+	salesSvc.SetAuditSink(auditSvc)
 	salesSvc.SetPaymentTaker(payments.SalePaymentAdapter{Svc: paySvc})
 	paySvc.SetQuickSaleCreator(payments.SalesQuickSaleAdapter{Svc: salesSvc})
 	syncSvc := sync.NewService(pool, repairSvc, invSvc, paySvc, idSvc)
@@ -150,6 +151,7 @@ func main() {
 	commerceSvc.SetOrderPlacedNotifier(commerce.NotifyAdapter{Svc: notifySvc})
 	paySvc.SetOrderPaidHook(payments.CommercePaidAdapter{Svc: commerceSvc})
 	paySvc.SetRepairPaidHook(payments.RepairSettledAdapter{Svc: repairSvc})
+	paySvc.SetSalePaidHook(payments.SalesPaidAdapter{Svc: salesSvc})
 	paySvc.SetOutstandingResolver(func(ctx context.Context, tenantID uuid.UUID, payableType string, payableID uuid.UUID) (float64, bool, error) {
 		if payableType != "repair" {
 			return 0, false, nil

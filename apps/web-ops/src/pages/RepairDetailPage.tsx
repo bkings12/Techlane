@@ -497,7 +497,7 @@ export function RepairDetailPage() {
           ? estimateTotalAmount(approved)
           : (j.labor_amount ?? 0);
       const paid = dedupeById(pay.items ?? [])
-        .filter((p) => ["allocated", "confirmed", "pending_handover", "provisional"].includes(p.status))
+        .filter((p) => ["allocated", "confirmed", "provisional"].includes(p.status))
         .reduce((sum, p) => sum + p.amount, 0);
       const remaining = Math.max(0, due - paid);
       if (remaining > 0 || due > 0) setPayAmount(String(remaining > 0 ? remaining : due));
@@ -527,7 +527,7 @@ export function RepairDetailPage() {
     const due =
       (approved != null ? estimateTotalAmount(approved) : (job.labor_amount ?? 0)) + linesTotal;
     const paid = payments
-      .filter((p) => ["allocated", "confirmed", "pending_handover", "provisional"].includes(p.status))
+      .filter((p) => ["allocated", "confirmed", "provisional"].includes(p.status))
       .reduce((sum, p) => sum + p.amount, 0);
     const balance = Math.max(0, due - paid);
     if (isCollectableStatus(job.status) && balance > 0) {
@@ -598,6 +598,9 @@ export function RepairDetailPage() {
           if (p.status === "allocated" || p.status === "confirmed") {
             setStkSuccess("Payment successful");
             await refresh();
+            if (job?.id) {
+              void openRepairReceipt(job.id).catch(() => undefined);
+            }
             const due =
               job && typeof job.balance_due === "number"
                 ? job.balance_due
@@ -788,18 +791,17 @@ export function RepairDetailPage() {
     (p) =>
       p.status === "allocated" ||
       p.status === "confirmed" ||
-      p.status === "pending_handover" ||
       p.status === "provisional",
   );
   const paidTotal = payments
-    .filter((p) => ["allocated", "confirmed", "pending_handover", "provisional"].includes(p.status))
+    .filter((p) => ["allocated", "confirmed", "provisional"].includes(p.status))
     .reduce((sum, p) => sum + p.amount, 0);
   const livePayments = payments.filter((p) => p.status !== "failed" && p.status !== "cancelled");
   const failedPayments = payments.filter((p) => p.status === "failed" || p.status === "cancelled");
   const cashHeld = payments
-    .filter((p) => p.method === "cash" && (p.status === "pending_handover" || p.status === "provisional"))
+    .filter((p) => p.method === "cash" && p.status === "provisional")
     .reduce((sum, p) => sum + p.amount, 0);
-  // Prefer server rollups (same formula as handover / receipts) when present.
+  // Prefer server rollups (same formula as collection / receipts) when present.
   const approvedEstimate = estimates.find((e) => e.status === "approved");
   const saleLines: JobSaleLine[] = job.sale_lines ?? [];
   const saleLinesTotal =
@@ -1989,7 +1991,7 @@ export function RepairDetailPage() {
               <p className="hint">
                 Paid in full
                 {cashHeld > 0
-                  ? ` (${formatMoney(cashHeld)} cash still pending till handover — device can be released)`
+                  ? ` (${formatMoney(cashHeld)} cash on the counter — device can be released)`
                   : ""}
                 .
               </p>
@@ -2029,6 +2031,8 @@ export function RepairDetailPage() {
                         "STK push sent, but we couldn't track its status here — check Payments for confirmation.",
                       );
                     }
+                  } else {
+                    void openRepairReceipt(job.id).catch(() => undefined);
                   }
                   if (willClear && payMethod === "cash") {
                     await advanceToHandoverAfterPayment("cash");
@@ -2039,7 +2043,7 @@ export function RepairDetailPage() {
               <label>
                 Method
                 <select className="input" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
-                  <option value="cash">Cash (provisional)</option>
+                  <option value="cash">Cash</option>
                   <option value="mpesa_stk" disabled={!payCfg?.configured}>
                     M-Pesa STK{!payCfg?.configured ? " — configure in Settings" : ""}
                   </option>
@@ -2114,6 +2118,8 @@ export function RepairDetailPage() {
                           "STK push sent, but we couldn't track its status here — check Payments for confirmation.",
                         );
                       }
+                    } else {
+                      void openRepairReceipt(job.id).catch(() => undefined);
                     }
                   });
                 }}

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useStorefront } from "../store/StorefrontContext";
-import { storefrontBannerImageURL, catalogItemImageURL, type CatalogItem, type StorefrontBanner } from "../lib/api";
+import {
+  storefrontBannerImageURL,
+  catalogItemImageURL,
+  type CatalogItem,
+  type StorefrontBanner,
+  type StorefrontCategory,
+} from "../lib/api";
 import { ProductCard } from "../components/ProductCard";
 import { Countdown } from "../components/Countdown";
 
@@ -301,39 +307,74 @@ function CompactBestsellers() {
   );
 }
 
-/** Products grouped by category — max 5 each (Limupa / Electro pattern). */
+/** Map a category (and its aliases) up to the top-level parent name. */
+function rootCategoryName(c: StorefrontCategory, byId: Map<string, StorefrontCategory>): string {
+  let cur = c;
+  const guard = new Set<string>();
+  while (cur.parent_id && byId.has(cur.parent_id) && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    cur = byId.get(cur.parent_id)!;
+  }
+  return cur.name.trim();
+}
+
+/** Products grouped by top-level category only — nested leaves roll up. */
 function ProductsByCategory() {
   const { catalog, content } = useStorefront();
 
   const groups = useMemo(() => {
-    const byName = new Map<string, CatalogItem[]>();
-    for (const item of catalog) {
-      const name = item.category?.trim();
+    const cats = content?.categories ?? [];
+    const byId = new Map(cats.map((c) => [c.id, c]));
+
+    // If the same display name exists as a nested category elsewhere, prefer that
+    // tree's root (avoids duplicate rails like root "Phone Chargers" + nested twin).
+    const nestedOwnerByName = new Map<string, string>();
+    for (const c of cats) {
+      const name = c.name?.trim();
       if (!name) continue;
-      const list = byName.get(name) ?? [];
-      if (list.length >= RAIL_LIMIT) continue;
-      list.push(item);
-      byName.set(name, list);
+      if (c.parent_id || c.depth > 0) {
+        nestedOwnerByName.set(name, rootCategoryName(c, byId));
+      }
     }
 
-    const ordered: Array<{ title: string; items: CatalogItem[] }> = [];
-    const seen = new Set<string>();
-    // Prefer CMS / online category order, but never repeat the same display name
-    // (tenants can have duplicate-named categories under different parents).
-    for (const c of content?.categories ?? []) {
-      const title = c.name?.trim();
-      if (!title || seen.has(title)) continue;
-      const items = byName.get(title);
-      if (!items?.length) continue;
-      ordered.push({ title, items });
-      seen.add(title);
+    // leaf display name → root display name (skip nested names as section titles)
+    const leafToRoot = new Map<string, string>();
+    const rootOrder: string[] = [];
+    const rootSeen = new Set<string>();
+    for (const c of cats) {
+      const name = c.name?.trim();
+      if (!name) continue;
+      const nested = Boolean(c.parent_id) || c.depth > 0;
+      let root = rootCategoryName(c, byId);
+      const folded = nestedOwnerByName.get(name);
+      if (!nested && folded && folded !== name) {
+        root = folded;
+        leafToRoot.set(name, root);
+        continue;
+      }
+      leafToRoot.set(name, root);
+      if (!nested && !rootSeen.has(root)) {
+        rootOrder.push(root);
+        rootSeen.add(root);
+      }
     }
-    for (const [title, items] of byName) {
-      if (seen.has(title) || items.length === 0) continue;
-      ordered.push({ title, items });
-      seen.add(title);
+
+    const byRoot = new Map<string, CatalogItem[]>();
+    for (const item of catalog) {
+      const leaf = item.category?.trim();
+      if (!leaf) continue;
+      const root = leafToRoot.get(leaf);
+      // Only show products that belong under a known top-level category.
+      if (!root || !rootSeen.has(root)) continue;
+      const list = byRoot.get(root) ?? [];
+      if (list.length >= RAIL_LIMIT) continue;
+      list.push(item);
+      byRoot.set(root, list);
     }
-    return ordered;
+
+    return rootOrder
+      .filter((title) => (byRoot.get(title)?.length ?? 0) > 0)
+      .map((title) => ({ title, items: byRoot.get(title)! }));
   }, [catalog, content?.categories]);
 
   if (groups.length === 0) return null;

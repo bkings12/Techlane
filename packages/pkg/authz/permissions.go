@@ -28,6 +28,7 @@ func SystemPermissionCatalog() []PermissionDef {
 		{Code: "repairs.assign", Description: "Assign technicians", Category: "repairs"},
 		{Code: "repairs.status.update", Description: "Update repair status", Category: "repairs"},
 		{Code: "repairs.price.override", Description: "Override repair prices", Category: "repairs"},
+		{Code: "sales.price_override", Description: "Override POS catalog sell prices", Category: "sales"},
 		{Code: "repairs.edit", Description: "Correct repair job details after creation", Category: "repairs"},
 		{Code: "repairs.presets.write", Description: "Manage intake condition tags and issue presets", Category: "repairs"},
 		{Code: "repairs.collect", Description: "Release a device to the customer", Category: "repairs"},
@@ -56,8 +57,6 @@ func SystemPermissionCatalog() []PermissionDef {
 		{Code: "payments.manual_confirm", Description: "Reconcile M-Pesa/bank payments via provider query", Category: "payments"},
 		{Code: "cash.receive", Description: "Receive cash", Category: "payments"},
 		{Code: "store_credit.manage", Description: "Issue and apply store credit", Category: "payments"},
-		{Code: "cash.handover.request", Description: "Request cash handover", Category: "payments"},
-		{Code: "cash.handover.confirm", Description: "Confirm cash handover", Category: "payments"},
 		{Code: "refunds.create", Description: "Create refunds", Category: "payments"},
 		{Code: "refunds.approve", Description: "Approve refunds", Category: "payments"},
 

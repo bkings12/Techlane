@@ -6,27 +6,20 @@ import { useRealtimeEvents } from "../lib/realtime";
 import { Badge, Button, EmptyState, Input, PageHeader } from "../components/ui";
 import {
   approveRefund,
-  confirmCashHandover,
   createRefund,
   getPaymentSettings,
   listAllPayments,
   listC2BTransactions,
-  listCashHandovers,
   listPOSCatalog,
   listRefunds,
   listStockLocations,
-  listUsers,
   matchC2BToNewSale,
   matchC2BTransaction,
-  pendingCashTotal,
-  requestCashHandover,
   type C2BTransaction,
-  type CashHandover,
   type CatalogItem,
   type Payment,
   type PaymentProviderSettings,
   type Refund,
-  type StaffUser,
   type StockLocation,
 } from "../lib/api";
 
@@ -35,7 +28,7 @@ function can(perms: string[] | undefined, code: string) {
 }
 
 function isSuccessStatus(status: string) {
-  return status === "allocated" || status === "confirmed" || status === "pending_handover";
+  return status === "allocated" || status === "confirmed";
 }
 
 function startOfToday() {
@@ -85,7 +78,6 @@ export function PaymentsPage() {
   const { branchId } = useBranch();
   const [cfg, setCfg] = useState<PaymentProviderSettings | null>(null);
   const [items, setItems] = useState<Payment[]>([]);
-  const [handovers, setHandovers] = useState<CashHandover[]>([]);
   const [refunds, setRefunds] = useState<Refund[]>([]);
   const [c2bOpen, setC2bOpen] = useState<C2BTransaction[]>([]);
   const [matchByC2b, setMatchByC2b] = useState<Record<string, string>>({});
@@ -93,11 +85,6 @@ export function PaymentsPage() {
   const [locationId, setLocationId] = useState("");
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [saleMatch, setSaleMatch] = useState<Record<string, { variantId: string; qty: string }>>({});
-  const [staff, setStaff] = useState<StaffUser[]>([]);
-  const [pendingCash, setPendingCash] = useState(0);
-  const [toUser, setToUser] = useState("");
-  const [amount, setAmount] = useState("");
-  const [countByHandover, setCountByHandover] = useState<Record<string, string>>({});
   const [refundPaymentId, setRefundPaymentId] = useState("");
   const [refundAmount, setRefundAmount] = useState("");
   const [refundReason, setRefundReason] = useState("");
@@ -110,39 +97,21 @@ export function PaymentsPage() {
   const canCreateRefund = can(user?.permissions, "refunds.create") || can(user?.permissions, "payments.initiate");
   const canApproveRefund = can(user?.permissions, "refunds.approve");
   const canMatchC2B =
-    can(user?.permissions, "cash.handover.confirm") ||
-    can(user?.permissions, "refunds.approve") ||
-    can(user?.permissions, "payments.initiate");
+    can(user?.permissions, "refunds.approve") || can(user?.permissions, "payments.initiate");
 
   const refresh = useCallback(async () => {
-    const [c, p, h, cash, users, refs, unmatched, mismatch] = await Promise.all([
+    const [c, p, refs, unmatched, mismatch] = await Promise.all([
       getPaymentSettings(),
       listAllPayments(),
-      listCashHandovers(),
-      pendingCashTotal(),
-      listUsers().catch(() => ({ items: [] as StaffUser[] })),
       listRefunds().catch(() => ({ items: [] as Refund[] })),
       listC2BTransactions("unmatched").catch(() => ({ items: [] as C2BTransaction[] })),
       listC2BTransactions("amount_mismatch").catch(() => ({ items: [] as C2BTransaction[] })),
     ]);
     setCfg(c);
     setItems(p.items ?? []);
-    setHandovers(h.items ?? []);
-    setPendingCash(cash.amount ?? 0);
-    setStaff((users.items ?? []).filter((u) => u.id !== user?.id));
     setRefunds(refs.items ?? []);
     setC2bOpen([...(unmatched.items ?? []), ...(mismatch.items ?? [])]);
-    setAmount((prev) => (prev === "" && cash.amount > 0 ? String(cash.amount) : prev));
-    setCountByHandover((prev) => {
-      const next = { ...prev };
-      for (const ho of h.items ?? []) {
-        if (ho.status === "requested" && next[ho.id] === undefined) {
-          next[ho.id] = String(ho.amount);
-        }
-      }
-      return next;
-    });
-  }, [user?.id]);
+  }, []);
 
   useEffect(() => {
     refresh().catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
@@ -204,42 +173,6 @@ export function PaymentsPage() {
       return hay.includes(q);
     });
   }, [items, query, methodFilter, statusFilter]);
-
-  async function submitHandover(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await requestCashHandover({
-        amount: Number(amount) || 0,
-        to_user_id: toUser || undefined,
-        branch_id: user?.branch_ids?.[0],
-      });
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Handover failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function confirm(id: string) {
-    setBusy(true);
-    setError("");
-    try {
-      const raw = countByHandover[id];
-      const counted = raw === undefined || raw === "" ? undefined : Number(raw);
-      if (counted !== undefined && (!Number.isFinite(counted) || counted < 0)) {
-        throw new Error("Counted amount must be zero or more");
-      }
-      await confirmCashHandover(id, counted);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Confirm failed");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function submitRefund(e: FormEvent) {
     e.preventDefault();
@@ -332,8 +265,6 @@ export function PaymentsPage() {
     }
   }
 
-  const openHandovers = handovers.filter((h) => h.status === "requested");
-  const shortageTotal = handovers.reduce((s, h) => s + (h.shortage_amount || 0), 0);
   const pendingRefunds = refunds.filter((r) => r.status === "pending");
   const refundable = items.filter((p) => p.status === "allocated" || p.status === "confirmed");
   const matchablePayments = items.filter((p) => p.method === "mpesa_c2b" && (p.status === "initiated" || p.status === "pending"));
@@ -378,11 +309,6 @@ export function PaymentsPage() {
           <em>Need matching</em>
         </article>
         <article className="tx-stat">
-          <span>Provisional cash</span>
-          <strong>KES {pendingCash.toLocaleString()}</strong>
-          <em>{openHandovers.length} open handover{openHandovers.length === 1 ? "" : "s"}</em>
-        </article>
-        <article className="tx-stat">
           <span>M-Pesa</span>
           <strong>
             <Badge tone={cfg?.configured ? "success" : "warning"}>{cfg?.configured ? "Ready" : "Setup"}</Badge>
@@ -395,7 +321,7 @@ export function PaymentsPage() {
         <div className="panel-head tx-ledger-head">
           <div>
             <h2>Transaction ledger</h2>
-            <p className="muted">Linked to jobs and clients · shortages recorded KES {shortageTotal.toLocaleString()}</p>
+            <p className="muted">Linked to jobs and clients</p>
           </div>
           <div className="tx-filters">
             <Input
@@ -486,54 +412,6 @@ export function PaymentsPage() {
       </section>
 
       <div className="desk-attention">
-        <section className={`attention-card ${openHandovers.length ? "warn" : ""}`}>
-          <h2>Cash handover</h2>
-          <p className="hint">Cash stays provisional until another staff member confirms the physical count.</p>
-          <form className="form-grid" onSubmit={submitHandover}>
-            <label>
-              Amount (KES)
-              <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} required />
-            </label>
-            <label>
-              Hand to
-              <select className="input" value={toUser} onChange={(e) => setToUser(e.target.value)}>
-                <option value="">Any manager on duty</option>
-                {staff.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.display_name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Button type="submit" disabled={busy}>
-              Request handover
-            </Button>
-          </form>
-          {openHandovers.length > 0 ? (
-            <ul className="part-list" style={{ marginTop: "1rem" }}>
-              {openHandovers.map((h) => (
-                <li key={h.id} className="part-card">
-                  <div className="part-head">
-                    <strong>KES {h.amount.toLocaleString()}</strong>
-                    <Badge tone="pending">requested</Badge>
-                  </div>
-                  <label>
-                    Counted amount
-                    <Input
-                      type="number"
-                      value={countByHandover[h.id] ?? ""}
-                      onChange={(e) => setCountByHandover((prev) => ({ ...prev, [h.id]: e.target.value }))}
-                    />
-                  </label>
-                  <Button type="button" disabled={busy} onClick={() => void confirm(h.id)}>
-                    Confirm count
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
-
         <section className={`attention-card ${c2bOpen.length ? "warn" : ""}`}>
           <h2>Unmatched C2B</h2>
           <p className="hint">Paybill deposits waiting to be matched to a payment or a new sale.</p>

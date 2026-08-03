@@ -19,7 +19,7 @@ const QUICK_LINKS: { label: string; path: string; icon: string; keywords: string
   { label: "Part requests", path: "/parts", icon: "parts", keywords: "parts requests" },
   { label: "Inventory", path: "/inventory", icon: "inventory", keywords: "inventory stock" },
   { label: "Suppliers", path: "/suppliers", icon: "suppliers", keywords: "suppliers vendors" },
-  { label: "POS", path: "/pos", icon: "pos", keywords: "pos point of sale checkout sell counter" },
+  { label: "Sell", path: "/pos", icon: "pos", keywords: "pos point of sale checkout sell counter" },
   { label: "Same-day fix", path: "/counter/fix", icon: "pos", keywords: "quick repair same day counter fix" },
   { label: "Pickup", path: "/counter/pickup", icon: "pos", keywords: "pickup collect pk code order" },
   { label: "Orders", path: "/orders", icon: "orders", keywords: "orders online" },

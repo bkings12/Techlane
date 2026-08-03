@@ -20,6 +20,41 @@ import { statusLabel } from "../lib/repairStatus";
 import { useCurrency } from "../lib/currency";
 
 const WALK_IN_VALUE = "__walk_in__";
+const WALK_IN_OPTION: ComboOption = {
+  value: WALK_IN_VALUE,
+  label: "Walk-in (no record)",
+  sublabel: "Anonymous check-in",
+};
+
+function phoneDigits(s: string): string {
+  return s.replace(/\D/g, "");
+}
+
+function phonesMatch(a: string, b: string): boolean {
+  const da = phoneDigits(a);
+  const db = phoneDigits(b);
+  if (da.length < 9 || db.length < 9) return false;
+  return da === db || da.endsWith(db) || db.endsWith(da);
+}
+
+/** Turn free-typed device text into brand/model (and prefer an exact catalog hit). */
+function parseFreeDevice(query: string, options: ComboOption[]): { brand: string; model: string; value: string } {
+  const t = query.trim();
+  if (!t) return { brand: "", model: "", value: "" };
+  const lower = t.toLowerCase();
+  const exact = options.find((o) => o.label.toLowerCase() === lower);
+  if (exact) {
+    const [b, ...rest] = exact.value.split("|");
+    return { brand: b || exact.label, model: rest.join("|") || "", value: exact.value };
+  }
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return { brand: parts[0]!, model: "", value: `${parts[0]}|` };
+  return {
+    brand: parts[0]!,
+    model: parts.slice(1).join(" "),
+    value: `${parts[0]}|${parts.slice(1).join(" ")}`,
+  };
+}
 
 /** Fallback only if the presets API is unreachable — primary source is listIntakePresets. */
 const FALLBACK_ISSUES: ComboOption[] = [
@@ -153,21 +188,22 @@ function QuickIntake({
   const { formatMoney } = useCurrency();
 
   const [customerValue, setCustomerValue] = useState("");
-  const [customerOptions, setCustomerOptions] = useState<ComboOption[]>([
-    { value: WALK_IN_VALUE, label: "Walk-in (no record)", sublabel: "Anonymous check-in" },
-  ]);
+  const [customerOptions, setCustomerOptions] = useState<ComboOption[]>([WALK_IN_OPTION]);
   const [customerSearching, setCustomerSearching] = useState(false);
+  const [customerQueryDraft, setCustomerQueryDraft] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [anonymous, setAnonymous] = useState(false);
 
   const [deviceKind, setDeviceKind] = useState<DeviceKind>("phone");
   const [deviceValue, setDeviceValue] = useState("");
+  const [devicePickKey, setDevicePickKey] = useState(0);
   const [brand, setBrand] = useState("");
   const [model, setModel] = useState("");
   const [imei, setImei] = useState("");
 
   const [issueValue, setIssueValue] = useState("");
+  const [issuePickKey, setIssuePickKey] = useState(0);
   const [issueOptions, setIssueOptions] = useState<ComboOption[]>(FALLBACK_ISSUES);
   const [conditionCatalog, setConditionCatalog] = useState<string[]>(FALLBACK_CONDITION_TAGS);
   const [conditionPickKey, setConditionPickKey] = useState(0);
@@ -221,8 +257,25 @@ function QuickIntake({
     Boolean(branchId) &&
     Boolean(problem.trim()) &&
     Boolean(deviceKind) &&
+    Boolean(brand.trim()) &&
     (anonymous || Boolean(customerValue)) &&
     (!toDiagnose ? Number(amount) > 0 : true);
+
+  const submitBlockedReason = !canSubmit
+    ? !branchId
+      ? "Select a branch first"
+      : !anonymous && !customerValue
+        ? customerQueryDraft.trim()
+          ? "Tap a customer in the search list (or + to add, or Walk-in)"
+          : "Select a customer (or Walk-in)"
+        : !brand.trim()
+          ? "Type or pick a device (brand / model)"
+          : !problem.trim()
+            ? "Type or pick an issue"
+            : !toDiagnose && !(Number(amount) > 0)
+              ? "Enter an amount, or check To be diagnosed"
+              : "Fill required ticket fields"
+    : "";
 
   const estimateLabel = toDiagnose
     ? "To diagnose"
@@ -233,9 +286,7 @@ function QuickIntake({
   const searchCustomers = useCallback((query: string) => {
     const q = query.trim();
     if (q.length < 2) {
-      setCustomerOptions([
-        { value: WALK_IN_VALUE, label: "Walk-in (no record)", sublabel: "Anonymous check-in" },
-      ]);
+      setCustomerOptions([WALK_IN_OPTION]);
       setCustomerSearching(false);
       return;
     }
@@ -247,16 +298,10 @@ function QuickIntake({
           label: c.full_name,
           sublabel: c.phone || "No phone",
         }));
-        setCustomerOptions([
-          { value: WALK_IN_VALUE, label: "Walk-in (no record)", sublabel: "Anonymous check-in" },
-          ...items,
-        ]);
+        // Walk-in last so Enter / highlight prefers a real customer match.
+        setCustomerOptions([...items, WALK_IN_OPTION]);
       })
-      .catch(() =>
-        setCustomerOptions([
-          { value: WALK_IN_VALUE, label: "Walk-in (no record)", sublabel: "Anonymous check-in" },
-        ]),
-      )
+      .catch(() => setCustomerOptions([WALK_IN_OPTION]))
       .finally(() => setCustomerSearching(false));
   }, []);
 
@@ -278,12 +323,30 @@ function QuickIntake({
     setCustomerPhone(opt.sublabel && opt.sublabel !== "No phone" ? opt.sublabel : "");
   }
 
+  // Typing a phone into search does not select anyone until they tap / press Enter.
+  // Auto-pick when there is a single clear phone match so Create job can enable.
+  useEffect(() => {
+    if (customerSearching || customerValue || anonymous) return;
+    const q = customerQueryDraft.trim();
+    if (!q) return;
+    const real = customerOptions.filter((o) => o.value && o.value !== WALK_IN_VALUE);
+    if (real.length === 0) return;
+
+    const byPhone = real.filter((o) => phonesMatch(q, o.sublabel ?? ""));
+    if (byPhone.length === 1) {
+      onCustomerSelect(byPhone[0]!);
+      return;
+    }
+    if (real.length === 1 && phoneDigits(q).length >= 9) {
+      onCustomerSelect(real[0]!);
+    }
+  }, [customerOptions, customerSearching, customerQueryDraft, customerValue, anonymous]);
+
   function onDeviceSelect(opt: ComboOption) {
     setDeviceValue(opt.value);
     setLast(null);
     if (!opt.value) {
-      setBrand("");
-      setModel("");
+      // Cleared by typing — free-text handler fills brand/model from the query.
       return;
     }
     const [b, ...rest] = opt.value.split("|");
@@ -291,9 +354,39 @@ function QuickIntake({
     setModel(rest.join("|") || "");
   }
 
+  function onDeviceQueryChange(query: string) {
+    // Commit typed text immediately so the ticket fills without requiring a list tap.
+    const parsed = parseFreeDevice(query, deviceOptions);
+    setBrand(parsed.brand);
+    setModel(parsed.model);
+    if (parsed.value && deviceOptions.some((o) => o.value === parsed.value)) {
+      setDeviceValue(parsed.value);
+    } else {
+      setDeviceValue("");
+    }
+    setLast(null);
+  }
+
   function onIssueSelect(opt: ComboOption) {
     setIssueValue(opt.value);
+    setLast(null);
+    if (!opt.value) {
+      // Cleared by typing — free-text handler keeps problem in sync with the query.
+      return;
+    }
     setProblem(opt.label || opt.value);
+  }
+
+  function onIssueQueryChange(query: string) {
+    const q = query.trim();
+    setProblem(q);
+    if (!q) {
+      setIssueValue("");
+      setLast(null);
+      return;
+    }
+    const exact = issueOptions.find((o) => o.label.toLowerCase() === q.toLowerCase());
+    setIssueValue(exact?.value ?? "");
     setLast(null);
   }
 
@@ -315,13 +408,16 @@ function QuickIntake({
     setCustomerValue("");
     setCustomerName("");
     setCustomerPhone("");
+    setCustomerQueryDraft("");
     setAnonymous(false);
     setDeviceKind("phone");
     setDeviceValue("");
+    setDevicePickKey((k) => k + 1);
     setBrand("");
     setModel("");
     setImei("");
     setIssueValue("");
+    setIssuePickKey((k) => k + 1);
     setProblem("");
     setToDiagnose(true);
     setAmount("");
@@ -422,12 +518,15 @@ function QuickIntake({
       setCustomerValue("");
       setCustomerName("");
       setCustomerPhone("");
+      setCustomerQueryDraft("");
       setAnonymous(false);
       setDeviceValue("");
+      setDevicePickKey((k) => k + 1);
       setBrand("");
       setModel("");
       setImei("");
       setIssueValue("");
+      setIssuePickKey((k) => k + 1);
       setProblem("");
       setToDiagnose(true);
       setAmount("");
@@ -449,10 +548,17 @@ function QuickIntake({
   }
 
   const ticketFilled =
-    Boolean(customerValue) || Boolean(brand) || Boolean(model) || Boolean(problem) || conditionTags.length > 0;
+    Boolean(customerValue) ||
+    Boolean(customerQueryDraft.trim()) ||
+    Boolean(brand) ||
+    Boolean(model) ||
+    Boolean(problem) ||
+    conditionTags.length > 0;
 
   const customerTicketLabel = !customerValue
-    ? ""
+    ? customerQueryDraft.trim()
+      ? `Tap to confirm · ${customerQueryDraft.trim()}`
+      : ""
     : anonymous
       ? "Walk-in (no record)"
       : [customerName, customerPhone].filter(Boolean).join(" · ") || "Customer selected";
@@ -505,6 +611,7 @@ function QuickIntake({
           value={customerValue}
           loading={customerSearching}
           onSelect={onCustomerSelect}
+          onQueryChange={setCustomerQueryDraft}
           addNewFields={{ primary: "Full name", secondary: "Phone number" }}
           onAddNew={async ({ primary, secondary }) => {
             const c = await createCustomer({
@@ -512,7 +619,10 @@ function QuickIntake({
               phone: secondary || undefined,
             });
             const opt = { value: c.id, label: c.full_name, sublabel: c.phone || "No phone" };
-            setCustomerOptions((prev) => [prev[0]!, opt, ...prev.slice(1).filter((p) => p.value !== c.id)]);
+            setCustomerOptions((prev) => {
+              const rest = prev.filter((p) => p.value !== WALK_IN_VALUE && p.value !== c.id);
+              return [opt, ...rest, WALK_IN_OPTION];
+            });
             setCustomerName(c.full_name);
             setCustomerPhone(c.phone ?? "");
             setAnonymous(false);
@@ -523,11 +633,13 @@ function QuickIntake({
 
         <h3 className="intake-pick-heading">Device</h3>
         <SearchableCombobox
+          key={`device-${devicePickKey}`}
           label="Search device"
           placeholder="Brand and model…"
           options={deviceOptions}
           value={deviceValue}
           onSelect={onDeviceSelect}
+          onQueryChange={onDeviceQueryChange}
           addNewFields={{ primary: "Brand", secondary: "Model" }}
           onAddNew={async ({ primary, secondary }) => {
             const brandName = primary.trim();
@@ -546,11 +658,13 @@ function QuickIntake({
 
         <h3 className="intake-pick-heading">Issue</h3>
         <SearchableCombobox
+          key={`issue-${issuePickKey}`}
           label="Search issue"
           placeholder="What’s wrong?"
           options={issueOptions}
           value={issueValue}
           onSelect={onIssueSelect}
+          onQueryChange={onIssueQueryChange}
           addNewFields={{ primary: "Describe the issue" }}
           onAddNew={async ({ primary }) => {
             const opt = { value: primary, label: primary };
@@ -613,6 +727,7 @@ function QuickIntake({
                       setDeviceValue("");
                       setBrand("");
                       setModel("");
+                      setDevicePickKey((k) => k + 1);
                       setLast(null);
                     }}
                   >
@@ -631,6 +746,7 @@ function QuickIntake({
                     onClick={() => {
                       setIssueValue("");
                       setProblem("");
+                      setIssuePickKey((k) => k + 1);
                       setLast(null);
                     }}
                   >
@@ -769,6 +885,11 @@ function QuickIntake({
             <Button type="submit" disabled={busy || !canSubmit}>
               {busy ? "Creating…" : "Create job"}
             </Button>
+            {!busy && submitBlockedReason ? (
+              <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
+                {submitBlockedReason}
+              </p>
+            ) : null}
           </form>
         </section>
 

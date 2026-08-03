@@ -55,15 +55,40 @@ func (s *Service) ListCategories(ctx context.Context, tenantID uuid.UUID) ([]Cat
 }
 
 // ListOnlineCategories returns categories that have at least one
-// online-visible product — used to build the storefront's category nav so it
-// never shows an empty section.
+// online-visible product, plus their ancestors so the storefront can nest
+// leaves under parents even when products live only on children.
 func (s *Service) ListOnlineCategories(ctx context.Context, tenantID uuid.UUID) ([]Category, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT c.id, c.name, c.parent_id
-		FROM inventory.categories c
-		JOIN inventory.products p ON p.category_id = c.id
-		WHERE c.tenant_id = $1 AND p.tenant_id = $1 AND COALESCE(p.online_visible, false) = true
-		ORDER BY c.name`, tenantID)
+		WITH RECURSIVE leaf AS (
+			SELECT DISTINCT c.id, c.name, c.parent_id
+			FROM inventory.categories c
+			JOIN inventory.products p ON p.category_id = c.id
+			WHERE c.tenant_id = $1 AND p.tenant_id = $1 AND COALESCE(p.online_visible, false) = true
+		),
+		walk AS (
+			SELECT id, name, parent_id FROM leaf
+			UNION
+			SELECT c.id, c.name, c.parent_id
+			FROM inventory.categories c
+			JOIN walk w ON c.id = w.parent_id
+			WHERE c.tenant_id = $1
+		),
+		tree AS (
+			SELECT id, name, parent_id, name::text AS path, 0 AS depth,
+				lower(name) AS sort_key
+			FROM walk
+			WHERE parent_id IS NULL
+			UNION ALL
+			SELECT c.id, c.name, c.parent_id,
+				tree.path || ' › ' || c.name,
+				tree.depth + 1,
+				tree.sort_key || '/' || lower(c.name)
+			FROM walk c
+			JOIN tree ON c.parent_id = tree.id
+		)
+		SELECT id, name, parent_id, path, depth
+		FROM tree
+		ORDER BY sort_key`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +96,7 @@ func (s *Service) ListOnlineCategories(ctx context.Context, tenantID uuid.UUID) 
 	items := make([]Category, 0)
 	for rows.Next() {
 		var c Category
-		if err := rows.Scan(&c.ID, &c.Name, &c.ParentID); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.ParentID, &c.Path, &c.Depth); err != nil {
 			return nil, err
 		}
 		items = append(items, c)

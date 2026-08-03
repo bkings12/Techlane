@@ -137,7 +137,7 @@ export function QuickFixPage() {
         device_id: device.id,
         problem_summary: problem.trim(),
         labor_amount: value,
-        service_type: "repair",
+        service_type: "quick_fix",
       });
       await changeRepairStatus(job.id, { status: "in_progress" });
       await changeRepairStatus(job.id, { status: "ready_for_pickup" });
