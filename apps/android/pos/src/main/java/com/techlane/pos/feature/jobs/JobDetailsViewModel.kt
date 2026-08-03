@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.techlane.pos.data.local.CatalogItemEntity
 import com.techlane.pos.data.local.TechnicianEntity
+import com.techlane.pos.data.printer.PrinterRepository
 import com.techlane.pos.data.repository.JobRepository
 import com.techlane.pos.data.repository.ShopRepository
 import com.techlane.pos.data.session.PreferencesStore
@@ -51,6 +52,7 @@ data class JobDetailsUiState(
     val busy: Boolean = false,
     val partsQuery: String = "",
     val pendingPhotoKind: PhotoKind = PhotoKind.Progress,
+    val printingReceipt: Boolean = false,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -60,6 +62,7 @@ class JobDetailsViewModel @Inject constructor(
     private val jobs: JobRepository,
     private val shop: ShopRepository,
     private val prefs: PreferencesStore,
+    private val printers: PrinterRepository,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -109,6 +112,23 @@ class JobDetailsViewModel @Inject constructor(
     fun clearFeedback() = _state.update { it.copy(message = null, error = null) }
     fun setPartsQuery(value: String) = _state.update { it.copy(partsQuery = value) }
     fun setPendingPhotoKind(kind: PhotoKind) = _state.update { it.copy(pendingPhotoKind = kind) }
+
+    /** Reprints the slip handed over at intake — the customer's copy, not a shop record. */
+    fun reprintIntakeSlip() = reprint("intake slip") { printers.printIntakeSlip(jobId) }
+
+    /** Reprints the job's final receipt — what the customer gets on collection. */
+    fun reprintFinalReceipt() = reprint("receipt") { printers.printRepairReceipt(jobId) }
+
+    private fun reprint(label: String, action: suspend () -> Result<Unit>) {
+        if (_state.value.printingReceipt) return
+        _state.update { it.copy(printingReceipt = true, error = null, message = null) }
+        viewModelScope.launch {
+            action()
+                .onSuccess { _state.update { it.copy(message = "Sent the $label to the printer") } }
+                .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not print the $label") } }
+            _state.update { it.copy(printingReceipt = false) }
+        }
+    }
 
     // ------------------------------------------------------------- mutations
     //

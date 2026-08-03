@@ -10,6 +10,7 @@ import com.techlane.pos.data.remote.dto.CheckoutRequest
 import com.techlane.pos.data.remote.dto.CompleteSaleRequest
 import com.techlane.pos.data.remote.dto.PaymentDto
 import com.techlane.pos.data.remote.dto.SaleItemInputDto
+import com.techlane.pos.data.printer.PrinterRepository
 import com.techlane.pos.data.remote.parseApiErrorMessage
 import com.techlane.pos.data.remote.toAppException
 import com.techlane.pos.domain.model.ChargeRequest
@@ -38,6 +39,7 @@ import javax.inject.Singleton
 class ChargeRepository @Inject constructor(
     private val api: TechLaneApi,
     private val chargeDao: ChargeDao,
+    private val printers: PrinterRepository,
 ) {
 
     fun charge(request: ChargeRequest): Flow<StkStage> = flow {
@@ -84,6 +86,7 @@ class ChargeRepository @Inject constructor(
         // Cash is settled the moment the server takes it — no prompt to wait on.
         if (request.method == PaymentMethod.Cash) {
             markRecord(recordId, "paid", null, null)
+            saleId?.let(printers::autoPrintSaleReceiptIfEnabled)
             emit(StkStage.Paid(request.amount, null, saleId))
             return@flow
         }
@@ -260,6 +263,7 @@ class ChargeRepository @Inject constructor(
         }
         val receipt = payment.accountReference.takeIf { it.isNotBlank() }
         markRecord(recordId, "paid", receipt, null)
+        finalSaleId?.let(printers::autoPrintSaleReceiptIfEnabled)
         emit(StkStage.Paid(payment.amount.takeIf { it > 0 } ?: fallbackAmount, receipt, finalSaleId))
     }
 

@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -111,6 +112,18 @@ fun JobDetailsScreen(
                 DropdownMenuItem(
                     text = { Text("Send customer update") },
                     onClick = { menuOpen = false; viewModel.openSheet(JobSheet.CustomerUpdate) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Reprint intake slip") },
+                    leadingIcon = { Icon(Icons.Outlined.Print, contentDescription = null) },
+                    enabled = !state.printingReceipt,
+                    onClick = { menuOpen = false; viewModel.reprintIntakeSlip() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Reprint final receipt") },
+                    leadingIcon = { Icon(Icons.Outlined.Print, contentDescription = null) },
+                    enabled = !state.printingReceipt,
+                    onClick = { menuOpen = false; viewModel.reprintFinalReceipt() },
                 )
                 DropdownMenuItem(
                     text = { Text("Refresh") },

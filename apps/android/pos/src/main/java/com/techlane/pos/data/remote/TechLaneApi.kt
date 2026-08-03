@@ -161,6 +161,20 @@ interface TechLaneApi {
         @Path("attachmentId") attachmentId: String,
     ): ResponseBody
 
+    /**
+     * Pre-rendered ESC/POS bytes for the job's final receipt / intake slip —
+     * the same content and wording the web console prints from, so a reprint
+     * from the phone never drifts from what the shop's other till would
+     * produce. Built for an 80mm cutter-equipped printer, so
+     * [com.techlane.pos.data.printer.EscPosSanitizer] adapts it before it
+     * reaches a 58mm printer with no cutter.
+     */
+    @GET("repairs/{id}/receipt.escpos")
+    suspend fun repairReceiptEscPos(@Path("id") id: String): ResponseBody
+
+    @GET("repairs/{id}/intake-slip.escpos")
+    suspend fun repairIntakeSlipEscPos(@Path("id") id: String): ResponseBody
+
     @GET("repairs/{id}/sale-lines")
     suspend fun repairSaleLines(@Path("id") id: String): ItemsEnvelope<JobSaleLineDto>
 
@@ -189,6 +203,10 @@ interface TechLaneApi {
      */
     @GET("sales/{id}/receipt.html")
     suspend fun saleReceiptHtml(@Path("id") id: String): ResponseBody
+
+    /** See [repairReceiptEscPos] — same rationale, for a POS/Quick Charge sale. */
+    @GET("sales/{id}/receipt.escpos")
+    suspend fun saleReceiptEscPos(@Path("id") id: String): ResponseBody
 
     @GET("sales")
     suspend fun sales(

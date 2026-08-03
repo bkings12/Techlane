@@ -1,10 +1,16 @@
 package com.techlane.pos.data.printer
 
+import com.techlane.pos.data.remote.TechLaneApi
+import com.techlane.pos.data.remote.toAppException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import okhttp3.ResponseBody
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,12 +23,9 @@ sealed interface PrinterAvailability {
 }
 
 /**
- * The one door into printing. Everything above this — today, the Settings
- * screen; later, Quick Charge, POS checkout, repair payments, and reprint —
- * calls through here and never imports `android.bluetooth.*` or touches an
- * ESC/POS byte directly. That boundary is the whole point of this phase:
- * prove the Bluetooth link works behind an API shape that doesn't have to
- * change when a payment screen starts calling `printReceipt(receipt)`.
+ * The one door into printing. Quick Charge, repair reprints, and Settings all
+ * call through here and never import `android.bluetooth.*` or touch an
+ * ESC/POS byte directly.
  *
  * [connectionState] is the single status a caller needs: it already folds in
  * "is a printer even saved" (`PrinterConnectionState.NotConfigured`), so nothing
@@ -32,9 +35,17 @@ sealed interface PrinterAvailability {
 class PrinterRepository @Inject constructor(
     private val connection: BluetoothPrinterConnection,
     private val preferencesStore: PrinterPreferencesStore,
+    private val api: TechLaneApi,
 ) {
     /** Outcome of the last connect/print action taken this process; null before any action. */
     private val liveStatus = MutableStateFlow<PrinterConnectionState?>(null)
+
+    /**
+     * Owns auto-print jobs so they outlive whatever screen triggered the
+     * charge that started them — a technician who swipes away from Quick
+     * Charge the instant "Paid" appears shouldn't cancel the receipt.
+     */
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val preferences: Flow<PrinterPreferences> = preferencesStore.preferences
 
@@ -94,21 +105,62 @@ class PrinterRepository @Inject constructor(
 
     suspend fun setAutoPrintEnabled(enabled: Boolean) = preferencesStore.setAutoPrintEnabled(enabled)
 
-    /**
-     * Prints the fixed proof-of-life page from requirement #7. This is
-     * deliberately the only thing this repository prints today — see the
-     * class doc for what plugs in here next.
-     */
-    suspend fun printTestPage() {
+    /** The fixed proof-of-life page from the initial Bluetooth printing phase. */
+    suspend fun printTestPage(): Result<Unit> {
         val prefs = preferencesStore.preferences.first()
-        val device = prefs.device
-        if (device == null) {
-            liveStatus.value = PrinterConnectionState.ConnectionFailed("No printer configured yet.")
-            return
-        }
+        val device = prefs.device ?: return notConfigured()
         liveStatus.value = PrinterConnectionState.Printing
         val payload = PrinterTestPage.build(prefs.paperWidth, device.displayName)
-        connection.printBytes(device.address, payload)
+        return connection.printBytes(device.address, payload).reportResult(device)
+    }
+
+    /** A Quick Charge / POS sale receipt, for the customer at the counter. */
+    suspend fun printSaleReceipt(saleId: String): Result<Unit> = fetchAndPrint { api.saleReceiptEscPos(saleId) }
+
+    /** A repair's final receipt — what the customer gets when they collect the device. */
+    suspend fun printRepairReceipt(repairId: String): Result<Unit> = fetchAndPrint { api.repairReceiptEscPos(repairId) }
+
+    /** The slip handed over at intake, reprintable from the job if the original was lost or unreadable. */
+    suspend fun printIntakeSlip(repairId: String): Result<Unit> = fetchAndPrint { api.repairIntakeSlipEscPos(repairId) }
+
+    /**
+     * Best-effort background print for "Auto-print receipts". Fire-and-forget
+     * by design: a charge that already succeeded must not be reported as
+     * failed to the technician just because the printer was off, so this
+     * never surfaces its error back through the charge flow — only through
+     * the shared [connectionState], the same place a manual reprint's outcome
+     * shows up.
+     */
+    fun autoPrintSaleReceiptIfEnabled(saleId: String) {
+        backgroundScope.launch {
+            val prefs = preferencesStore.preferences.first()
+            if (prefs.isConfigured && prefs.autoPrintEnabled) printSaleReceipt(saleId)
+        }
+    }
+
+    private suspend fun fetchAndPrint(fetch: suspend () -> ResponseBody): Result<Unit> {
+        val prefs = preferencesStore.preferences.first()
+        val device = prefs.device ?: return notConfigured()
+        liveStatus.value = PrinterConnectionState.Printing
+        return try {
+            val rendered = fetch().use { it.bytes() }
+            val payload = EscPosSanitizer.stripTrailingCut(rendered)
+            connection.printBytes(device.address, payload).reportResult(device)
+        } catch (e: Exception) {
+            val message = e.toAppException().message ?: "Could not load the receipt to print."
+            liveStatus.value = PrinterConnectionState.PrintFailed(message)
+            Result.failure(PrinterConnectionException(message, e))
+        }
+    }
+
+    private fun notConfigured(): Result<Unit> {
+        val message = "No printer configured yet."
+        liveStatus.value = PrinterConnectionState.ConnectionFailed(message)
+        return Result.failure(PrinterConnectionException(message))
+    }
+
+    private fun Result<Unit>.reportResult(device: PrinterDevice): Result<Unit> = also { result ->
+        result
             .onSuccess { liveStatus.value = PrinterConnectionState.PrintSuccess(device) }
             .onFailure { error -> liveStatus.value = PrinterConnectionState.PrintFailed(error.friendlyMessage()) }
     }
