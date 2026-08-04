@@ -491,7 +491,13 @@ export function POSPage() {
       if (pay.status !== "allocated" && pay.status !== "confirmed") {
         throw new Error("Waiting for paybill confirmation — ask customer to pay with the account ref shown");
       }
-      const sale = await completeSale(last.sale.id, locationId);
+      // Match the STK paths: a sale the webhook already completed must not be
+      // completed again, or the counter is shown "sale not in draft state"
+      // for a payment that actually succeeded.
+      let sale = await getSale(last.sale.id);
+      if (sale.status === "draft") {
+        sale = await completeSale(last.sale.id, locationId);
+      }
       setLast({ ...last, sale, completed: true, payment: { ...pay } });
       setCart([]);
       clearPersistedCart();
