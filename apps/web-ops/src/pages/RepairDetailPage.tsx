@@ -12,6 +12,12 @@ import {
   authorizeRepairWork,
   acceptPaidCharge,
   addRepairSaleLine,
+  addLabourLine,
+  addInventoryPartLine,
+  addSourcedPartLine,
+  addProductLine,
+  removeJobLineItem,
+  getJobFinancials,
   changeRepairStatus,
   collectSupplierIssue,
   ConflictError,
@@ -51,6 +57,7 @@ import {
   updateRepairDetails,
   updateRepairSchedule,
   trashRepair,
+  type JobFinancials,
   type JobMargin,
   type JobSaleLine,
   type PartRequest,
@@ -65,6 +72,9 @@ import {
   type Supplier,
   type Warranty,
 } from "../lib/api";
+import { AddServiceModal } from "../components/AddServiceModal";
+import { AddPartModal } from "../components/AddPartModal";
+import { AddProductModal } from "../components/AddProductModal";
 import {
   CLOSURE_REASON_LABELS,
   CLOSURE_STATUS_LABELS,
@@ -367,6 +377,10 @@ export function RepairDetailPage() {
   const [stockByRequest, setStockByRequest] = useState<Record<string, string>>({});
   const [stock, setStock] = useState<StockBalance[]>([]);
   const [margin, setMargin] = useState<JobMargin | null>(null);
+  const [financials, setFinancials] = useState<JobFinancials | null>(null);
+  const [showAddService, setShowAddService] = useState(false);
+  const [showAddPart, setShowAddPart] = useState(false);
+  const [showAddProduct, setShowAddProduct] = useState(false);
   const [labor, setLabor] = useState("");
   const [overrideCharge, setOverrideCharge] = useState(false);
   const [payAmount, setPayAmount] = useState("");
@@ -431,7 +445,7 @@ export function RepairDetailPage() {
 
   const refresh = useCallback(async () => {
     if (!id) return;
-    const [j, p, pay, t, cfg, n, att, estimateResult, supplierRes, warrantyRes, stockRes, marginRes] =
+    const [j, p, pay, t, cfg, n, att, estimateResult, supplierRes, warrantyRes, stockRes, marginRes, financialsRes] =
       await Promise.all([
         getRepair(id),
         listPartRequests(id),
@@ -446,6 +460,7 @@ export function RepairDetailPage() {
         listStockBalances().catch(() => ({ items: [] as StockBalance[] })),
         // Cost and margin need reports.read; a technician simply won't see the panel.
         getRepairMargin(id).catch(() => null),
+        getJobFinancials(id).catch(() => null),
       ]);
     setJob(j);
     setPromisedBy(j.promised_by ? new Date(j.promised_by).toISOString().slice(0, 16) : "");
@@ -473,6 +488,7 @@ export function RepairDetailPage() {
     setWarranty(warrantyRes);
     setStock(stockRes.items ?? []);
     setMargin(marginRes);
+    setFinancials(financialsRes);
     setSupplierByRequest((current) => {
       const next = { ...current };
       for (const row of p.items ?? []) {
@@ -567,6 +583,15 @@ export function RepairDetailPage() {
     }
   }
 
+  // Same as run(), but rethrows — for callers (the Add Service/Part/Product
+  // modals) that need to show the error inline themselves and stay open,
+  // rather than closing on failure the way run()'s callers do today.
+  async function runAndRethrow(action: () => Promise<unknown>) {
+    setError("");
+    await action();
+    await refresh();
+  }
+
   function paymentIdFromCreate(res: Payment | { items: Payment[] } | null | undefined): string | null {
     if (!res || typeof res !== "object") return null;
     if ("items" in res && Array.isArray(res.items)) {
@@ -644,6 +669,8 @@ export function RepairDetailPage() {
   const canCloseRepair = can(user?.permissions, "repairs.close");
   const canAuthorizeWork = can(user?.permissions, "repairs.authorize_work");
   const canEditDetails = can(user?.permissions, "repairs.edit");
+  const canSeeCost = can(user?.permissions, "reports.read");
+  const canEditLineItems = can(user?.permissions, "sales.create") || can(user?.permissions, "payments.initiate");
   const canAcceptPaid =
     canAuthorizeWork || can(user?.permissions, "payments.initiate") || can(user?.permissions, "*");
   const canReleaseUnverified = can(user?.permissions, "repairs.release_unverified") ?? false;
@@ -2309,6 +2336,83 @@ export function RepairDetailPage() {
           </section>
 
           <section className="panel">
+            <div className="panel-head">
+              <h2>Work order</h2>
+              <strong>
+                {formatMoney((job.labour_total ?? 0) + (job.parts_revenue ?? 0) + (job.products_revenue ?? 0))}
+              </strong>
+            </div>
+            {[
+              {
+                key: "labour" as const,
+                title: "Labour",
+                lines: job.labour_lines ?? [],
+                onAdd: () => setShowAddService(true),
+                addLabel: "+ Add service",
+                empty: "No labour lines yet.",
+              },
+              {
+                key: "part" as const,
+                title: "Parts",
+                lines: job.part_lines ?? [],
+                onAdd: () => setShowAddPart(true),
+                addLabel: "+ Add part",
+                empty: "No parts on this job yet.",
+              },
+              {
+                key: "product" as const,
+                title: "Products",
+                lines: job.product_lines ?? [],
+                onAdd: () => setShowAddProduct(true),
+                addLabel: "+ Add product",
+                empty: "No products added yet.",
+              },
+            ].map((section) => (
+              <div key={section.key} style={{ marginTop: "1rem" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <h3 style={{ margin: 0, fontSize: "0.95rem" }}>{section.title}</h3>
+                  {canEditLineItems && !paymentLocked && job.status !== "collected" ? (
+                    <Button type="button" variant="secondary" onClick={section.onAdd}>
+                      {section.addLabel}
+                    </Button>
+                  ) : null}
+                </div>
+                {section.lines.length === 0 ? (
+                  <p className="hint" style={{ margin: "0.35rem 0 0" }}>
+                    {section.empty}
+                  </p>
+                ) : (
+                  <ul className="list" style={{ marginTop: "0.35rem" }}>
+                    {section.lines.map((li) => (
+                      <li key={li.id}>
+                        <span>
+                          {li.description}
+                          {li.quantity !== 1 ? ` × ${li.quantity}` : ""}
+                          {li.part_status ? <span className="muted"> · {li.part_status}</span> : null}
+                          {li.part_source === "sourced" ? <span className="muted"> · sourced</span> : null}
+                        </span>
+                        <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                          <strong>{formatMoney(li.line_total)}</strong>
+                          {canEditLineItems && !paymentLocked && job.status !== "collected" ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() => void run(() => removeJobLineItem(job.id, li.id))}
+                            >
+                              Remove
+                            </Button>
+                          ) : null}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </section>
+
+          <section className="panel">
             <button
               type="button"
               className="jobs-more-toggle"
@@ -2480,7 +2584,7 @@ export function RepairDetailPage() {
             ) : null}
           </section>
 
-          {margin ? (
+          {margin || financials ? (
             <section className="panel">
               <button
                 type="button"
@@ -2490,7 +2594,40 @@ export function RepairDetailPage() {
               >
                 {showEconomics ? "Hide job economics" : "Job economics (margin)"}
               </button>
-              {showEconomics ? (
+              {showEconomics && financials && !financials.using_legacy_margin ? (
+                <div style={{ marginTop: "0.75rem" }}>
+                  <dl className="meta-dl">
+                    <dt>Labour revenue</dt>
+                    <dd>{formatMoney(financials.labour_revenue)}</dd>
+                    <dt>Parts revenue</dt>
+                    <dd>{formatMoney(financials.parts_revenue)}</dd>
+                    <dt>Parts cost</dt>
+                    <dd>{formatMoney(financials.parts_cost)}</dd>
+                    <dt>Parts profit</dt>
+                    <dd>{formatMoney(financials.parts_profit)}</dd>
+                    <dt>Products revenue</dt>
+                    <dd>{formatMoney(financials.products_revenue)}</dd>
+                    <dt>Products cost</dt>
+                    <dd>{formatMoney(financials.products_cost)}</dd>
+                    <dt>Products profit</dt>
+                    <dd>{formatMoney(financials.products_profit)}</dd>
+                    <dt>Total revenue</dt>
+                    <dd>{formatMoney(financials.total_revenue)}</dd>
+                    <dt>Total COGS</dt>
+                    <dd>{formatMoney(financials.total_cogs)}</dd>
+                    <dt>Gross profit</dt>
+                    <dd>
+                      <strong className={financials.gross_profit < 0 ? "warn-text" : undefined}>
+                        {formatMoney(financials.gross_profit)}
+                      </strong>
+                    </dd>
+                  </dl>
+                  {financials.gross_profit < 0 ? (
+                    <p className="form-error">This job is losing money — costs exceed what we're charging.</p>
+                  ) : null}
+                </div>
+              ) : null}
+              {showEconomics && (!financials || financials.using_legacy_margin) && margin ? (
                 <div style={{ marginTop: "0.75rem" }}>
               <dl className="meta-dl">
                 <dt>Charged for labor</dt>
@@ -3065,6 +3202,29 @@ export function RepairDetailPage() {
         customerId={customer?.id}
         repairJobId={job.id}
         title={customer?.full_name ? `SMS to ${customer.full_name}` : "Send SMS"}
+      />
+
+      <AddServiceModal
+        open={showAddService}
+        onClose={() => setShowAddService(false)}
+        currencyCode={currencyCode}
+        onAdd={(input) => runAndRethrow(() => addLabourLine(job.id, input))}
+      />
+      <AddPartModal
+        open={showAddPart}
+        onClose={() => setShowAddPart(false)}
+        stock={stock}
+        canSeeCost={Boolean(canSeeCost)}
+        currencyCode={currencyCode}
+        onAddInventory={(input) => runAndRethrow(() => addInventoryPartLine(job.id, input))}
+        onAddSourced={(input) => runAndRethrow(() => addSourcedPartLine(job.id, input))}
+      />
+      <AddProductModal
+        open={showAddProduct}
+        onClose={() => setShowAddProduct(false)}
+        stock={stock}
+        currencyCode={currencyCode}
+        onAdd={(input) => runAndRethrow(() => addProductLine(job.id, input))}
       />
     </div>
   );

@@ -516,6 +516,12 @@ export type RepairJob = {
   labor_amount?: number;
   sale_lines_total?: number;
   sale_lines?: JobSaleLine[];
+  labour_total?: number;
+  parts_revenue?: number;
+  products_revenue?: number;
+  labour_lines?: JobLineItem[];
+  part_lines?: JobLineItem[];
+  product_lines?: JobLineItem[];
   authorized_amount?: number;
   approved_estimate_total?: number;
   pending_estimate_total?: number;
@@ -956,6 +962,9 @@ export type ReportSummary = {
   sales_completed_period: number;
   sales_count_period: number;
   supplier_credit_outstanding: number;
+  today_repair_revenue: number;
+  today_product_revenue: number;
+  today_gross_profit: number;
   risk_open_total: number;
   risk_orphan_parts: number;
   risk_cash_shortage: number;
@@ -998,6 +1007,25 @@ export type RepairProfitability = {
   margin_pct?: number;
   loss_making_jobs: number;
   jobs_with_unpriced_parts: number;
+  parts_revenue: number;
+  parts_profit: number;
+  products_revenue: number;
+  products_cost: number;
+  products_profit: number;
+};
+
+export type PartProfitability = {
+  description: string;
+  quantity_sold: number;
+  revenue: number;
+  cost: number;
+  profit: number;
+};
+
+export type ProductFrequency = {
+  description: string;
+  repairs_count: number;
+  quantity_sold: number;
 };
 
 export type ClosureMetric = {
@@ -1015,6 +1043,8 @@ export type OperationsReport = {
   by_branch: BranchMetric[];
   closures: ClosureMetric[];
   repair_profitability: RepairProfitability;
+  top_parts: PartProfitability[];
+  common_products: ProductFrequency[];
 };
 
 export async function getOperationsReport(days = 7) {
@@ -2639,6 +2669,134 @@ export async function addRepairSaleLine(
 
 export async function removeRepairSaleLine(repairId: string, lineId: string) {
   return api<void>(`/repairs/${repairId}/sale-lines/${lineId}`, { method: "DELETE" });
+}
+
+// Work-order line items (labour/part/product) — the generic, explicitly
+// typed replacement for ad-hoc sale lines going forward. unit_cost is only
+// ever present for a caller with reports.read; the server strips it otherwise.
+export type LineItemType = "labour" | "part" | "product";
+export type PartSource = "inventory" | "sourced";
+export type PartStatus = "required" | "sourcing" | "ordered" | "received" | "installed" | "returned" | "cancelled";
+
+export type JobLineItem = {
+  id: string;
+  repair_job_id: string;
+  line_type: LineItemType;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  unit_cost?: number | null;
+  discount_amount: number;
+  line_total: number;
+  variant_id?: string | null;
+  location_id?: string | null;
+  part_source?: PartSource | null;
+  part_status?: PartStatus | null;
+  supplier_name?: string | null;
+  supplier_ref?: string | null;
+  expected_arrival?: string | null;
+  added_to_inventory_at?: string | null;
+  created_at: string;
+  created_by?: string;
+};
+
+export async function listJobLineItems(repairId: string) {
+  return api<{ items: JobLineItem[] }>(`/repairs/${repairId}/line-items`);
+}
+
+export async function addLabourLine(repairId: string, body: { description: string; unit_price: number; quantity?: number }) {
+  return api<JobLineItem>(`/repairs/${repairId}/line-items`, {
+    method: "POST",
+    body: JSON.stringify({ type: "labour", ...body }),
+  });
+}
+
+export async function addInventoryPartLine(
+  repairId: string,
+  body: { variant_id: string; location_id: string; quantity?: number; unit_price?: number },
+) {
+  return api<JobLineItem>(`/repairs/${repairId}/line-items`, {
+    method: "POST",
+    body: JSON.stringify({ type: "part", ...body }),
+  });
+}
+
+export async function addSourcedPartLine(
+  repairId: string,
+  body: {
+    description: string;
+    unit_cost: number;
+    unit_price: number;
+    quantity?: number;
+    supplier_name?: string;
+    supplier_ref?: string;
+    expected_arrival?: string;
+  },
+) {
+  return api<JobLineItem>(`/repairs/${repairId}/line-items`, {
+    method: "POST",
+    body: JSON.stringify({ type: "part", ...body }),
+  });
+}
+
+export async function addProductLine(
+  repairId: string,
+  body: { variant_id: string; location_id: string; quantity?: number; unit_price?: number },
+) {
+  return api<JobLineItem>(`/repairs/${repairId}/line-items`, {
+    method: "POST",
+    body: JSON.stringify({ type: "product", ...body }),
+  });
+}
+
+export async function removeJobLineItem(repairId: string, lineId: string) {
+  return api<void>(`/repairs/${repairId}/line-items/${lineId}`, { method: "DELETE" });
+}
+
+export async function updateJobLineItem(repairId: string, lineId: string, body: { unit_price?: number; part_status?: PartStatus }) {
+  return api<JobLineItem>(`/repairs/${repairId}/line-items/${lineId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function addLineItemToInventory(repairId: string, lineId: string, body: { variant_id: string; quantity: number }) {
+  return api<{ ok: boolean }>(`/repairs/${repairId}/line-items/${lineId}/add-to-inventory`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export type JobFinancials = {
+  labour_revenue: number;
+  parts_revenue: number;
+  parts_cost: number;
+  parts_profit: number;
+  products_revenue: number;
+  products_cost: number;
+  products_profit: number;
+  total_revenue: number;
+  total_cogs: number;
+  gross_profit: number;
+  using_legacy_margin?: boolean;
+};
+
+export async function getJobFinancials(repairId: string) {
+  return api<JobFinancials>(`/repairs/${repairId}/financials`);
+}
+
+export type CustomerLifetimeStats = {
+  lifetime_spend: number;
+  repairs_revenue: number;
+  repair_parts_revenue: number;
+  accessories_revenue: number;
+  repairs_count: number;
+  retail_items_count: number;
+  outstanding_balance: number;
+};
+
+export async function getCustomerLifetimeStats(customerId: string) {
+  return api<CustomerLifetimeStats>(`/customers/${customerId}/lifetime-stats`);
 }
 
 export type StockMovement = {

@@ -89,6 +89,13 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("GET /repairs/{id}/sale-lines", auth(http.HandlerFunc(h.listSaleLines)))
 	mux.Handle("POST /repairs/{id}/sale-lines", auth(http.HandlerFunc(h.addSaleLine)))
 	mux.Handle("DELETE /repairs/{id}/sale-lines/{line_id}", auth(http.HandlerFunc(h.removeSaleLine)))
+	mux.Handle("GET /repairs/{id}/line-items", auth(http.HandlerFunc(h.listLineItems)))
+	mux.Handle("POST /repairs/{id}/line-items", auth(http.HandlerFunc(h.addLineItem)))
+	mux.Handle("DELETE /repairs/{id}/line-items/{line_id}", auth(http.HandlerFunc(h.removeLineItem)))
+	mux.Handle("PATCH /repairs/{id}/line-items/{line_id}", auth(http.HandlerFunc(h.updateLineItem)))
+	mux.Handle("POST /repairs/{id}/line-items/{line_id}/add-to-inventory", auth(http.HandlerFunc(h.addLineItemToInventory)))
+	mux.Handle("GET /repairs/{id}/financials", auth(http.HandlerFunc(h.jobFinancials)))
+	mux.Handle("GET /customers/{id}/lifetime-stats", auth(http.HandlerFunc(h.customerLifetimeStats)))
 	mux.Handle("POST /repairs/{id}/handover/send-code", auth(http.HandlerFunc(h.sendHandoverCode)))
 	mux.Handle("POST /repairs/{id}/handover", auth(http.HandlerFunc(h.recordHandover)))
 	mux.Handle("POST /repairs/collect", auth(http.HandlerFunc(h.collectByPickupCode)))
@@ -987,7 +994,7 @@ func (h *Handler) updateRepairDetails(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := h.svc.UpdateRepairDetails(r.Context(), UpdateRepairDetailsInput{
 		TenantID:        claims.TenantID,
-		RepairID:       repairID,
+		RepairID:        repairID,
 		ExpectedVersion: req.ExpectedVersion,
 		ProblemSummary:  req.ProblemSummary,
 		DeviceKind:      req.DeviceKind,
@@ -1896,6 +1903,294 @@ func (h *Handler) removeSaleLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// lineItemCostView strips unit_cost from the response unless the caller has
+// reports.read — cost/profit figures must never reach an unauthorized caller,
+// customer-facing or otherwise.
+func lineItemCostView(claims *authz.Claims, items []JobLineItem) []JobLineItem {
+	if claims != nil && claims.HasPermission("reports.read") {
+		return items
+	}
+	return StripLineItemCosts(items)
+}
+
+func (h *Handler) listLineItems(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	repairID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	items, err := h.svc.JobLineItems(r.Context(), claims.TenantID, repairID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"items": lineItemCostView(claims, items)})
+}
+
+func (h *Handler) addLineItem(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if !claims.HasPermission("sales.create") && !claims.HasPermission("payments.initiate") && !claims.HasPermission("*") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "sales.create or payments.initiate required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	repairID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		Type            string     `json:"type"`
+		Description     string     `json:"description"`
+		UnitPrice       *float64   `json:"unit_price"`
+		UnitCost        *float64   `json:"unit_cost"`
+		Quantity        float64    `json:"quantity"`
+		VariantID       *uuid.UUID `json:"variant_id"`
+		LocationID      *uuid.UUID `json:"location_id"`
+		SupplierName    *string    `json:"supplier_name"`
+		SupplierRef     *string    `json:"supplier_ref"`
+		ExpectedArrival *string    `json:"expected_arrival"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
+		return
+	}
+	corrID := parseCorrID(r)
+
+	var line *JobLineItem
+	switch req.Type {
+	case LineTypeLabour:
+		price := 0.0
+		if req.UnitPrice != nil {
+			price = *req.UnitPrice
+		}
+		line, err = h.svc.AddLabourLine(r.Context(), claims.TenantID, repairID, req.Description, price, req.Quantity, claims.UserID, corrID)
+	case LineTypePart:
+		if req.VariantID != nil && *req.VariantID != uuid.Nil {
+			if req.LocationID == nil || *req.LocationID == uuid.Nil {
+				apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "location_id required", httpx.CorrelationID(r.Context()))
+				return
+			}
+			line, err = h.svc.AddInventoryPartLine(r.Context(), claims.TenantID, repairID, *req.VariantID, *req.LocationID, req.Quantity, req.UnitPrice, claims.UserID, corrID)
+		} else {
+			if strings.TrimSpace(req.Description) == "" {
+				apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "description required for a sourced part", httpx.CorrelationID(r.Context()))
+				return
+			}
+			cost := 0.0
+			if req.UnitCost != nil {
+				cost = *req.UnitCost
+			}
+			price := 0.0
+			if req.UnitPrice != nil {
+				price = *req.UnitPrice
+			}
+			var arrival *time.Time
+			if req.ExpectedArrival != nil && strings.TrimSpace(*req.ExpectedArrival) != "" {
+				t, perr := time.Parse("2006-01-02", *req.ExpectedArrival)
+				if perr != nil {
+					apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "expected_arrival must be YYYY-MM-DD", httpx.CorrelationID(r.Context()))
+					return
+				}
+				arrival = &t
+			}
+			line, err = h.svc.AddSourcedPartLine(r.Context(), claims.TenantID, repairID, req.Description,
+				req.SupplierName, req.SupplierRef, cost, price, req.Quantity, arrival, claims.UserID, corrID)
+		}
+	case LineTypeProduct:
+		if req.VariantID == nil || *req.VariantID == uuid.Nil || req.LocationID == nil || *req.LocationID == uuid.Nil {
+			apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "variant_id and location_id required", httpx.CorrelationID(r.Context()))
+			return
+		}
+		line, err = h.svc.AddProductLine(r.Context(), claims.TenantID, repairID, *req.VariantID, *req.LocationID, req.Quantity, req.UnitPrice, claims.UserID, corrID)
+	default:
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "type must be labour, part, or product", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		apierrors.Write(w, status, "LINE_ITEM_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	view := *line
+	if !claims.HasPermission("reports.read") {
+		view = view.StripCost()
+	}
+	httpx.JSON(w, http.StatusCreated, view)
+}
+
+func (h *Handler) removeLineItem(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if !claims.HasPermission("sales.create") && !claims.HasPermission("payments.initiate") && !claims.HasPermission("*") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "sales.create or payments.initiate required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	repairID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	lineID, err := uuid.Parse(r.PathValue("line_id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid line_id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if err := h.svc.RemoveLineItem(r.Context(), claims.TenantID, repairID, lineID, claims.UserID, parseCorrID(r)); err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		apierrors.Write(w, status, "LINE_ITEM_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) updateLineItem(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if !claims.HasPermission("sales.create") && !claims.HasPermission("payments.initiate") && !claims.HasPermission("*") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "sales.create or payments.initiate required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	repairID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	lineID, err := uuid.Parse(r.PathValue("line_id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid line_id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		UnitPrice  *float64 `json:"unit_price"`
+		PartStatus *string  `json:"part_status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
+		return
+	}
+	line, err := h.svc.UpdateLineItem(r.Context(), claims.TenantID, repairID, lineID, req.UnitPrice, req.PartStatus, claims.UserID, parseCorrID(r))
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		apierrors.Write(w, status, "LINE_ITEM_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	view := *line
+	if !claims.HasPermission("reports.read") {
+		view = view.StripCost()
+	}
+	httpx.JSON(w, http.StatusOK, view)
+}
+
+func (h *Handler) addLineItemToInventory(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if !claims.HasPermission("sales.create") && !claims.HasPermission("payments.initiate") && !claims.HasPermission("*") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "sales.create or payments.initiate required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	repairID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	lineID, err := uuid.Parse(r.PathValue("line_id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid line_id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		VariantID uuid.UUID `json:"variant_id"`
+		Quantity  float64   `json:"quantity"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if req.VariantID == uuid.Nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "variant_id required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if err := h.svc.AddSourcedPartToInventory(r.Context(), claims.TenantID, repairID, lineID, req.VariantID, req.Quantity, claims.UserID, parseCorrID(r)); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "LINE_ITEM_FAILED", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) jobFinancials(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	// Cost and profit are commercial figures, not bench information.
+	if !claims.HasPermission("reports.read") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "you don't have permission to view job financials", httpx.CorrelationID(r.Context()))
+		return
+	}
+	repairID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	f, err := h.svc.JobFinancialsFor(r.Context(), claims.TenantID, repairID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, f)
+}
+
+func (h *Handler) customerLifetimeStats(w http.ResponseWriter, r *http.Request) {
+	claims, ok := authz.FromContext(r.Context())
+	if !ok {
+		apierrors.Write(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims", httpx.CorrelationID(r.Context()))
+		return
+	}
+	if !claims.HasPermission("reports.read") {
+		apierrors.Write(w, http.StatusForbidden, "FORBIDDEN", "you don't have permission to view customer financials", httpx.CorrelationID(r.Context()))
+		return
+	}
+	customerID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", httpx.CorrelationID(r.Context()))
+		return
+	}
+	stats, err := h.svc.CustomerLifetimeStats(r.Context(), claims.TenantID, customerID)
+	if err != nil {
+		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, stats)
 }
 
 func (h *Handler) repairMargin(w http.ResponseWriter, r *http.Request) {

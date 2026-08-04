@@ -362,6 +362,70 @@ export function ReportsPage() {
               </section>
 
               <section className="panel">
+                <h2>Parts &amp; products profitability</h2>
+                <p className="muted">
+                  Work-order line items only — jobs priced before this feature existed still show up in the legacy
+                  figures above instead.
+                </p>
+                <StatStrip>
+                  <Stat label="Parts revenue" value={formatMoney(ops.repair_profitability.parts_revenue)} />
+                  <Stat label="Parts profit" value={formatMoney(ops.repair_profitability.parts_profit)} />
+                  <Stat label="Products revenue" value={formatMoney(ops.repair_profitability.products_revenue)} />
+                  <Stat label="Products profit" value={formatMoney(ops.repair_profitability.products_profit)} />
+                </StatStrip>
+                {ops.top_parts.length > 0 ? (
+                  <div style={{ marginTop: "1rem" }}>
+                    <h3 style={{ fontSize: "0.95rem" }}>Most profitable parts</h3>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Part</th>
+                          <th>Qty sold</th>
+                          <th>Revenue</th>
+                          <th>Cost</th>
+                          <th>Profit</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ops.top_parts.map((p) => (
+                          <tr key={p.description}>
+                            <td>{p.description}</td>
+                            <td className="mono">{p.quantity_sold}</td>
+                            <td className="mono">{formatMoney(p.revenue)}</td>
+                            <td className="mono">{formatMoney(p.cost)}</td>
+                            <td className="mono">{formatMoney(p.profit)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+                {ops.common_products.length > 0 ? (
+                  <div style={{ marginTop: "1rem" }}>
+                    <h3 style={{ fontSize: "0.95rem" }}>Products commonly bought with repairs</h3>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Product</th>
+                          <th>Repairs</th>
+                          <th>Qty sold</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ops.common_products.map((p) => (
+                          <tr key={p.description}>
+                            <td>{p.description}</td>
+                            <td className="mono">{p.repairs_count}</td>
+                            <td className="mono">{p.quantity_sold}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="panel">
                 <div className="panel-head">
                   <h2>Why jobs were lost</h2>
                   <Button

@@ -2,6 +2,7 @@ package com.techlane.pos.data.remote
 
 import com.techlane.pos.data.remote.dto.AddAttachmentRequest
 import com.techlane.pos.data.remote.dto.AppVersionDto
+import com.techlane.pos.data.remote.dto.AddLineItemRequest
 import com.techlane.pos.data.remote.dto.AddNoteRequest
 import com.techlane.pos.data.remote.dto.AddSaleLineRequest
 import com.techlane.pos.data.remote.dto.AssignRequest
@@ -11,6 +12,7 @@ import com.techlane.pos.data.remote.dto.ChangeStatusRequest
 import com.techlane.pos.data.remote.dto.CreateEstimateRequest
 import com.techlane.pos.data.remote.dto.CreatePaymentRequest
 import com.techlane.pos.data.remote.dto.CustomerDto
+import com.techlane.pos.data.remote.dto.JobLineItemDto
 import com.techlane.pos.data.remote.dto.JobSaleLineDto
 import com.techlane.pos.data.remote.dto.RepairAttachmentDto
 import com.techlane.pos.data.remote.dto.RepairEstimateDto
@@ -242,6 +244,21 @@ interface TechLaneApi {
 
     @DELETE("repairs/{id}/sale-lines/{lineId}")
     suspend fun removeRepairSaleLine(
+        @Path("id") id: String,
+        @Path("lineId") lineId: String,
+    ): Response<Unit>
+
+    @GET("repairs/{id}/line-items")
+    suspend fun jobLineItems(@Path("id") id: String): ItemsEnvelope<JobLineItemDto>
+
+    @POST("repairs/{id}/line-items")
+    suspend fun addLineItem(
+        @Path("id") id: String,
+        @Body body: AddLineItemRequest,
+    ): JobLineItemDto
+
+    @DELETE("repairs/{id}/line-items/{lineId}")
+    suspend fun removeLineItem(
         @Path("id") id: String,
         @Path("lineId") lineId: String,
     ): Response<Unit>

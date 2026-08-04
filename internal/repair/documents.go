@@ -15,45 +15,52 @@ import (
 
 // CustomerReceiptDocument is everything needed to print a customer receipt.
 type CustomerReceiptDocument struct {
-	RepairID       uuid.UUID       `json:"repair_id"`
-	BranchName     string          `json:"branch_name,omitempty"`
-	TechnicianName string          `json:"technician_name,omitempty"`
-	ShopName       string          `json:"shop_name"`
-	ShopSlogan     string          `json:"shop_slogan,omitempty"`
-	ShopPhone      string          `json:"shop_phone,omitempty"`
-	ShopEmail      string          `json:"shop_email,omitempty"`
-	ShopWebsite    string          `json:"shop_website,omitempty"`
-	ShopTIN        string          `json:"shop_tin,omitempty"`
-	ShopAddress1   string          `json:"shop_address_line1,omitempty"`
-	ShopAddress2   string          `json:"shop_address_line2,omitempty"`
-	ShopCity       string          `json:"shop_city,omitempty"`
-	JobCode        string          `json:"job_code"`
-	PickupCode     string          `json:"pickup_code,omitempty"`
-	Status         string          `json:"status"`
-	ProblemSummary string          `json:"problem_summary"`
-	CustomerName   string          `json:"customer_name"`
-	CustomerPhone  string          `json:"customer_phone,omitempty"`
-	DeviceLabel    string          `json:"device_label"`
-	IMEI           string          `json:"imei,omitempty"`
+	RepairID       uuid.UUID `json:"repair_id"`
+	BranchName     string    `json:"branch_name,omitempty"`
+	TechnicianName string    `json:"technician_name,omitempty"`
+	ShopName       string    `json:"shop_name"`
+	ShopSlogan     string    `json:"shop_slogan,omitempty"`
+	ShopPhone      string    `json:"shop_phone,omitempty"`
+	ShopEmail      string    `json:"shop_email,omitempty"`
+	ShopWebsite    string    `json:"shop_website,omitempty"`
+	ShopTIN        string    `json:"shop_tin,omitempty"`
+	ShopAddress1   string    `json:"shop_address_line1,omitempty"`
+	ShopAddress2   string    `json:"shop_address_line2,omitempty"`
+	ShopCity       string    `json:"shop_city,omitempty"`
+	JobCode        string    `json:"job_code"`
+	PickupCode     string    `json:"pickup_code,omitempty"`
+	Status         string    `json:"status"`
+	ProblemSummary string    `json:"problem_summary"`
+	CustomerName   string    `json:"customer_name"`
+	CustomerPhone  string    `json:"customer_phone,omitempty"`
+	DeviceLabel    string    `json:"device_label"`
+	IMEI           string    `json:"imei,omitempty"`
 	// Intake-slip specifics: what the customer was told and what we took in
 	// alongside the device. Absent on the final receipt, where they no longer
 	// matter — the job is being handed back at that point.
-	PromisedBy     *time.Time      `json:"promised_by,omitempty"`
-	Accessories    []string        `json:"accessories,omitempty"`
-	IntakeCondition string         `json:"intake_condition,omitempty"`
-	LaborAmount    float64         `json:"labor_amount"`
-	PartsAmount    float64         `json:"parts_amount"`
-	SaleLinesTotal float64         `json:"sale_lines_total"`
-	NetSubtotal    float64         `json:"net_subtotal"`
-	VATAmount      float64         `json:"vat_amount"`
-	VATRateBPS     int             `json:"vat_rate_bps"`
-	VATInclusive   bool            `json:"vat_inclusive"`
-	TotalDue       float64         `json:"total_due"`
-	Paid           float64         `json:"paid"`
-	Balance        float64         `json:"balance"`
-	Currency       string          `json:"currency"`
-	Payments       []PublicReceipt `json:"payments"`
-	IssuedAt       time.Time       `json:"issued_at"`
+	PromisedBy      *time.Time      `json:"promised_by,omitempty"`
+	Accessories     []string        `json:"accessories,omitempty"`
+	IntakeCondition string          `json:"intake_condition,omitempty"`
+	LaborAmount     float64         `json:"labor_amount"`
+	PartsAmount     float64         `json:"parts_amount"`
+	SaleLinesTotal  float64         `json:"sale_lines_total"`
+	NetSubtotal     float64         `json:"net_subtotal"`
+	VATAmount       float64         `json:"vat_amount"`
+	VATRateBPS      int             `json:"vat_rate_bps"`
+	VATInclusive    bool            `json:"vat_inclusive"`
+	TotalDue        float64         `json:"total_due"`
+	Paid            float64         `json:"paid"`
+	Balance         float64         `json:"balance"`
+	Currency        string          `json:"currency"`
+	Payments        []PublicReceipt `json:"payments"`
+	IssuedAt        time.Time       `json:"issued_at"`
+	// Work-order line items, when the job has any — cost-stripped, itemized
+	// rendering takes over from the flat Labor/Parts/Accessories summary
+	// above once these are populated. Legacy jobs with no line items keep
+	// rendering from LaborAmount/PartsAmount/SaleLinesTotal exactly as before.
+	LabourLines  []JobLineItem `json:"labour_lines,omitempty"`
+	PartLines    []JobLineItem `json:"part_lines,omitempty"`
+	ProductLines []JobLineItem `json:"product_lines,omitempty"`
 }
 
 func (s *Service) BuildCustomerReceipt(ctx context.Context, tenantID, repairID uuid.UUID) (*CustomerReceiptDocument, error) {
@@ -172,11 +179,41 @@ func (s *Service) BuildCustomerReceipt(ctx context.Context, tenantID, repairID u
 		DeviceLabel: deviceLabel, IMEI: imei,
 		PromisedBy: job.PromisedBy, Accessories: job.IntakeAccessories,
 		IntakeCondition: derefStr(job.IntakeCondition),
-		LaborAmount: labor, PartsAmount: partsAmt, SaleLinesTotal: saleExtra,
+		LaborAmount:     labor, PartsAmount: partsAmt, SaleLinesTotal: saleExtra,
 		NetSubtotal: netSubtotal, VATAmount: vatAmount, VATRateBPS: tax.VATRateBPS, VATInclusive: tax.VATInclusive,
 		TotalDue: total, Paid: paid, Balance: balance,
 		Currency: tax.CurrencyCode, Payments: receipts, IssuedAt: time.Now().UTC(),
+		LabourLines: job.LabourLines, PartLines: job.PartLines, ProductLines: job.ProductLines,
 	}, nil
+}
+
+// itemRowsHTML renders the priced-items section of the receipt. Once a job
+// has any line items, they're itemized individually (labour + parts under
+// one section, products under their own); jobs with none keep the original
+// flat Labor/Parts/Accessories summary so historical receipts don't change.
+func (d *CustomerReceiptDocument) itemRowsHTML() string {
+	if len(d.LabourLines) == 0 && len(d.PartLines) == 0 && len(d.ProductLines) == 0 {
+		saleRow := ""
+		if d.SaleLinesTotal > 0.009 {
+			saleRow = fmt.Sprintf(`<tr><td>Accessories / extras</td><td></td><td>%s %.0f</td></tr>`,
+				html.EscapeString(d.Currency), d.SaleLinesTotal)
+		}
+		return fmt.Sprintf(`<tr><td>Labor</td><td></td><td>%s %.0f</td></tr><tr><td>Parts</td><td></td><td>%s %.0f</td></tr>%s`,
+			html.EscapeString(d.Currency), d.LaborAmount, html.EscapeString(d.Currency), d.PartsAmount, saleRow)
+	}
+	var b strings.Builder
+	for _, li := range append(append([]JobLineItem{}, d.LabourLines...), d.PartLines...) {
+		fmt.Fprintf(&b, `<tr><td>%s</td><td>× %.0f</td><td>%s %.0f</td></tr>`,
+			html.EscapeString(li.Description), li.Quantity, html.EscapeString(d.Currency), li.LineTotal)
+	}
+	if len(d.ProductLines) > 0 {
+		b.WriteString(`<tr><td colspan="3"><strong>Products</strong></td></tr>`)
+		for _, li := range d.ProductLines {
+			fmt.Fprintf(&b, `<tr><td>%s</td><td>× %.0f</td><td>%s %.0f</td></tr>`,
+				html.EscapeString(li.Description), li.Quantity, html.EscapeString(d.Currency), li.LineTotal)
+		}
+	}
+	return b.String()
 }
 
 func (d *CustomerReceiptDocument) HTML() string {
@@ -215,11 +252,6 @@ func (d *CustomerReceiptDocument) HTML() string {
 	} else {
 		vatNote = fmt.Sprintf(`<div class="meta">VAT %.2f%% added</div>`, float64(d.VATRateBPS)/100)
 	}
-	saleRow := ""
-	if d.SaleLinesTotal > 0.009 {
-		saleRow = fmt.Sprintf(`<tr><td>Accessories / extras</td><td></td><td>%s %.0f</td></tr>`,
-			html.EscapeString(d.Currency), d.SaleLinesTotal)
-	}
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Receipt %s</title>
 <style>
@@ -243,8 +275,6 @@ func (d *CustomerReceiptDocument) HTML() string {
   <table>
     <thead><tr><th>Item</th><th></th><th>Amount</th></tr></thead>
     <tbody>
-      <tr><td>Labor</td><td></td><td>%s %.0f</td></tr>
-      <tr><td>Parts</td><td></td><td>%s %.0f</td></tr>
       %s
     </tbody>
   </table>
@@ -271,9 +301,7 @@ func (d *CustomerReceiptDocument) HTML() string {
 		html.EscapeString(d.DeviceLabel),
 		imeiRow,
 		html.EscapeString(d.ProblemSummary),
-		html.EscapeString(d.Currency), d.LaborAmount,
-		html.EscapeString(d.Currency), d.PartsAmount,
-		saleRow,
+		d.itemRowsHTML(),
 		payRows.String(),
 		html.EscapeString(d.Currency), d.NetSubtotal,
 		html.EscapeString(d.Currency), d.VATAmount,

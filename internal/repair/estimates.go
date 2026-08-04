@@ -33,8 +33,8 @@ type RepairEstimate struct {
 }
 
 type CreateEstimateInput struct {
-	TenantID     uuid.UUID
-	RepairJobID  uuid.UUID
+	TenantID    uuid.UUID
+	RepairJobID uuid.UUID
 	// TotalAmount is what the customer is quoted. Labor/Parts remain internal
 	// bookkeeping (optional split); prefer TotalAmount from the counter UI.
 	TotalAmount  float64

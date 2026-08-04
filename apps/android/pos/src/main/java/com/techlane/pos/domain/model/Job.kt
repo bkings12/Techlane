@@ -285,8 +285,16 @@ data class JobPart(
     val unitPrice: Double,
     val availableQty: Int?,
     val pendingSync: Boolean = false,
+    /** "labour" | "part" | "product" — see internal/repair's line_type. */
+    val lineType: String = "product",
+    val unitCost: Double? = null,
+    val partStatus: String? = null,
+    val partSource: String? = null,
+    val supplierName: String? = null,
 ) {
     val lineTotal: Double get() = unitPrice * quantity
+    val isLabour: Boolean get() = lineType == "labour"
+    val isProduct: Boolean get() = lineType == "product"
 }
 
 /** Where in the job a photo was taken. Drives grouping in the gallery. */

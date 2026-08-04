@@ -213,6 +213,46 @@
   }
 }
 
+/* Compact bottom-sheet variant — Add Service / Add Part / Add Product, and
+   any other short mobile-first "add one thing" form. Slides up from the
+   bottom instead of appearing as a centered dialog. */
+.sheet-backdrop {
+  align-items: flex-end;
+  padding: 0;
+}
+
+.sheet-panel {
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  max-height: 85vh;
+  border-radius: 16px 16px 0 0;
+  animation: sheet-in 0.18s ease;
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(16px);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (min-width: 640px) {
+  /* On wider screens a bottom sheet looks odd pinned to the viewport edge —
+     let it float like a normal dialog while keeping the same rounded panel. */
+  .sheet-backdrop {
+    align-items: center;
+    padding: 12vh 16px 0;
+  }
+  .sheet-panel {
+    border-radius: 16px;
+  }
+}
+
 .cmdk-input-row {
   display: flex;
   align-items: center;

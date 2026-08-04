@@ -5,15 +5,18 @@ import { Badge, Button, EmptyState, ICONS, Input, PageHeader } from "../componen
 import { SendSmsModal } from "../components/SendSmsModal";
 import {
   getCustomer,
+  getCustomerLifetimeStats,
   getCustomerLoyalty,
   updateCustomer,
   type Customer,
+  type CustomerLifetimeStats,
   type Device,
   type LoyaltyAccount,
   type LoyaltyLedgerEntry,
   type RepairJob,
 } from "../lib/api";
 import { statusTone } from "../lib/repairStatus";
+import { useCurrency } from "../lib/currency";
 
 function can(permissions: string[] | undefined, permission: string) {
   return permissions?.includes("*") || permissions?.includes(permission);
@@ -22,15 +25,18 @@ function can(permissions: string[] | undefined, permission: string) {
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
+  const { formatMoney } = useCurrency();
   const canEdit = can(user?.permissions, "customers.write");
   const canSms =
     can(user?.permissions, "customers.write") || can(user?.permissions, "repairs.create");
+  const canSeeSpend = can(user?.permissions, "reports.read");
 
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
   const [repairs, setRepairs] = useState<RepairJob[]>([]);
   const [loyalty, setLoyalty] = useState<LoyaltyAccount | null>(null);
   const [ledger, setLedger] = useState<LoyaltyLedgerEntry[]>([]);
+  const [stats, setStats] = useState<CustomerLifetimeStats | null>(null);
   const [showSms, setShowSms] = useState(false);
   const [error, setError] = useState("");
 
@@ -65,6 +71,10 @@ export function CustomerDetailPage() {
       .catch(() => {
         /* loyalty program may not be enabled — fail silently */
       });
+    // Lifetime spend needs reports.read — a technician simply won't see the panel.
+    getCustomerLifetimeStats(id)
+      .then(setStats)
+      .catch(() => setStats(null));
   }, [id]);
 
   async function onSave(e: FormEvent) {
@@ -266,6 +276,33 @@ export function CustomerDetailPage() {
           )}
         </section>
       </div>
+
+      {canSeeSpend && stats ? (
+        <section className="panel" style={{ padding: "0.85rem", marginTop: "1rem" }}>
+          <div className="panel-head">
+            <h2>Lifetime spend</h2>
+            <strong>{formatMoney(stats.lifetime_spend)}</strong>
+          </div>
+          <dl className="meta-dl">
+            <dt>Repairs</dt>
+            <dd>{formatMoney(stats.repairs_revenue)}</dd>
+            <dt>Repair parts</dt>
+            <dd>{formatMoney(stats.repair_parts_revenue)}</dd>
+            <dt>Accessories / products</dt>
+            <dd>{formatMoney(stats.accessories_revenue)}</dd>
+            <dt>Repairs</dt>
+            <dd>{stats.repairs_count}</dd>
+            <dt>Retail items</dt>
+            <dd>{stats.retail_items_count}</dd>
+            <dt>Outstanding</dt>
+            <dd>
+              <strong className={stats.outstanding_balance > 0 ? "warn-text" : undefined}>
+                {formatMoney(stats.outstanding_balance)}
+              </strong>
+            </dd>
+          </dl>
+        </section>
+      ) : null}
 
       {loyalty || ledger.length > 0 ? (
         <section className="panel" style={{ padding: "0.85rem", marginTop: "1rem" }}>

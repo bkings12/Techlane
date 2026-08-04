@@ -39,6 +39,13 @@ type Summary struct {
 
 	SupplierCreditOutstanding float64 `json:"supplier_credit_outstanding"`
 
+	// Compact today-only figures for the main dashboard (not the full period
+	// breakdown — that lives in Operations/RepairProfitability, reporting/admin
+	// only, per the "don't overload the dashboard" rule).
+	TodayRepairRevenue  float64 `json:"today_repair_revenue"`
+	TodayProductRevenue float64 `json:"today_product_revenue"`
+	TodayGrossProfit    float64 `json:"today_gross_profit"`
+
 	RiskOpenTotal     int `json:"risk_open_total"`
 	RiskOrphanParts   int `json:"risk_orphan_parts"`
 	RiskCashShortage  int `json:"risk_cash_shortage"`
@@ -84,6 +91,33 @@ type RepairProfitability struct {
 	// Jobs that consumed a part with no buying price on record. Their true cost is
 	// higher than what is reported here, so margin is an upper bound.
 	JobsWithUnpricedParts int `json:"jobs_with_unpriced_parts"`
+
+	// Work-order line-item breakdown (repair.job_line_items) — labour/parts/
+	// products revenue, cost, and profit reported separately. Populated
+	// alongside the legacy fields above rather than replacing them; jobs that
+	// predate line items only ever contribute to LaborRevenue/PartsCost above.
+	PartsRevenue    float64 `json:"parts_revenue"`
+	PartsProfit     float64 `json:"parts_profit"`
+	ProductsRevenue float64 `json:"products_revenue"`
+	ProductsCost    float64 `json:"products_cost"`
+	ProductsProfit  float64 `json:"products_profit"`
+}
+
+// PartProfitability is one line in the "most profitable parts" report.
+type PartProfitability struct {
+	Description  string  `json:"description"`
+	QuantitySold float64 `json:"quantity_sold"`
+	Revenue      float64 `json:"revenue"`
+	Cost         float64 `json:"cost"`
+	Profit       float64 `json:"profit"`
+}
+
+// ProductFrequency is one line in the "products commonly bought with
+// repairs" report.
+type ProductFrequency struct {
+	Description  string  `json:"description"`
+	RepairsCount int     `json:"repairs_count"`
+	QuantitySold float64 `json:"quantity_sold"`
 }
 
 type ClosureMetric struct {
@@ -101,7 +135,9 @@ type OperationsReport struct {
 	ByBranch     []BranchMetric     `json:"by_branch"`
 	Closures     []ClosureMetric    `json:"closures"`
 
-	Profitability RepairProfitability `json:"repair_profitability"`
+	Profitability  RepairProfitability `json:"repair_profitability"`
+	TopParts       []PartProfitability `json:"top_parts"`
+	CommonProducts []ProductFrequency  `json:"common_products"`
 }
 
 func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID, days int) (*Summary, error) {
@@ -202,6 +238,22 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID, days int) (*S
 			COUNT(*) FILTER (WHERE kind IN ('stuck_job', 'uncollected_ready'))
 		FROM audit.risk_alerts WHERE tenant_id = $1 AND status = 'open'`, tenantID).
 		Scan(&out.RiskOpenTotal, &out.RiskOrphanParts, &out.RiskCashShortage, &out.RiskUnverifiedPay, &out.RiskStuckJobs)
+
+	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
+	var labourToday, partsRevToday, partsCostToday, productsRevToday, productsCostToday float64
+	_ = s.pool.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(li.quantity * li.unit_price - li.discount_amount) FILTER (WHERE li.line_type = 'labour'), 0)::float8,
+			COALESCE(SUM(li.quantity * li.unit_price - li.discount_amount) FILTER (WHERE li.line_type = 'part'), 0)::float8,
+			COALESCE(SUM(li.quantity * COALESCE(li.unit_cost, 0)) FILTER (WHERE li.line_type = 'part'), 0)::float8,
+			COALESCE(SUM(li.quantity * li.unit_price - li.discount_amount) FILTER (WHERE li.line_type = 'product'), 0)::float8,
+			COALESCE(SUM(li.quantity * COALESCE(li.unit_cost, 0)) FILTER (WHERE li.line_type = 'product'), 0)::float8
+		FROM repair.job_line_items li
+		WHERE li.tenant_id = $1 AND li.created_at >= $2`, tenantID, todayStart).
+		Scan(&labourToday, &partsRevToday, &partsCostToday, &productsRevToday, &productsCostToday)
+	out.TodayRepairRevenue = labourToday + partsRevToday
+	out.TodayProductRevenue = productsRevToday
+	out.TodayGrossProfit = (labourToday + partsRevToday + productsRevToday) - (partsCostToday + productsCostToday)
 
 	return out, nil
 }
@@ -347,6 +399,76 @@ func (s *Service) Operations(ctx context.Context, tenantID uuid.UUID, days int) 
 		pct := out.Profitability.Margin / out.Profitability.LaborRevenue * 100
 		out.Profitability.MarginPct = &pct
 	}
+
+	_ = s.pool.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(li.quantity * li.unit_price - li.discount_amount) FILTER (WHERE li.line_type = 'part'), 0)::float8,
+			COALESCE(SUM(li.quantity * COALESCE(li.unit_cost, 0)) FILTER (WHERE li.line_type = 'part'), 0)::float8,
+			COALESCE(SUM(li.quantity * li.unit_price - li.discount_amount) FILTER (WHERE li.line_type = 'product'), 0)::float8,
+			COALESCE(SUM(li.quantity * COALESCE(li.unit_cost, 0)) FILTER (WHERE li.line_type = 'product'), 0)::float8
+		FROM repair.job_line_items li
+		JOIN repair.repair_jobs j ON j.tenant_id = li.tenant_id AND j.id = li.repair_job_id
+		WHERE li.tenant_id = $1 AND j.status IN ('completed', 'collected') AND j.updated_at >= $2`, tenantID, since).
+		Scan(&out.Profitability.PartsRevenue, &out.Profitability.PartsCost,
+			&out.Profitability.ProductsRevenue, &out.Profitability.ProductsCost)
+	out.Profitability.PartsProfit = out.Profitability.PartsRevenue - out.Profitability.PartsCost
+	out.Profitability.ProductsProfit = out.Profitability.ProductsRevenue - out.Profitability.ProductsCost
+
+	partRows, err := s.pool.Query(ctx, `
+		SELECT li.description,
+		       SUM(li.quantity)::float8,
+		       SUM(li.quantity * li.unit_price - li.discount_amount)::float8 AS revenue,
+		       SUM(li.quantity * COALESCE(li.unit_cost, 0))::float8 AS cost
+		FROM repair.job_line_items li
+		JOIN repair.repair_jobs j ON j.tenant_id = li.tenant_id AND j.id = li.repair_job_id
+		WHERE li.tenant_id = $1 AND li.line_type = 'part' AND j.updated_at >= $2
+		GROUP BY li.description
+		ORDER BY (SUM(li.quantity * li.unit_price - li.discount_amount) - SUM(li.quantity * COALESCE(li.unit_cost, 0))) DESC
+		LIMIT 10`, tenantID, since)
+	if err != nil {
+		return nil, err
+	}
+	out.TopParts = make([]PartProfitability, 0)
+	for partRows.Next() {
+		var p PartProfitability
+		if err := partRows.Scan(&p.Description, &p.QuantitySold, &p.Revenue, &p.Cost); err != nil {
+			partRows.Close()
+			return nil, err
+		}
+		p.Profit = p.Revenue - p.Cost
+		out.TopParts = append(out.TopParts, p)
+	}
+	if err := partRows.Err(); err != nil {
+		partRows.Close()
+		return nil, err
+	}
+	partRows.Close()
+
+	productRows, err := s.pool.Query(ctx, `
+		SELECT li.description, COUNT(DISTINCT li.repair_job_id), SUM(li.quantity)::float8
+		FROM repair.job_line_items li
+		JOIN repair.repair_jobs j ON j.tenant_id = li.tenant_id AND j.id = li.repair_job_id
+		WHERE li.tenant_id = $1 AND li.line_type = 'product' AND j.updated_at >= $2
+		GROUP BY li.description
+		ORDER BY COUNT(DISTINCT li.repair_job_id) DESC
+		LIMIT 10`, tenantID, since)
+	if err != nil {
+		return nil, err
+	}
+	out.CommonProducts = make([]ProductFrequency, 0)
+	for productRows.Next() {
+		var p ProductFrequency
+		if err := productRows.Scan(&p.Description, &p.RepairsCount, &p.QuantitySold); err != nil {
+			productRows.Close()
+			return nil, err
+		}
+		out.CommonProducts = append(out.CommonProducts, p)
+	}
+	if err := productRows.Err(); err != nil {
+		productRows.Close()
+		return nil, err
+	}
+	productRows.Close()
 
 	return out, nil
 }

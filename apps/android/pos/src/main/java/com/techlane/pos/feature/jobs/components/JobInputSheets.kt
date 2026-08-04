@@ -203,7 +203,12 @@ fun RecordApprovalSheet(
     }
 }
 
-/** Inventory search for parts. Reads the same cached catalog the till uses. */
+/**
+ * Inventory search — reads the same cached catalog the till uses. Used for
+ * both "Add part → from inventory" and "Add product"; [onAddSourced] is only
+ * offered when set, since a retail product is never sourced ad-hoc the way a
+ * repair part can be.
+ */
 @Composable
 fun PartsPickerSheet(
     results: List<CatalogItemEntity>,
@@ -211,11 +216,24 @@ fun PartsPickerSheet(
     onQueryChange: (String) -> Unit,
     onAdd: (CatalogItemEntity, Int) -> Unit,
     onDismiss: () -> Unit,
+    title: String = "Add a part",
+    onAddSourced: ((description: String, unitCost: Double, unitPrice: Double, quantity: Int, supplier: String?) -> Unit)? = null,
 ) {
     var selected by remember { mutableStateOf<CatalogItemEntity?>(null) }
     var quantity by remember { mutableIntStateOf(1) }
+    var sourcingNew by remember { mutableStateOf(false) }
 
-    JobSheetScaffold(title = "Add a part", onDismiss = onDismiss) {
+    JobSheetScaffold(title = title, onDismiss = onDismiss) {
+        if (onAddSourced != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm)) {
+                FilterChip(selected = !sourcingNew, onClick = { sourcingNew = false }, label = { Text("From inventory") })
+                FilterChip(selected = sourcingNew, onClick = { sourcingNew = true }, label = { Text("Source new part") })
+            }
+        }
+        if (sourcingNew && onAddSourced != null) {
+            SourcedPartForm(onAdd = onAddSourced)
+            return@JobSheetScaffold
+        }
         val chosen = selected
         if (chosen == null) {
             TlTextField(
@@ -311,6 +329,114 @@ fun PartsPickerSheet(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+}
+
+/**
+ * A part procured specifically for this job — not drawn from, and not
+ * automatically added to, shop inventory. Cost/sell/profit are shown
+ * together so the technician sees the margin before committing to a price.
+ */
+@Composable
+private fun SourcedPartForm(
+    onAdd: (description: String, unitCost: Double, unitPrice: Double, quantity: Int, supplier: String?) -> Unit,
+) {
+    var description by remember { mutableStateOf("") }
+    var supplier by remember { mutableStateOf("") }
+    var cost by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+    var quantity by remember { mutableIntStateOf(1) }
+
+    TlTextField(
+        value = description,
+        onValueChange = { description = it },
+        label = "Part description",
+        placeholder = "e.g. MacBook A2337 Display",
+    )
+    TlTextField(
+        value = supplier,
+        onValueChange = { supplier = it },
+        label = "Supplier (optional)",
+        placeholder = "e.g. XYZ Spares",
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm)) {
+        TlTextField(
+            value = cost,
+            onValueChange = { cost = it.filter { c -> c.isDigit() } },
+            label = "Cost (KES)",
+            placeholder = "0",
+            keyboardType = KeyboardType.Number,
+            modifier = Modifier.weight(1f),
+        )
+        TlTextField(
+            value = price,
+            onValueChange = { price = it.filter { c -> c.isDigit() } },
+            label = "Selling price (KES)",
+            placeholder = "0",
+            keyboardType = KeyboardType.Number,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Quantity", style = MaterialTheme.typography.titleSmall)
+        TlStepper(value = quantity, onValueChange = { quantity = it })
+    }
+    val costVal = cost.toDoubleOrNull()
+    val priceVal = price.toDoubleOrNull()
+    if (costVal != null && priceVal != null) {
+        val profit = priceVal - costVal
+        Text(
+            "Profit ${formatKes(profit)} per unit",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    Text(
+        "Not added to shop inventory. Once it arrives, leftover stock can be added from Inventory.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    TlButton(
+        text = "Add part",
+        onClick = { onAdd(description.trim(), costVal ?: 0.0, priceVal ?: 0.0, quantity, supplier.trim().takeIf(String::isNotBlank)) },
+        enabled = description.isNotBlank() && costVal != null && priceVal != null,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/** Diagnosis, board repair, cleaning — any repair charge billed as labour. */
+@Composable
+fun AddServiceSheet(
+    onAdd: (description: String, unitPrice: Double) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var description by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+
+    JobSheetScaffold(title = "Add service", subtitle = "Diagnosis, board repair, cleaning — billed as labour.", onDismiss = onDismiss) {
+        TlTextField(
+            value = description,
+            onValueChange = { description = it },
+            label = "Description",
+            placeholder = "e.g. Logic board repair",
+        )
+        TlTextField(
+            value = price,
+            onValueChange = { price = it.filter(Char::isDigit) },
+            label = "Price (KES)",
+            placeholder = "0",
+            keyboardType = KeyboardType.Number,
+        )
+        TlButton(
+            text = "Add service",
+            onClick = { price.toDoubleOrNull()?.let { onAdd(description.trim(), it) } },
+            enabled = description.isNotBlank() && (price.toDoubleOrNull() ?: 0.0) >= 0 && price.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

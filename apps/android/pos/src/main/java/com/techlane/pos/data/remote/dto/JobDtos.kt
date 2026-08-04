@@ -26,6 +26,12 @@ data class RepairJobDto(
     @SerialName("amount_due") val amountDue: Double = 0.0,
     @SerialName("balance_due") val balanceDue: Double = 0.0,
     @SerialName("paid_total") val paidTotal: Double = 0.0,
+    @SerialName("labour_total") val labourTotal: Double = 0.0,
+    @SerialName("parts_revenue") val partsRevenue: Double = 0.0,
+    @SerialName("products_revenue") val productsRevenue: Double = 0.0,
+    @SerialName("labour_lines") val labourLines: List<JobLineItemDto> = emptyList(),
+    @SerialName("part_lines") val partLines: List<JobLineItemDto> = emptyList(),
+    @SerialName("product_lines") val productLines: List<JobLineItemDto> = emptyList(),
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("promised_by") val promisedBy: String? = null,
     @SerialName("customer_waiting") val customerWaiting: Boolean = false,
@@ -80,6 +86,24 @@ data class JobSaleLineDto(
     val quantity: Int = 1,
     @SerialName("unit_price") val unitPrice: Double = 0.0,
     @SerialName("line_total") val lineTotal: Double = 0.0,
+)
+
+/** A work-order line item — mirrors internal/repair.JobLineItem. */
+@Serializable
+data class JobLineItemDto(
+    val id: String? = null,
+    @SerialName("line_type") val lineType: String = "product",
+    val description: String = "",
+    val quantity: Double = 1.0,
+    @SerialName("unit_price") val unitPrice: Double = 0.0,
+    @SerialName("unit_cost") val unitCost: Double? = null,
+    @SerialName("line_total") val lineTotal: Double = 0.0,
+    @SerialName("variant_id") val variantId: String? = null,
+    @SerialName("location_id") val locationId: String? = null,
+    @SerialName("part_source") val partSource: String? = null,
+    @SerialName("part_status") val partStatus: String? = null,
+    @SerialName("supplier_name") val supplierName: String? = null,
+    @SerialName("supplier_ref") val supplierRef: String? = null,
 )
 
 @Serializable
@@ -159,6 +183,20 @@ data class AddSaleLineRequest(
     @SerialName("variant_id") val variantId: String,
     @SerialName("location_id") val locationId: String,
     val quantity: Int,
+)
+
+@Serializable
+data class AddLineItemRequest(
+    val type: String,
+    val description: String? = null,
+    @SerialName("unit_price") val unitPrice: Double? = null,
+    @SerialName("unit_cost") val unitCost: Double? = null,
+    val quantity: Double? = null,
+    @SerialName("variant_id") val variantId: String? = null,
+    @SerialName("location_id") val locationId: String? = null,
+    @SerialName("supplier_name") val supplierName: String? = null,
+    @SerialName("supplier_ref") val supplierRef: String? = null,
+    @SerialName("expected_arrival") val expectedArrival: String? = null,
 )
 
 @Serializable

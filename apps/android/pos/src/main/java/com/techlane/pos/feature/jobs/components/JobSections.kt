@@ -113,20 +113,23 @@ fun ApprovalCard(
 }
 
 /**
- * Parts already on the job.
- *
- * These are repair sale lines (`/repairs/{id}/sale-lines`) — the same rows the
- * web console bills from — not supplier procurement, which is a separate flow
- * and out of scope here.
+ * One section of the work order: labour, parts, or products, each their own
+ * card so a technician scanning the job sees revenue by category the way the
+ * shop's accounting does, not one undifferentiated list. All three read the
+ * same underlying line-item rows (`/repairs/{id}/line-items`), filtered by
+ * type before this is called — see [JobPart.lineType].
  */
 @Composable
-fun PartsCard(
+fun LineItemsCard(
+    title: String,
     parts: List<JobPart>,
     canEdit: Boolean,
-    onAddPart: () -> Unit,
-    onRemovePart: (JobPart) -> Unit,
-    onMarkPartRequired: () -> Unit,
+    onAdd: () -> Unit,
+    addLabel: String,
+    emptyLabel: String,
+    onRemove: (JobPart) -> Unit,
     modifier: Modifier = Modifier,
+    onMarkPartRequired: (() -> Unit)? = null,
 ) {
     TlCard(modifier = modifier) {
         Row(
@@ -134,7 +137,7 @@ fun PartsCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Parts", style = MaterialTheme.typography.titleSmall)
+            Text(title, style = MaterialTheme.typography.titleSmall)
             if (parts.isNotEmpty()) {
                 Text(
                     formatKes(parts.sumOf { it.lineTotal }),
@@ -146,7 +149,7 @@ fun PartsCard(
 
         if (parts.isEmpty()) {
             Text(
-                "No parts on this job yet.",
+                emptyLabel,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -165,7 +168,12 @@ fun PartsCard(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            listOfNotNull(part.sku, "× ${part.quantity}").joinToString(" · "),
+                            listOfNotNull(
+                                part.sku,
+                                "× ${part.quantity}",
+                                part.partStatus?.replaceFirstChar(Char::uppercase),
+                                if (part.partSource == "sourced") "sourced" else null,
+                            ).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -182,7 +190,7 @@ fun PartsCard(
                     // Removal is only offered before the job is finished; after
                     // that the line is part of what the customer was billed.
                     if (canEdit) {
-                        IconButton(onClick = { onRemovePart(part) }) {
+                        IconButton(onClick = { onRemove(part) }) {
                             Icon(
                                 Icons.Outlined.Delete,
                                 contentDescription = "Remove ${part.name}",
@@ -197,12 +205,14 @@ fun PartsCard(
 
         if (canEdit) {
             Row(horizontalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm)) {
-                TlSecondaryButton(text = "Add part", onClick = onAddPart, modifier = Modifier.weight(1f))
-                TlSecondaryButton(
-                    text = "Part required",
-                    onClick = onMarkPartRequired,
-                    modifier = Modifier.weight(1f),
-                )
+                TlSecondaryButton(text = addLabel, onClick = onAdd, modifier = Modifier.weight(1f))
+                if (onMarkPartRequired != null) {
+                    TlSecondaryButton(
+                        text = "Part required",
+                        onClick = onMarkPartRequired,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
     }

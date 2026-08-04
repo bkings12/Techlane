@@ -181,10 +181,10 @@ func (s *Service) CreateRework(ctx context.Context, tenantID, originalID uuid.UU
 		WHERE tenant_id = $5 AND id = $6`,
 		now, src, zero, actorID, tenantID, job.ID)
 	s.publish("repair.returned", tenantID, branchID, actorID, corrID, map[string]any{
-		"repair_job_id":  job.ID.String(),
-		"parent_job_id":  originalID.String(),
+		"repair_job_id":   job.ID.String(),
+		"parent_job_id":   originalID.String(),
 		"parent_job_code": originalCode,
-		"reason":         reason,
+		"reason":          reason,
 	})
 	return s.GetRepair(ctx, tenantID, job.ID)
 }

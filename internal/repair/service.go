@@ -105,6 +105,18 @@ type RepairJob struct {
 	LaborAmount    float64       `json:"labor_amount"`
 	SaleLinesTotal float64       `json:"sale_lines_total"`
 	SaleLines      []JobSaleLine `json:"sale_lines,omitempty"`
+	// Work-order line items (labour/part/product). Totals are the customer-
+	// facing revenue only — cost/profit never appears here, only via the
+	// separate reports.read-gated /financials endpoint.
+	LabourTotal     float64       `json:"labour_total"`
+	PartsRevenue    float64       `json:"parts_revenue"`
+	ProductsRevenue float64       `json:"products_revenue"`
+	LabourLines     []JobLineItem `json:"labour_lines,omitempty"`
+	PartLines       []JobLineItem `json:"part_lines,omitempty"`
+	ProductLines    []JobLineItem `json:"product_lines,omitempty"`
+	hasLabourLines  bool
+	hasPartLines    bool
+	hasProductLines bool
 	// List/board money rollups — detail page also recomputes from estimates/payments.
 	AuthorizedAmount      *float64           `json:"authorized_amount,omitempty"`
 	ApprovedEstimateTotal *float64           `json:"approved_estimate_total,omitempty"`
@@ -137,13 +149,26 @@ type RepairJob struct {
 	Timeline              []StatusEvent      `json:"timeline,omitempty"`
 }
 
-// applyJobMoney fills amount_due / balance_due / quoted_value from labor, estimates, and sales.
+// applyJobMoney fills amount_due / balance_due / quoted_value from labor,
+// estimates, sales, and (once a job has any) work-order line items.
+//
+// Line items take over per-category as soon as any exist for that category on
+// a job; the legacy scalar/estimate/sale-line figures remain authoritative
+// until then, so historical jobs' totals never change under this rewrite.
 func applyJobMoney(j *RepairJob) {
 	charge := j.LaborAmount
 	if j.ApprovedEstimateTotal != nil && *j.ApprovedEstimateTotal > 0 {
 		charge = *j.ApprovedEstimateTotal
 	}
-	j.AmountDue = charge + j.SaleLinesTotal
+	labour := charge
+	if j.hasLabourLines {
+		labour = j.LabourTotal
+	}
+	products := j.SaleLinesTotal
+	if j.hasProductLines {
+		products = j.ProductsRevenue
+	}
+	j.AmountDue = labour + j.PartsRevenue + products
 	if j.AmountDue < 0 {
 		j.AmountDue = 0
 	}
@@ -151,14 +176,14 @@ func applyJobMoney(j *RepairJob) {
 	if j.BalanceDue < 0 {
 		j.BalanceDue = 0
 	}
-	quoted := charge
+	quoted := labour
 	if quoted <= 0 && j.AuthorizedAmount != nil {
 		quoted = *j.AuthorizedAmount
 	}
 	if quoted <= 0 && j.PendingEstimateTotal != nil {
 		quoted = *j.PendingEstimateTotal
 	}
-	j.QuotedValue = quoted + j.SaleLinesTotal
+	j.QuotedValue = quoted + j.PartsRevenue + products
 	if j.QuotedValue < 0 {
 		j.QuotedValue = 0
 	}
@@ -885,6 +910,7 @@ type ListRepairsFilter struct {
 	Status       string
 	TechnicianID *uuid.UUID
 	Search       string
+	CustomerID   *uuid.UUID
 }
 
 func (s *Service) ListRepairs(ctx context.Context, tenantID uuid.UUID, f ListRepairsFilter) ([]RepairJob, error) {
@@ -919,6 +945,24 @@ func (s *Service) ListRepairs(ctx context.Context, tenantID uuid.UUID, f ListRep
 				  AND a.payable_id = j.id
 				  AND p.status IN ('allocated', 'confirmed', 'provisional')
 			), 0),
+			COALESCE((
+				SELECT SUM(li.quantity * li.unit_price - li.discount_amount)::float8
+				FROM repair.job_line_items li
+				WHERE li.tenant_id = j.tenant_id AND li.repair_job_id = j.id AND li.line_type = 'labour'
+			), 0),
+			EXISTS(SELECT 1 FROM repair.job_line_items li WHERE li.tenant_id = j.tenant_id AND li.repair_job_id = j.id AND li.line_type = 'labour'),
+			COALESCE((
+				SELECT SUM(li.quantity * li.unit_price - li.discount_amount)::float8
+				FROM repair.job_line_items li
+				WHERE li.tenant_id = j.tenant_id AND li.repair_job_id = j.id AND li.line_type = 'part'
+			), 0),
+			EXISTS(SELECT 1 FROM repair.job_line_items li WHERE li.tenant_id = j.tenant_id AND li.repair_job_id = j.id AND li.line_type = 'part'),
+			COALESCE((
+				SELECT SUM(li.quantity * li.unit_price - li.discount_amount)::float8
+				FROM repair.job_line_items li
+				WHERE li.tenant_id = j.tenant_id AND li.repair_job_id = j.id AND li.line_type = 'product'
+			), 0),
+			EXISTS(SELECT 1 FROM repair.job_line_items li WHERE li.tenant_id = j.tenant_id AND li.repair_job_id = j.id AND li.line_type = 'product'),
 			d.kind, d.brand, d.model, d.imei
 		FROM repair.repair_jobs j
 		LEFT JOIN repair.customers c ON c.id = j.customer_id
@@ -930,6 +974,11 @@ func (s *Service) ListRepairs(ctx context.Context, tenantID uuid.UUID, f ListRep
 	if f.BranchID != nil {
 		q += fmt.Sprintf(" AND j.branch_id = $%d", n)
 		args = append(args, *f.BranchID)
+		n++
+	}
+	if f.CustomerID != nil {
+		q += fmt.Sprintf(" AND j.customer_id = $%d", n)
+		args = append(args, *f.CustomerID)
 		n++
 	}
 	switch f.Status {
@@ -1009,6 +1058,7 @@ func (s *Service) ListRepairs(ctx context.Context, tenantID uuid.UUID, f ListRep
 			&j.Status, &j.ProblemSummary, &j.ServiceType, &j.LaborAmount, &j.CreatedAt, &j.PromisedBy, &j.CustomerWaiting, &j.EstimatedWaitMin, &j.CustomerCredit, &j.CreditDueDate,
 			&j.ParentJobID, &j.ParentJobCode, &j.ReworkReason,
 			&j.AuthorizedAmount, &j.SaleLinesTotal, &j.ApprovedEstimateTotal, &j.PendingEstimateTotal, &j.PaidTotal,
+			&j.LabourTotal, &j.hasLabourLines, &j.PartsRevenue, &j.hasPartLines, &j.ProductsRevenue, &j.hasProductLines,
 			&deviceKind, &device.Brand, &device.Model, &device.IMEI,
 		); err != nil {
 			return nil, err
@@ -1093,6 +1143,24 @@ func (s *Service) GetRepair(ctx context.Context, tenantID, id uuid.UUID) (*Repai
 		j.SaleLines = lines
 		for _, line := range lines {
 			j.SaleLinesTotal += line.LineTotal
+		}
+	}
+	if items, err := s.JobLineItems(ctx, tenantID, id); err == nil {
+		for _, it := range items {
+			switch it.LineType {
+			case LineTypeLabour:
+				j.LabourLines = append(j.LabourLines, it.StripCost())
+				j.LabourTotal += it.LineTotal
+				j.hasLabourLines = true
+			case LineTypePart:
+				j.PartLines = append(j.PartLines, it.StripCost())
+				j.PartsRevenue += it.LineTotal
+				j.hasPartLines = true
+			case LineTypeProduct:
+				j.ProductLines = append(j.ProductLines, it.StripCost())
+				j.ProductsRevenue += it.LineTotal
+				j.hasProductLines = true
+			}
 		}
 	}
 	// Same money rollups as ListRepairs so detail screens and handover share one formula.

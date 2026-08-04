@@ -48,14 +48,24 @@ func (d *CustomerReceiptDocument) ToReceiptDocument(taxInvoice bool) receipts.Do
 		})
 	}
 
-	if d.LaborAmount > 0 || (d.PartsAmount == 0 && d.SaleLinesTotal == 0) {
-		doc.Lines = append(doc.Lines, receipts.Line{Description: "Labour", Amount: d.LaborAmount})
-	}
-	if d.PartsAmount > 0 {
-		doc.Lines = append(doc.Lines, receipts.Line{Description: "Parts", Amount: d.PartsAmount})
-	}
-	if d.SaleLinesTotal > 0 {
-		doc.Lines = append(doc.Lines, receipts.Line{Description: "Accessories / extras", Amount: d.SaleLinesTotal})
+	if len(d.LabourLines) > 0 || len(d.PartLines) > 0 || len(d.ProductLines) > 0 {
+		// Itemized once the job has any line items — same rule as the HTML receipt.
+		for _, li := range append(append([]JobLineItem{}, d.LabourLines...), d.PartLines...) {
+			doc.Lines = append(doc.Lines, receipts.Line{Description: li.Description, Qty: li.Quantity, UnitPrice: li.UnitPrice, Amount: li.LineTotal})
+		}
+		for _, li := range d.ProductLines {
+			doc.Lines = append(doc.Lines, receipts.Line{Description: li.Description, Qty: li.Quantity, UnitPrice: li.UnitPrice, Amount: li.LineTotal})
+		}
+	} else {
+		if d.LaborAmount > 0 || (d.PartsAmount == 0 && d.SaleLinesTotal == 0) {
+			doc.Lines = append(doc.Lines, receipts.Line{Description: "Labour", Amount: d.LaborAmount})
+		}
+		if d.PartsAmount > 0 {
+			doc.Lines = append(doc.Lines, receipts.Line{Description: "Parts", Amount: d.PartsAmount})
+		}
+		if d.SaleLinesTotal > 0 {
+			doc.Lines = append(doc.Lines, receipts.Line{Description: "Accessories / extras", Amount: d.SaleLinesTotal})
+		}
 	}
 
 	for _, p := range d.Payments {

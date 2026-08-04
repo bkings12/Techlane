@@ -21,12 +21,12 @@ func TestGeneratePickupCode(t *testing.T) {
 
 func TestNormalizePickupCode(t *testing.T) {
 	cases := map[string]string{
-		"pk-ab12cd":                           "PK-AB12CD",
-		"techlane://repair-pickup/pk-ab12cd":  "PK-AB12CD",
-		"TECHLANE:REPAIR-PICKUP:PK-ZZ99YY":    "PK-ZZ99YY",
-		"  PK-GRAXNF  ":                       "PK-GRAXNF",
-		"noise around PK-9D2XFH trailing":     "PK-9D2XFH",
-		"":                                    "",
+		"pk-ab12cd":                          "PK-AB12CD",
+		"techlane://repair-pickup/pk-ab12cd": "PK-AB12CD",
+		"TECHLANE:REPAIR-PICKUP:PK-ZZ99YY":   "PK-ZZ99YY",
+		"  PK-GRAXNF  ":                      "PK-GRAXNF",
+		"noise around PK-9D2XFH trailing":    "PK-9D2XFH",
+		"":                                   "",
 	}
 	for in, want := range cases {
 		if got := NormalizePickupCode(in); got != want {

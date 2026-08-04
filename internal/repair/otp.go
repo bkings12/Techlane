@@ -475,6 +475,22 @@ func (s *Service) repairPaymentAmounts(ctx context.Context, tenantID, repairID u
 	if err != nil {
 		return uuid.Nil, 0, 0, "", "", err
 	}
+	// Work-order line items take over per-category as soon as any exist,
+	// same rule as applyJobMoney — otherwise a job priced purely through
+	// line items would show a legacy total of 0 here and every payment
+	// against it would look like an overpayment (and PaidTotal would come
+	// out zero on the job detail view, since balance clamps at zero above).
+	lit, litErr := s.lineItemTotals(ctx, tenantID, repairID)
+	if litErr != nil {
+		return uuid.Nil, 0, 0, "", "", litErr
+	}
+	if lit.HasLabourLines {
+		total = lit.LabourTotal
+	}
+	total += lit.PartsRevenue
+	if lit.HasProductLines {
+		saleExtra = lit.ProductsRevenue
+	}
 	total += saleExtra
 
 	var paid float64

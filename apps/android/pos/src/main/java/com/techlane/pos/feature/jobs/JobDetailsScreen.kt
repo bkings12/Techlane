@@ -56,12 +56,13 @@ import com.techlane.pos.domain.model.MpesaReference
 import com.techlane.pos.domain.model.PaymentMethod
 import com.techlane.pos.domain.model.PhotoKind
 import com.techlane.pos.feature.charge.StkStatusScreen
+import com.techlane.pos.feature.jobs.components.AddServiceSheet
 import com.techlane.pos.feature.jobs.components.ApprovalCard
 import com.techlane.pos.feature.jobs.components.CustomerUpdateSheet
 import com.techlane.pos.feature.jobs.components.DiagnosisSheet
 import com.techlane.pos.feature.jobs.components.EstimateSheet
 import com.techlane.pos.feature.jobs.components.JobStatusChip
-import com.techlane.pos.feature.jobs.components.PartsCard
+import com.techlane.pos.feature.jobs.components.LineItemsCard
 import com.techlane.pos.feature.jobs.components.PartsPickerSheet
 import com.techlane.pos.feature.jobs.components.PhotoKindSheet
 import com.techlane.pos.feature.jobs.components.RecordApprovalSheet
@@ -204,12 +205,35 @@ fun JobDetailsScreen(
             onRecordPaybill = { showPaybillSheet = true },
         )
 
-        PartsCard(
-            parts = detail.parts,
+        LineItemsCard(
+            title = "Labour",
+            parts = detail.parts.filter { it.lineType == "labour" },
             canEdit = detail.status.isOpen,
-            onAddPart = { viewModel.openSheet(JobSheet.Parts) },
-            onRemovePart = viewModel::removePart,
+            onAdd = { viewModel.openSheet(JobSheet.AddService) },
+            addLabel = "Add service",
+            emptyLabel = "No labour lines yet.",
+            onRemove = viewModel::removePart,
+        )
+
+        LineItemsCard(
+            title = "Parts",
+            parts = detail.parts.filter { it.lineType == "part" },
+            canEdit = detail.status.isOpen,
+            onAdd = { viewModel.openSheet(JobSheet.Parts) },
+            addLabel = "Add part",
+            emptyLabel = "No parts on this job yet.",
+            onRemove = viewModel::removePart,
             onMarkPartRequired = viewModel::markPartRequired,
+        )
+
+        LineItemsCard(
+            title = "Products",
+            parts = detail.parts.filter { it.lineType == "product" },
+            canEdit = detail.status.isOpen,
+            onAdd = { viewModel.openSheet(JobSheet.AddProduct) },
+            addLabel = "Add product",
+            emptyLabel = "No products added yet.",
+            onRemove = viewModel::removePart,
         )
 
         RepairPhotoGallery(
@@ -276,6 +300,22 @@ fun JobDetailsScreen(
             query = state.partsQuery,
             onQueryChange = viewModel::setPartsQuery,
             onAdd = viewModel::addPart,
+            onDismiss = viewModel::closeSheet,
+            title = "Add part",
+            onAddSourced = viewModel::addSourcedPart,
+        )
+
+        JobSheet.AddProduct -> PartsPickerSheet(
+            results = partsResults,
+            query = state.partsQuery,
+            onQueryChange = viewModel::setPartsQuery,
+            onAdd = viewModel::addProduct,
+            onDismiss = viewModel::closeSheet,
+            title = "Add product",
+        )
+
+        JobSheet.AddService -> AddServiceSheet(
+            onAdd = viewModel::addLabourLine,
             onDismiss = viewModel::closeSheet,
         )
 

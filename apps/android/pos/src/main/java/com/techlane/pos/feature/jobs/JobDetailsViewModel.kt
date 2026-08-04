@@ -45,7 +45,7 @@ import java.util.UUID
 import javax.inject.Inject
 
 /** Which secondary surface, if any, is open over the detail screen. */
-enum class JobSheet { None, Status, Technician, Diagnosis, Estimate, Approval, Parts, CustomerUpdate, Photo }
+enum class JobSheet { None, Status, Technician, Diagnosis, Estimate, Approval, Parts, AddService, AddProduct, CustomerUpdate, Photo }
 
 data class JobDetailsUiState(
     val loading: Boolean = true,
@@ -285,32 +285,73 @@ class JobDetailsViewModel @Inject constructor(
         }
     }
 
+    // Labour, parts, and products are all online-only (see JobRepository) — the
+    // server resolves catalog price/cost and deducts stock, none of which a
+    // phone can safely invent offline. These calls surface busy/error state
+    // rather than firing-and-forgetting into the outbox the way most mutations
+    // above do.
+
     fun addPart(item: CatalogItemEntity, quantity: Int) {
         val locationId = _state.value.locationId
         if (locationId.isNullOrBlank()) {
             _state.update { it.copy(error = "Pick a stock location in Settings before adding parts.") }
             return
         }
+        _state.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
-            jobs.addPart(
-                jobId = jobId,
-                variantId = item.variantId,
-                locationId = locationId,
-                name = item.productName,
-                sku = item.sku,
-                unitPrice = item.sellPrice,
-                quantity = quantity,
-            )
-            kick()
-            _state.update { it.copy(sheet = JobSheet.None, message = "${item.productName} added") }
+            jobs.addInventoryPartLine(jobId, item.variantId, locationId, quantity.toDouble())
+                .onSuccess { _state.update { it.copy(sheet = JobSheet.None, message = "${item.productName} added") } }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "Could not add the part") } }
+            _state.update { it.copy(busy = false) }
+        }
+    }
+
+    fun addSourcedPart(
+        description: String,
+        unitCost: Double,
+        unitPrice: Double,
+        quantity: Int,
+        supplierName: String?,
+    ) {
+        _state.update { it.copy(busy = true, error = null) }
+        viewModelScope.launch {
+            jobs.addSourcedPartLine(jobId, description, unitCost, unitPrice, quantity.toDouble(), supplierName)
+                .onSuccess { _state.update { it.copy(sheet = JobSheet.None, message = "$description added") } }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "Could not add the part") } }
+            _state.update { it.copy(busy = false) }
+        }
+    }
+
+    fun addLabourLine(description: String, unitPrice: Double, quantity: Int = 1) {
+        _state.update { it.copy(busy = true, error = null) }
+        viewModelScope.launch {
+            jobs.addLabourLine(jobId, description, unitPrice, quantity.toDouble())
+                .onSuccess { _state.update { it.copy(sheet = JobSheet.None, message = "$description added") } }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "Could not add the service") } }
+            _state.update { it.copy(busy = false) }
+        }
+    }
+
+    fun addProduct(item: CatalogItemEntity, quantity: Int) {
+        val locationId = _state.value.locationId
+        if (locationId.isNullOrBlank()) {
+            _state.update { it.copy(error = "Pick a stock location in Settings before adding products.") }
+            return
+        }
+        _state.update { it.copy(busy = true, error = null) }
+        viewModelScope.launch {
+            jobs.addProductLine(jobId, item.variantId, locationId, quantity.toDouble())
+                .onSuccess { _state.update { it.copy(sheet = JobSheet.None, message = "${item.productName} added") } }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "Could not add the product") } }
+            _state.update { it.copy(busy = false) }
         }
     }
 
     fun removePart(part: JobPart) {
         viewModelScope.launch {
-            jobs.removePart(jobId, part)
-            kick()
-            _state.update { it.copy(message = "${part.name} removed") }
+            jobs.removeLineItem(jobId, part)
+                .onSuccess { _state.update { it.copy(message = "${part.name} removed") } }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "Could not remove ${part.name}") } }
         }
     }
 

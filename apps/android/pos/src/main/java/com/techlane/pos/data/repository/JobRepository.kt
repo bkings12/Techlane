@@ -14,6 +14,7 @@ import com.techlane.pos.data.remote.ApiException
 import com.techlane.pos.data.remote.OfflineException
 import com.techlane.pos.data.remote.TechLaneApi
 import com.techlane.pos.data.remote.dto.AddAttachmentRequest
+import com.techlane.pos.data.remote.dto.AddLineItemRequest
 import com.techlane.pos.data.remote.dto.AddNoteRequest
 import com.techlane.pos.data.remote.dto.AddSaleLineRequest
 import com.techlane.pos.data.remote.dto.AssignRequest
@@ -161,23 +162,44 @@ class JobRepository @Inject constructor(
             )
         }
         runCatching {
-            val lines = api.repairSaleLines(id).items
-            dao.replaceServerParts(
-                id,
-                lines.map {
-                    JobPartEntity(
-                        id = it.id ?: UUID.randomUUID().toString(),
-                        jobId = id,
-                        lineId = it.id,
-                        variantId = it.variantId,
-                        name = it.description,
-                        sku = null,
-                        quantity = it.quantity,
-                        unitPrice = it.unitPrice,
-                        pending = false,
-                    )
-                },
-            )
+            // Legacy accessory sale-lines and the newer typed work-order line
+            // items share one local table (job_parts) so the UI reads a single
+            // list; replaceServerParts wipes and reinserts, so both sources
+            // must be merged into one call rather than two.
+            val legacyLines = runCatching { api.repairSaleLines(id).items }.getOrDefault(emptyList())
+            val lineItems = runCatching { api.jobLineItems(id).items }.getOrDefault(emptyList())
+            val rows = legacyLines.map {
+                JobPartEntity(
+                    id = it.id ?: UUID.randomUUID().toString(),
+                    jobId = id,
+                    lineId = it.id,
+                    variantId = it.variantId,
+                    name = it.description,
+                    sku = null,
+                    quantity = it.quantity,
+                    unitPrice = it.unitPrice,
+                    pending = false,
+                    lineType = "product",
+                )
+            } + lineItems.map {
+                JobPartEntity(
+                    id = it.id ?: UUID.randomUUID().toString(),
+                    jobId = id,
+                    lineId = it.id,
+                    variantId = it.variantId,
+                    name = it.description,
+                    sku = null,
+                    quantity = it.quantity.toInt(),
+                    unitPrice = it.unitPrice,
+                    pending = false,
+                    lineType = it.lineType,
+                    unitCost = it.unitCost,
+                    partStatus = it.partStatus,
+                    partSource = it.partSource,
+                    supplierName = it.supplierName,
+                )
+            }
+            dao.replaceServerParts(id, rows)
         }
         runCatching {
             val attachments = api.repairAttachments(id).items
@@ -337,6 +359,68 @@ class JobRepository @Inject constructor(
         val lineId = part.lineId ?: return
         enqueue(jobId, JobAction.RemovePart(lineId))
     }
+
+    // ------------------------------------------------------- work-order lines
+    //
+    // Labour, sourced parts, and products are deliberately online-only, the
+    // same call as createIntake makes: the server resolves catalog price/cost,
+    // deducts stock, and books the line atomically, none of which a phone can
+    // safely invent offline. Each call refreshes the job on success so the new
+    // line shows up immediately rather than waiting for the next board sync.
+
+    suspend fun addLabourLine(jobId: String, description: String, unitPrice: Double, quantity: Double = 1.0): Result<Unit> =
+        runCatching {
+            api.addLineItem(jobId, AddLineItemRequest(type = "labour", description = description, unitPrice = unitPrice, quantity = quantity))
+            refreshJob(jobId).getOrThrow()
+        }.recoverCatching { throw it.toAppException() }
+
+    suspend fun addInventoryPartLine(jobId: String, variantId: String, locationId: String, quantity: Double = 1.0): Result<Unit> =
+        runCatching {
+            api.addLineItem(
+                jobId,
+                AddLineItemRequest(type = "part", variantId = variantId, locationId = locationId, quantity = quantity),
+            )
+            refreshJob(jobId).getOrThrow()
+        }.recoverCatching { throw it.toAppException() }
+
+    suspend fun addSourcedPartLine(
+        jobId: String,
+        description: String,
+        unitCost: Double,
+        unitPrice: Double,
+        quantity: Double = 1.0,
+        supplierName: String? = null,
+        supplierRef: String? = null,
+        expectedArrival: String? = null,
+    ): Result<Unit> = runCatching {
+        api.addLineItem(
+            jobId,
+            AddLineItemRequest(
+                type = "part", description = description, unitCost = unitCost, unitPrice = unitPrice,
+                quantity = quantity, supplierName = supplierName, supplierRef = supplierRef, expectedArrival = expectedArrival,
+            ),
+        )
+        refreshJob(jobId).getOrThrow()
+    }.recoverCatching { throw it.toAppException() }
+
+    suspend fun addProductLine(jobId: String, variantId: String, locationId: String, quantity: Double = 1.0): Result<Unit> =
+        runCatching {
+            api.addLineItem(
+                jobId,
+                AddLineItemRequest(type = "product", variantId = variantId, locationId = locationId, quantity = quantity),
+            )
+            refreshJob(jobId).getOrThrow()
+        }.recoverCatching { throw it.toAppException() }
+
+    /** Removes any work-order line item (labour, part, or product) — online-only, same reasoning as above. */
+    suspend fun removeLineItem(jobId: String, part: JobPart): Result<Unit> = runCatching {
+        val lineId = part.lineId ?: run {
+            dao.deletePart(part.rowId)
+            return@runCatching
+        }
+        api.removeLineItem(jobId, lineId)
+        refreshJob(jobId).getOrThrow()
+    }.recoverCatching { throw it.toAppException() }
 
     suspend fun addPhoto(jobId: String, file: File, kind: PhotoKind, caption: String?) {
         val id = "local-${UUID.randomUUID()}"
@@ -617,7 +701,12 @@ class JobRepository @Inject constructor(
     private fun JobEstimateEntity.toDomain() = JobEstimate(id, total, status, notes, createdAt)
 
     private fun JobPartEntity.toDomain() =
-        JobPart(id, lineId, variantId, name, sku, quantity, unitPrice, null, pending)
+        JobPart(
+            rowId = id, lineId = lineId, variantId = variantId, name = name, sku = sku,
+            quantity = quantity, unitPrice = unitPrice, availableQty = null, pendingSync = pending,
+            lineType = lineType, unitCost = unitCost, partStatus = partStatus, partSource = partSource,
+            supplierName = supplierName,
+        )
 
     private fun JobPhotoEntity.toDomain() = JobPhoto(
         id = id,

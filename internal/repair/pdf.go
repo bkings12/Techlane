@@ -45,17 +45,28 @@ func renderReceiptPDF(title string, d *CustomerReceiptDocument, taxInvoice bool)
 	pdf.Cell(30, 6, "Total")
 	pdf.Ln(7)
 	pdf.SetFont("Arial", "", 10)
-	laborNet, laborVAT := splitLineVAT(d.LaborAmount, d.VATRateBPS, d.VATInclusive)
-	partsNet, partsVAT := splitLineVAT(d.PartsAmount, d.VATRateBPS, d.VATInclusive)
-	addRow := func(name string, net, vat, total float64) {
+	addRow := func(name string, total float64) {
+		net, vat := splitLineVAT(total, d.VATRateBPS, d.VATInclusive)
 		pdf.Cell(80, 6, name)
 		pdf.Cell(40, 6, fmt.Sprintf("%s %.2f", d.Currency, net))
 		pdf.Cell(40, 6, fmt.Sprintf("%s %.2f", d.Currency, vat))
 		pdf.Cell(30, 6, fmt.Sprintf("%s %.2f", d.Currency, total))
 		pdf.Ln(6)
 	}
-	addRow("Labor", laborNet, laborVAT, d.LaborAmount)
-	addRow("Parts", partsNet, partsVAT, d.PartsAmount)
+	if len(d.LabourLines) > 0 || len(d.PartLines) > 0 || len(d.ProductLines) > 0 {
+		for _, li := range append(append([]JobLineItem{}, d.LabourLines...), d.PartLines...) {
+			addRow(li.Description, li.LineTotal)
+		}
+		for _, li := range d.ProductLines {
+			addRow(li.Description, li.LineTotal)
+		}
+	} else {
+		addRow("Labor", d.LaborAmount)
+		addRow("Parts", d.PartsAmount)
+		if d.SaleLinesTotal > 0 {
+			addRow("Accessories / extras", d.SaleLinesTotal)
+		}
+	}
 	pdf.Ln(4)
 	writeLine("Subtotal (ex VAT):", fmt.Sprintf("%s %.2f", d.Currency, d.NetSubtotal))
 	writeLine("VAT:", fmt.Sprintf("%s %.2f", d.Currency, d.VATAmount))

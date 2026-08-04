@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { Badge, EmptyState, ICONS as SHARED_ICONS, Icon, PageHeader } from "../components/ui";
+import { Badge, EmptyState, ICONS as SHARED_ICONS, Icon, PageHeader, Stat, StatStrip } from "../components/ui";
 import { useCurrency } from "../lib/currency";
 import {
   getReportSummary,
@@ -145,6 +145,18 @@ function OwnerHome() {
           hint={cashHint}
         />
       </section>
+
+      {summary ? (
+        <StatStrip>
+          <Stat label="Today's repair revenue" value={formatMoney(summary.today_repair_revenue)} />
+          <Stat label="Today's product revenue" value={formatMoney(summary.today_product_revenue)} />
+          <Stat
+            label="Today's gross profit"
+            value={formatMoney(summary.today_gross_profit)}
+            tone={summary.today_gross_profit < 0 ? "danger" : "success"}
+          />
+        </StatStrip>
+      ) : null}
 
       <div className="owner-columns">
         <section className="panel owner-section owner-section-alerts">

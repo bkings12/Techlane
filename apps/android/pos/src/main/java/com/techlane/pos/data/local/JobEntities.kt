@@ -72,6 +72,13 @@ data class JobEstimateEntity(
     val createdAt: Long,
 )
 
+/**
+ * A work-order line item: labour, a repair part, or a retail product — see
+ * [lineType]. Parts/products predate the labour/product split and used to be
+ * the only thing this table held (hence the name); [lineType] defaults to
+ * "product" so old cached rows from before this field existed still render
+ * somewhere sensible after a destructive migration re-syncs them.
+ */
 @Entity(tableName = "job_parts")
 data class JobPartEntity(
     @PrimaryKey val id: String,
@@ -83,6 +90,14 @@ data class JobPartEntity(
     val quantity: Int,
     val unitPrice: Double,
     val pending: Boolean,
+    /** "labour" | "part" | "product" — matches internal/repair's line_type. */
+    val lineType: String = "product",
+    val unitCost: Double? = null,
+    /** "required" | "sourcing" | "ordered" | "received" | "installed" | "returned" | "cancelled" — parts only. */
+    val partStatus: String? = null,
+    /** "inventory" | "sourced" — parts only. */
+    val partSource: String? = null,
+    val supplierName: String? = null,
 )
 
 @Entity(tableName = "job_photos")
