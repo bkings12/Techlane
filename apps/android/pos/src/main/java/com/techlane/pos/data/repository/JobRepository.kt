@@ -20,6 +20,7 @@ import com.techlane.pos.data.remote.dto.AssignRequest
 import com.techlane.pos.data.remote.dto.AuthorizeWorkRequest
 import com.techlane.pos.data.remote.dto.ChangeStatusRequest
 import com.techlane.pos.data.remote.dto.CreateEstimateRequest
+import com.techlane.pos.data.remote.dto.CustomerDto
 import com.techlane.pos.data.remote.dto.IntakeRequest
 import com.techlane.pos.data.remote.dto.RepairJobDto
 import com.techlane.pos.data.remote.dto.SendSmsRequest
@@ -220,12 +221,21 @@ class JobRepository @Inject constructor(
      * customer a slip whose code the shop cannot look up. The job lands in the
      * cache on success so Job Details opens instantly on the returned id.
      */
-    suspend fun createIntake(request: IntakeRequest): Result<String> = runCatching {
-        val repair = api.intake(request).repair
+    suspend fun createIntake(request: IntakeRequest, idempotencyKey: String): Result<String> = runCatching {
+        val repair = api.intake(request, correlationId = idempotencyKey).repair
             ?: error("The job was created but the server did not return it. Pull to refresh the board.")
         dao.upsertJobs(listOf(repair.toEntity()))
         repair.id
     }.recoverCatching { throw it.toAppException() }
+
+    /**
+     * Finds an existing customer by phone (or name) so a returning walk-in is
+     * one tap rather than a re-typed record. Failures return an empty list:
+     * lookup is an accelerator, and a flaky connection must not block booking
+     * the job by hand.
+     */
+    suspend fun searchCustomers(query: String): List<CustomerDto> =
+        runCatching { api.searchCustomers(query).items }.getOrDefault(emptyList())
 
     /** Resolves the intake-slip QR to a job id. */
     suspend fun findByPickupCode(code: String): Result<String> = runCatching {

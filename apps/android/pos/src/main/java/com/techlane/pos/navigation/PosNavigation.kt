@@ -146,7 +146,7 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
         composable(Routes.INTAKE) {
             IntakeScreen(
                 onBack = { navController.popBackStack() },
-                onJobCreated = { jobId ->
+                onOpenJob = { jobId ->
                     // The booked job replaces the form in the stack: Back from
                     // Job Details returns to the board, never to a filled-in
                     // intake form that would book a duplicate if re-submitted.

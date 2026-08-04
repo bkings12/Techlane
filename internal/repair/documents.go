@@ -35,6 +35,12 @@ type CustomerReceiptDocument struct {
 	CustomerPhone  string          `json:"customer_phone,omitempty"`
 	DeviceLabel    string          `json:"device_label"`
 	IMEI           string          `json:"imei,omitempty"`
+	// Intake-slip specifics: what the customer was told and what we took in
+	// alongside the device. Absent on the final receipt, where they no longer
+	// matter — the job is being handed back at that point.
+	PromisedBy     *time.Time      `json:"promised_by,omitempty"`
+	Accessories    []string        `json:"accessories,omitempty"`
+	IntakeCondition string         `json:"intake_condition,omitempty"`
 	LaborAmount    float64         `json:"labor_amount"`
 	PartsAmount    float64         `json:"parts_amount"`
 	SaleLinesTotal float64         `json:"sale_lines_total"`
@@ -164,6 +170,8 @@ func (s *Service) BuildCustomerReceipt(ctx context.Context, tenantID, repairID u
 		JobCode: jobCode, PickupCode: pickupCode, Status: job.Status,
 		ProblemSummary: job.ProblemSummary, CustomerName: customerName, CustomerPhone: customerPhone,
 		DeviceLabel: deviceLabel, IMEI: imei,
+		PromisedBy: job.PromisedBy, Accessories: job.IntakeAccessories,
+		IntakeCondition: derefStr(job.IntakeCondition),
 		LaborAmount: labor, PartsAmount: partsAmt, SaleLinesTotal: saleExtra,
 		NetSubtotal: netSubtotal, VATAmount: vatAmount, VATRateBPS: tax.VATRateBPS, VATInclusive: tax.VATInclusive,
 		TotalDue: total, Paid: paid, Balance: balance,

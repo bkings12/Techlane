@@ -210,6 +210,13 @@ type IntakeInput struct {
 	ProblemSummary string
 	ConditionTags  []string
 
+	/**
+	 * When the shop told the customer to come back. Optional — a job with no
+	 * promise is simply never overdue, which is the honest default for work
+	 * that has not been diagnosed yet.
+	 */
+	PromisedBy *time.Time
+
 	EstimateLaborAmount *float64
 	EstimatePartsAmount *float64
 
@@ -415,10 +422,10 @@ func (s *Service) Intake(ctx context.Context, in IntakeInput) (*IntakeResult, er
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14, $15, $16, $17,
 		        CASE WHEN $15::timestamptz IS NULL THEN NULL ELSE $13::uuid END,
-		        NULL, $18, $19, NULL, NULL, NULL, false, NULL, false, NULL, 'repair', $20)`,
+		        $21, $18, $19, NULL, NULL, NULL, false, NULL, false, NULL, 'repair', $20)`,
 		repairID, in.TenantID, in.BranchID, customerID, deviceID, in.TechnicianID, status, problem,
 		jobLabor, jobNumber, jobCode, pickupCode, in.ActorID, in.CorrID, authAt, authSource, authAmount,
-		accessoriesJSON, condition, tags)
+		accessoriesJSON, condition, tags, in.PromisedBy)
 	if err != nil {
 		return nil, err
 	}

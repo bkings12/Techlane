@@ -10,6 +10,7 @@ import com.techlane.pos.data.remote.dto.BranchDto
 import com.techlane.pos.data.remote.dto.ChangeStatusRequest
 import com.techlane.pos.data.remote.dto.CreateEstimateRequest
 import com.techlane.pos.data.remote.dto.CreatePaymentRequest
+import com.techlane.pos.data.remote.dto.CustomerDto
 import com.techlane.pos.data.remote.dto.JobSaleLineDto
 import com.techlane.pos.data.remote.dto.RepairAttachmentDto
 import com.techlane.pos.data.remote.dto.RepairEstimateDto
@@ -147,12 +148,23 @@ interface TechLaneApi {
     suspend fun repair(@Path("id") id: String): RepairJobDto
 
     /**
+     * Customer lookup for intake. The counter types a phone number, so that is
+     * the search key; the server matches on name and phone variants.
+     */
+    @GET("customers")
+    suspend fun searchCustomers(@Query("q") query: String): ItemsEnvelope<CustomerDto>
+
+    /**
      * Counter intake: creates the customer (or reuses one), the device, and the
      * repair job in a single server-side transaction, so a half-saved walk-in is
      * not a state this app can produce.
      */
     @POST("repairs/intake")
-    suspend fun intake(@Body body: IntakeRequest): IntakeResultDto
+    suspend fun intake(
+        @Body body: IntakeRequest,
+        /** Server replay guard — a retried intake must not book a second job. */
+        @Header("X-Correlation-ID") correlationId: String,
+    ): IntakeResultDto
 
     /** Resolves the QR printed on an intake slip (techlane://repair-pickup/CODE). */
     @GET("repairs/by-pickup-code")

@@ -110,6 +110,26 @@ func (d *CustomerReceiptDocument) ToIntakeDocument() receipts.Document {
 	if d.IMEI != "" {
 		doc.Meta = append(doc.Meta, receipts.MetaRow{Label: "IMEI / serial", Value: d.IMEI})
 	}
+	// The promise is the single thing a customer is most likely to come back
+	// and argue about, so it belongs on the paper they walk away with.
+	if d.PromisedBy != nil {
+		doc.Meta = append(doc.Meta, receipts.MetaRow{
+			Label: "Ready by",
+			Value: d.PromisedBy.Local().Format("02 Jan, 3:04 PM"),
+		})
+	}
+	// What we took in alongside the device — the other half of that argument.
+	if len(d.Accessories) > 0 {
+		doc.Meta = append(doc.Meta, receipts.MetaRow{
+			Label: "Received",
+			Value: strings.Join(d.Accessories, ", "),
+		})
+	}
+	if d.IntakeCondition != "" {
+		doc.Meta = append(doc.Meta, receipts.MetaRow{Label: "Condition", Value: d.IntakeCondition})
+	}
+	// Who took it in, so a dispute has a name attached to it.
+	doc.ServedBy = d.TechnicianName
 	if d.PickupCode != "" {
 		payload := PickupQRPayload(d.PickupCode)
 		// Match HTML intake: QR on the slip; PK- code stays on SMS.

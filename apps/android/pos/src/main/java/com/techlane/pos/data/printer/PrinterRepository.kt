@@ -141,6 +141,32 @@ class PrinterRepository @Inject constructor(
         }
     }
 
+    /**
+     * The intake slip for a job that was just booked.
+     *
+     * Reports its outcome through [onOutcome] rather than swallowing it,
+     * because unlike a sale receipt this one is the customer's proof that the
+     * shop has their device — the counter needs to know whether paper actually
+     * came out. Still never throws: a dead printer must not turn a booked job
+     * into an error.
+     */
+    fun autoPrintIntakeSlipIfEnabled(repairId: String, onOutcome: (String) -> Unit) {
+        backgroundScope.launch {
+            val prefs = preferencesStore.preferences.first()
+            when {
+                !prefs.isConfigured -> onOutcome("Receipt ready — printer not connected")
+                !prefs.autoPrintEnabled -> onOutcome("Receipt ready")
+                else -> {
+                    onOutcome("Printing receipt…")
+                    printIntakeSlip(repairId).fold(
+                        { onOutcome("Intake receipt printed") },
+                        { onOutcome(it.message ?: "Could not print the receipt") },
+                    )
+                }
+            }
+        }
+    }
+
     private suspend fun fetchAndPrint(fetch: suspend (paper: String) -> ResponseBody): Result<Unit> {
         val prefs = preferencesStore.preferences.first()
         val device = prefs.device ?: return notConfigured()

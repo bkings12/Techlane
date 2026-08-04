@@ -194,10 +194,21 @@ data class IntakeRequest(
     @SerialName("estimate_labor_amount") val estimateLaborAmount: Double? = null,
     @SerialName("estimate_parts_amount") val estimatePartsAmount: Double? = null,
     @SerialName("technician_id") val technicianId: String? = null,
+    /** ISO-8601 UTC. Optional — a job with no promise is never overdue. */
+    @SerialName("promised_by") val promisedBy: String? = null,
 )
 
 /** `POST /repairs/intake` creates customer, device, job and estimate in one go. */
 @Serializable
 data class IntakeResultDto(
     val repair: RepairJobDto? = null,
+)
+
+/** A customer as the intake lookup needs them — phone is the search key. */
+@Serializable
+data class CustomerDto(
+    val id: String,
+    @SerialName("full_name") val fullName: String = "",
+    val phone: String? = null,
+    val email: String? = null,
 )

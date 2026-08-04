@@ -759,6 +759,7 @@ func (h *Handler) intake(w http.ResponseWriter, r *http.Request) {
 		EstimateLaborAmount *float64   `json:"estimate_labor_amount"`
 		EstimatePartsAmount *float64   `json:"estimate_parts_amount"`
 		TechnicianID        *uuid.UUID `json:"technician_id"`
+		PromisedBy          *time.Time `json:"promised_by"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body", httpx.CorrelationID(r.Context()))
@@ -780,7 +781,7 @@ func (h *Handler) intake(w http.ResponseWriter, r *http.Request) {
 		IMEI: req.IMEI, SerialNumber: req.SerialNumber,
 		ProblemSummary: req.ProblemSummary, ConditionTags: req.ConditionTags,
 		EstimateLaborAmount: req.EstimateLaborAmount, EstimatePartsAmount: req.EstimatePartsAmount,
-		TechnicianID: req.TechnicianID,
+		TechnicianID: req.TechnicianID, PromisedBy: req.PromisedBy,
 	})
 	if err != nil {
 		msg := err.Error()
