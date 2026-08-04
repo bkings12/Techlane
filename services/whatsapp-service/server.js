@@ -69,13 +69,6 @@ const lidPhoneMap = new Map(); // key: `${tenantId}:${lid}` → phone digits
  * a Business app's QR scan reports "couldn't link device".
  */
 const pairingCodes = new Map();
-/**
- * Digits-only phone remembered across the auto-retry-on-drop path, so a
- * pairing-code attempt that gets interrupted mid-handshake (socket closes
- * before registration completes) keeps trying pairing-code linking on the
- * next internal retry instead of silently falling back to QR.
- */
-const pendingPairingPhone = new Map();
 
 function lidMapPath(tenantId) {
     return path.join(CHATS_DIR, `${tenantId || 'default'}_lid_map.json`);
@@ -477,7 +470,13 @@ async function resolveWaVersion() {
 // Initialize WhatsApp connection for a tenant
 async function initializeSession(tenantId, opts = {}) {
     const sessionId = tenantId || 'default';
-    const pairingPhone = opts.pairingPhone || pendingPairingPhone.get(sessionId) || null;
+    // Deliberately NOT falling back to a remembered pending phone here: doing
+    // so previously made every unrelated retry (including a plain "Show QR"
+    // reconnect) silently keep attempting pairing-code registration too,
+    // which fights the QR flow for the same socket and breaks both. A
+    // pairing-code attempt is one-shot per explicit /pairing-code call; if it
+    // fails, the auto-retry below falls back to ordinary QR behavior.
+    const pairingPhone = opts.pairingPhone || null;
 
     if (initLocks.get(sessionId)) {
         return initLocks.get(sessionId);
@@ -531,8 +530,21 @@ async function initializeSession(tenantId, opts = {}) {
     // succeed where QR does not, so it's offered as a second option rather
     // than a replacement.
     if (pairingPhone && !state.creds.registered) {
-        pendingPairingPhone.set(sessionId, pairingPhone);
         try {
+            // requestPairingCode sends a raw frame over the socket's
+            // WebSocket immediately — calling it right after makeWASocket()
+            // races the WS handshake and reliably throws "Connection Closed"
+            // because ws.isOpen is still false at that point. Wait for the
+            // socket to actually open first.
+            if (!sock.ws.isOpen) {
+                await new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => reject(new Error('timed out waiting for socket to open')), 20_000);
+                    const cleanup = () => clearTimeout(timer);
+                    sock.ws.on('open', () => { cleanup(); resolve(); });
+                    sock.ws.on('close', () => { cleanup(); reject(new Error('socket closed before opening')); });
+                    sock.ws.on('error', (e) => { cleanup(); reject(e); });
+                });
+            }
             const digits = String(pairingPhone).replace(/\D/g, '');
             const code = await sock.requestPairingCode(digits);
             pairingCodes.set(sessionId, { code, phone: digits, requestedAt: Date.now() });
@@ -541,7 +553,6 @@ async function initializeSession(tenantId, opts = {}) {
         } catch (err) {
             console.error(`[${sessionId}] requestPairingCode failed:`, err?.message || err);
             pairingCodes.delete(sessionId);
-            pendingPairingPhone.delete(sessionId);
         }
     }
 
@@ -599,7 +610,6 @@ async function initializeSession(tenantId, opts = {}) {
             if (loggedOut) {
                 connectionStatus.set(sessionId, 'logged_out');
                 reconnectFailures.delete(sessionId);
-                pendingPairingPhone.delete(sessionId);
                 // Clear auth files on logout
                 const dir = getSessionDir(sessionId);
                 fs.rmSync(dir, { recursive: true, force: true });
@@ -625,7 +635,6 @@ async function initializeSession(tenantId, opts = {}) {
                     connectionStatus.set(sessionId, 'reconnect_failed');
                     qrCodes.delete(sessionId);
                     pairingCodes.delete(sessionId);
-                    pendingPairingPhone.delete(sessionId);
                     return;
                 }
             }
@@ -641,8 +650,7 @@ async function initializeSession(tenantId, opts = {}) {
             lastDisconnectReason.delete(sessionId);
             qrCodes.delete(sessionId);
             pairingCodes.delete(sessionId);
-            pendingPairingPhone.delete(sessionId);
-            
+
             // Sync existing chats after connection
             syncExistingChats(sessionId, sock);
         }
@@ -1217,7 +1225,6 @@ app.post('/disconnect/:tenantId?', async (req, res) => {
     connectionStatus.delete(tenantId);
     qrCodes.delete(tenantId);
     pairingCodes.delete(tenantId);
-    pendingPairingPhone.delete(tenantId);
     reconnectFailures.delete(tenantId);
     lastDisconnectReason.delete(tenantId);
     const dir = getSessionDir(tenantId);
@@ -1239,13 +1246,9 @@ app.post('/reconnect/:tenantId?', async (req, res) => {
         sessions.delete(tenantId);
     }
     // An explicit tap on "Reconnect" is a fresh attempt — clear the circuit
-    // breaker so it doesn't immediately re-trip on the first retry. This is
-    // the QR path specifically, so also drop any pending pairing-code phone
-    // from an earlier attempt — otherwise initializeSession would silently
-    // keep requesting a pairing code instead of showing a QR.
+    // breaker so it doesn't immediately re-trip on the first retry.
     reconnectFailures.delete(tenantId);
     pairingCodes.delete(tenantId);
-    pendingPairingPhone.delete(tenantId);
 
     await initializeSession(tenantId);
     res.json({ success: true, message: 'Reconnecting...' });
