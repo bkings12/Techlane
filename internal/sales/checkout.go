@@ -94,21 +94,25 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*CheckoutResu
 	completed := false
 	// Deduct stock when cash/bank collected or digital already allocated; STK/C2B wait for confirm.
 	if in.Method == "cash" || in.Method == "bank_paybill" || in.Method == "bank_transfer" || pay.Status == "allocated" {
-		sale, err = s.CompleteSale(ctx, in.TenantID, sale.ID, in.LocationID, in.ActorID, in.CorrID)
+		// Held separately: CompleteSale returns (nil, err) on failure, so the
+		// id must not be read back off `sale` once it may have been nilled.
+		saleID := sale.ID
+		completedSale, completeErr := s.CompleteSale(ctx, in.TenantID, saleID, in.LocationID, in.ActorID, in.CorrID)
 		switch {
-		case err == nil:
+		case completeErr == nil:
+			sale = completedSale
 			completed = true
 		// A sale that is already out of draft has been completed by a racing
 		// webhook or a retried request — the money is taken and the stock is
 		// deducted, so this is the outcome we wanted, not a failure to report
 		// at the counter. completeIfDraft already treats it this way.
-		case strings.Contains(err.Error(), "not in draft"):
+		case strings.Contains(completeErr.Error(), "not in draft"):
 			completed = true
-			if current, getErr := s.GetSale(ctx, in.TenantID, sale.ID); getErr == nil {
+			if current, getErr := s.GetSale(ctx, in.TenantID, saleID); getErr == nil {
 				sale = current
 			}
 		default:
-			return nil, fmt.Errorf("sale complete failed: %w", err)
+			return nil, fmt.Errorf("sale complete failed: %w", completeErr)
 		}
 	}
 
