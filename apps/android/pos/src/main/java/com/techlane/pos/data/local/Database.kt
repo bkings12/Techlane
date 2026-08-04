@@ -56,7 +56,36 @@ data class ChargeRecordEntity(
     val failureReason: String?,
     val createdAt: Long,
     val updatedAt: Long,
+    /**
+     * Set for a job payment (chargeRepair), null for a till sale (charge).
+     * Distinguishes the two without guessing from [label] — tapping this row
+     * should open the job, not a nonexistent Sale Details for it, since a
+     * repair payment never produces a sales.sales row.
+     */
+    val repairId: String? = null,
 )
+
+/**
+ * Read-through cache of the last-fetched sale detail JSON, keyed by sale id —
+ * a recently viewed receipt stays viewable (and printable) on a temporary
+ * network loss. Deliberately unnormalized: this is a view cache, not a sync
+ * source of truth the way the job tables are.
+ */
+@Entity(tableName = "sale_cache")
+data class SaleCacheEntity(
+    @PrimaryKey val saleId: String,
+    val json: String,
+    val cachedAt: Long,
+)
+
+@Dao
+interface SaleCacheDao {
+    @Query("SELECT * FROM sale_cache WHERE saleId = :saleId")
+    suspend fun get(saleId: String): SaleCacheEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun put(entity: SaleCacheEntity)
+}
 
 @Dao
 interface CatalogDao {
@@ -142,8 +171,9 @@ interface ChargeDao {
         JobPhotoEntity::class,
         TechnicianEntity::class,
         JobOutboxEntity::class,
+        SaleCacheEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class PosDatabase : RoomDatabase() {
@@ -151,4 +181,5 @@ abstract class PosDatabase : RoomDatabase() {
     abstract fun serviceDao(): ServiceDao
     abstract fun chargeDao(): ChargeDao
     abstract fun jobDao(): JobDao
+    abstract fun saleCacheDao(): SaleCacheDao
 }

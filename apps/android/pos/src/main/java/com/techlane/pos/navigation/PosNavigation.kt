@@ -67,6 +67,8 @@ import com.techlane.pos.feature.jobs.JobDetailsScreen
 import com.techlane.pos.feature.jobs.JobDetailsViewModel
 import com.techlane.pos.feature.jobs.JobsScreen
 import com.techlane.pos.feature.more.MoreScreen
+import com.techlane.pos.feature.sales.SaleDetailsScreen
+import com.techlane.pos.feature.sales.SalesHistoryScreen
 import com.techlane.pos.feature.scan.ScanScreen
 import com.techlane.pos.feature.settings.SettingsScreen
 import com.techlane.pos.feature.settings.printer.PrinterSettingsScreen
@@ -87,12 +89,15 @@ object Routes {
     const val INTAKE = "intake"
     const val JOB_DETAILS = "job/{jobId}"
     const val JOB_CAMERA = "job/{jobId}/camera/{kind}"
+    const val SALE_DETAILS = "sale/{saleId}"
+    const val SALES_HISTORY = "sales/history"
 
     fun jobs(filter: com.techlane.pos.domain.model.JobFilter? = null) =
         if (filter == null) "jobs?filter=" else "jobs?filter=${filter.name}"
 
     fun jobDetails(jobId: String) = "job/$jobId"
     fun jobCamera(jobId: String, kind: PhotoKind) = "job/$jobId/camera/${kind.wire}"
+    fun saleDetails(saleId: String) = "sale/$saleId"
 }
 
 /**
@@ -140,6 +145,26 @@ fun PosApp(signedIn: Boolean, modifier: Modifier = Modifier) {
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenJob = { navController.navigate(Routes.jobDetails(it)) },
                 onNewIntake = { navController.navigate(Routes.INTAKE) },
+                onOpenSale = { navController.navigate(Routes.saleDetails(it)) },
+                onOpenSalesHistory = { navController.navigate(Routes.SALES_HISTORY) },
+            )
+        }
+
+        composable(
+            route = Routes.SALE_DETAILS,
+            arguments = listOf(navArgument("saleId") { type = NavType.StringType }),
+        ) {
+            SaleDetailsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenJob = { navController.navigate(Routes.jobDetails(it)) },
+                onConnectPrinter = { navController.navigate(Routes.PRINTER_SETTINGS) },
+            )
+        }
+
+        composable(Routes.SALES_HISTORY) {
+            SalesHistoryScreen(
+                onBack = { navController.popBackStack() },
+                onOpenSale = { navController.navigate(Routes.saleDetails(it)) },
             )
         }
 
@@ -218,6 +243,8 @@ private fun AppShell(
     onOpenSettings: () -> Unit,
     onOpenJob: (String) -> Unit,
     onNewIntake: () -> Unit,
+    onOpenSale: (String) -> Unit,
+    onOpenSalesHistory: () -> Unit,
 ) {
     val tabController = rememberNavController()
     val backStack by tabController.currentBackStackEntryAsState()
@@ -271,14 +298,22 @@ private fun AppShell(
                     )
                 }
                 composable(Routes.SCAN) { ScanScreen(onJobResolved = onOpenJob) }
-                composable(Routes.SALES) { QuickChargeScreen(onOpenSettings = onOpenSettings) }
+                composable(Routes.SALES) {
+                    QuickChargeScreen(
+                        onOpenSettings = onOpenSettings,
+                        onOpenSale = onOpenSale,
+                        onOpenSalesHistory = onOpenSalesHistory,
+                    )
+                }
                 composable(Routes.MORE) {
                     MoreScreen(
                         onOpenSettings = onOpenSettings,
                         onOpenChargeHistory = { tabController.navigateTab(Routes.HISTORY) },
                     )
                 }
-                composable(Routes.HISTORY) { ActivityScreen() }
+                composable(Routes.HISTORY) {
+                    ActivityScreen(onOpenSale = onOpenSale, onOpenJob = onOpenJob)
+                }
             }
         }
         if (!imeVisible) {

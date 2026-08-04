@@ -81,6 +81,19 @@ type Sale struct {
 	PaymentMethod string     `json:"payment_method,omitempty"`
 	PaymentID     *uuid.UUID `json:"payment_id,omitempty"`
 	Items         []SaleItem `json:"items,omitempty"`
+
+	// Populated only by GetSale (the details view) — ListSales stays cheap
+	// for the history list, which doesn't need any of this.
+	Reference        string  `json:"reference,omitempty"`
+	BranchName       string  `json:"branch_name,omitempty"`
+	CashierName      string  `json:"cashier_name,omitempty"`
+	CustomerPhone    string  `json:"customer_phone,omitempty"`
+	TaxTotal         float64 `json:"tax_total,omitempty"`
+	DiscountTotal    float64 `json:"discount_total,omitempty"`
+	PaidTotal        float64 `json:"paid_total,omitempty"`
+	BalanceDue       float64 `json:"balance_due,omitempty"`
+	PaymentStatus    string  `json:"payment_status,omitempty"`
+	PaymentReference string  `json:"payment_reference,omitempty"`
 }
 
 type CreateSaleInput struct {
@@ -394,24 +407,43 @@ func (s *Service) ReverseSale(ctx context.Context, tenantID, saleID, locationID,
 
 func (s *Service) GetSale(ctx context.Context, tenantID, saleID uuid.UUID) (*Sale, error) {
 	var sale Sale
+	var customerPhone *string
+	var createdBy *uuid.UUID
 	err := s.pool.QueryRow(ctx, `
-		SELECT s.id, s.branch_id, s.customer_id, COALESCE(c.full_name, ''),
-		       s.channel, s.status, s.subtotal, s.total, s.created_at
+		SELECT s.id, s.branch_id, s.customer_id, COALESCE(c.full_name, ''), c.phone,
+		       s.channel, s.status, s.subtotal::float8, s.tax_total::float8, s.discount_total::float8,
+		       s.total::float8, s.created_at, s.created_by
 		FROM sales.sales s
 		LEFT JOIN repair.customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
 		WHERE s.tenant_id = $1 AND s.id = $2`,
 		tenantID, saleID).Scan(
-		&sale.ID, &sale.BranchID, &sale.CustomerID, &sale.CustomerName,
-		&sale.Channel, &sale.Status, &sale.Subtotal, &sale.Total, &sale.CreatedAt)
+		&sale.ID, &sale.BranchID, &sale.CustomerID, &sale.CustomerName, &customerPhone,
+		&sale.Channel, &sale.Status, &sale.Subtotal, &sale.TaxTotal, &sale.DiscountTotal,
+		&sale.Total, &sale.CreatedAt, &createdBy)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("sale not found")
 		}
 		return nil, err
 	}
+	if customerPhone != nil {
+		sale.CustomerPhone = *customerPhone
+	}
+	sale.Reference = shortRef(sale.ID)
+	_ = s.pool.QueryRow(ctx, `SELECT name FROM identity.branches WHERE tenant_id = $1 AND id = $2`,
+		tenantID, sale.BranchID).Scan(&sale.BranchName)
+	if createdBy != nil {
+		_ = s.pool.QueryRow(ctx, `SELECT display_name FROM identity.users WHERE id = $1`, *createdBy).Scan(&sale.CashierName)
+	}
+
 	rows, err := s.pool.Query(ctx, `
-		SELECT variant_id, COALESCE(description, ''), quantity, unit_price, line_total, unit_cost, supplier_id
-		FROM sales.sale_items WHERE tenant_id = $1 AND sale_id = $2`, tenantID, saleID)
+		SELECT si.variant_id, COALESCE(p.brand || ' ' || p.name, p.name, si.description, 'Item'),
+		       si.quantity, si.unit_price::float8, si.line_total::float8, si.unit_cost::float8, si.supplier_id
+		FROM sales.sale_items si
+		LEFT JOIN inventory.product_variants v ON v.id = si.variant_id
+		LEFT JOIN inventory.products p ON p.id = v.product_id
+		WHERE si.tenant_id = $1 AND si.sale_id = $2
+		ORDER BY si.id`, tenantID, saleID)
 	if err != nil {
 		return nil, err
 	}
@@ -431,10 +463,63 @@ func (s *Service) GetSale(ctx context.Context, tenantID, saleID uuid.UUID) (*Sal
 		}
 		sale.Items = append(sale.Items, it)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	payInfos, err := s.resolveSalePayments(ctx, tenantID, saleID)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range payInfos {
+		if p.Status == "allocated" || p.Status == "confirmed" {
+			sale.PaidTotal += p.Amount
+		}
+		// The most recent payment's method/reference/status represent the sale
+		// for display purposes — a sale normally has exactly one.
+		sale.PaymentMethod = p.Method
+		sale.PaymentStatus = p.Status
+		if p.Reference != "" {
+			sale.PaymentReference = p.Reference
+		}
+	}
+	sale.BalanceDue = sale.Total - sale.PaidTotal
+	if sale.BalanceDue < 0 {
+		sale.BalanceDue = 0
+	}
 	return &sale, nil
 }
 
-func (s *Service) ListSales(ctx context.Context, tenantID uuid.UUID, branchID *uuid.UUID, status string, limit int) ([]Sale, error) {
+// stripItemCosts removes cost/margin from a copy of the items — used by the
+// HTTP handlers for a caller without reports.read. Never mutates the input.
+func stripItemCosts(items []SaleItem) []SaleItem {
+	out := make([]SaleItem, len(items))
+	for i, it := range items {
+		it.UnitCost = nil
+		it.Margin = nil
+		it.SupplierID = nil
+		out[i] = it
+	}
+	return out
+}
+
+// ListSalesFilter narrows ListSales — filtering, not reporting: every field
+// is a plain WHERE-clause parameter on the same query, no aggregation.
+type ListSalesFilter struct {
+	BranchID *uuid.UUID
+	Status   string
+	Method   string
+	// Query matches (case-insensitively) against the sale's short reference,
+	// customer name/phone, any resolved payment reference (M-Pesa/bank), or
+	// any line item's product name.
+	Query string
+	From  *time.Time
+	To    *time.Time
+	Limit int
+}
+
+func (s *Service) ListSales(ctx context.Context, tenantID uuid.UUID, f ListSalesFilter) ([]Sale, error) {
+	limit := f.Limit
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
@@ -454,14 +539,61 @@ func (s *Service) ListSales(ctx context.Context, tenantID uuid.UUID, branchID *u
 		WHERE s.tenant_id = $1`
 	args := []any{tenantID}
 	n := 2
-	if branchID != nil {
+	if f.BranchID != nil {
 		q += fmt.Sprintf(" AND s.branch_id = $%d", n)
-		args = append(args, *branchID)
+		args = append(args, *f.BranchID)
 		n++
 	}
-	if status != "" {
+	if f.Status != "" {
 		q += fmt.Sprintf(" AND s.status = $%d", n)
-		args = append(args, status)
+		args = append(args, f.Status)
+		n++
+	}
+	if f.Method != "" {
+		q += fmt.Sprintf(" AND pay.method = $%d", n)
+		args = append(args, f.Method)
+		n++
+	}
+	if f.From != nil {
+		q += fmt.Sprintf(" AND s.created_at >= $%d", n)
+		args = append(args, *f.From)
+		n++
+	}
+	if f.To != nil {
+		q += fmt.Sprintf(" AND s.created_at <= $%d", n)
+		args = append(args, *f.To)
+		n++
+	}
+	if query := strings.TrimSpace(f.Query); query != "" {
+		q += fmt.Sprintf(` AND (
+			s.id::text ILIKE '%%' || $%d || '%%'
+			OR c.full_name ILIKE '%%' || $%d || '%%'
+			OR c.phone ILIKE '%%' || $%d || '%%'
+			OR EXISTS (
+				SELECT 1 FROM sales.sale_items si
+				LEFT JOIN inventory.product_variants v ON v.id = si.variant_id
+				LEFT JOIN inventory.products p ON p.id = v.product_id
+				WHERE si.tenant_id = s.tenant_id AND si.sale_id = s.id
+				  AND COALESCE(p.brand || ' ' || p.name, p.name, si.description, '') ILIKE '%%' || $%d || '%%'
+			)
+			OR EXISTS (
+				SELECT 1 FROM payments.payment_allocations a
+				JOIN payments.payments pp ON pp.id = a.payment_id
+				LEFT JOIN payments.mpesa_stk_transactions stk ON stk.payment_id = pp.id
+				LEFT JOIN payments.mpesa_c2b_transactions c2b ON c2b.payment_id = pp.id
+				LEFT JOIN payments.bank_transactions bank ON bank.payment_id = pp.id
+				WHERE a.tenant_id = s.tenant_id AND a.payable_type = 'sale' AND a.payable_id = s.id
+				  AND (
+					COALESCE(stk.mpesa_receipt, '') ILIKE '%%' || $%d || '%%'
+					OR COALESCE(c2b.trans_id, '') ILIKE '%%' || $%d || '%%'
+					OR COALESCE(bank.provider_ref, '') ILIKE '%%' || $%d || '%%'
+					OR COALESCE(pp.provider_ref, '') ILIKE '%%' || $%d || '%%'
+				  )
+			)
+		)`, n, n, n, n, n, n, n, n)
+		// strip an "SL-" prefix so pasting the on-screen reference still matches the raw id
+		bare := strings.TrimPrefix(strings.ToLower(query), "sl-")
+		args = append(args, bare)
 		n++
 	}
 	q += fmt.Sprintf(" ORDER BY s.created_at DESC LIMIT $%d", n)
@@ -484,6 +616,7 @@ func (s *Service) ListSales(ctx context.Context, tenantID uuid.UUID, branchID *u
 			return nil, err
 		}
 		sale.PaymentID = paymentID
+		sale.Reference = shortRef(sale.ID)
 		items = append(items, sale)
 	}
 	return items, rows.Err()

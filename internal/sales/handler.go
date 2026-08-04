@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/techlane/techlane/internal/receipts"
@@ -125,10 +126,41 @@ func (h *Handler) listSales(w http.ResponseWriter, r *http.Request) {
 		branchID = &id
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := h.svc.ListSales(r.Context(), claims.TenantID, branchID, r.URL.Query().Get("status"), limit)
+	q := r.URL.Query()
+	filter := ListSalesFilter{
+		Status:   q.Get("status"),
+		Query:    strings.TrimSpace(q.Get("q")),
+		Method:   q.Get("method"),
+		BranchID: branchID,
+		Limit:    limit,
+	}
+	if raw := q.Get("from"); raw != "" {
+		t, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "from must be YYYY-MM-DD", httpx.CorrelationID(r.Context()))
+			return
+		}
+		filter.From = &t
+	}
+	if raw := q.Get("to"); raw != "" {
+		t, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "to must be YYYY-MM-DD", httpx.CorrelationID(r.Context()))
+			return
+		}
+		// Inclusive of the whole day.
+		t = t.Add(24*time.Hour - time.Second)
+		filter.To = &t
+	}
+	items, err := h.svc.ListSales(r.Context(), claims.TenantID, filter)
 	if err != nil {
 		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
 		return
+	}
+	if !claims.HasPermission("reports.read") {
+		for i := range items {
+			items[i].Items = stripItemCosts(items[i].Items)
+		}
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -202,6 +234,9 @@ func (h *Handler) getSale(w http.ResponseWriter, r *http.Request) {
 		}
 		apierrors.Write(w, http.StatusInternalServerError, "INTERNAL", err.Error(), httpx.CorrelationID(r.Context()))
 		return
+	}
+	if !claims.HasPermission("reports.read") {
+		sale.Items = stripItemCosts(sale.Items)
 	}
 	httpx.JSON(w, http.StatusOK, sale)
 }

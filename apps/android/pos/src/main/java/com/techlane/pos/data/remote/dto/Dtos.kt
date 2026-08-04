@@ -126,6 +126,39 @@ data class SaleDto(
     val total: Double = 0.0,
     @SerialName("payment_method") val paymentMethod: String = "",
     @SerialName("created_at") val createdAt: String? = null,
+    // Populated only by GET sales/{id} (the details fetch) — the list
+    // endpoint stays cheap and omits these.
+    @SerialName("customer_id") val customerId: String? = null,
+    @SerialName("customer_name") val customerName: String? = null,
+    @SerialName("customer_phone") val customerPhone: String? = null,
+    val channel: String = "",
+    val reference: String = "",
+    @SerialName("branch_name") val branchName: String = "",
+    @SerialName("cashier_name") val cashierName: String = "",
+    @SerialName("tax_total") val taxTotal: Double = 0.0,
+    @SerialName("discount_total") val discountTotal: Double = 0.0,
+    @SerialName("paid_total") val paidTotal: Double = 0.0,
+    @SerialName("balance_due") val balanceDue: Double = 0.0,
+    @SerialName("payment_status") val paymentStatus: String = "",
+    @SerialName("payment_reference") val paymentReference: String = "",
+    val items: List<SaleItemDto> = emptyList(),
+)
+
+/**
+ * One line item on a sale. [unitCost]/[margin] are only ever present for a
+ * caller with reports.read — the server strips them otherwise, so treat
+ * their absence as "not authorized to see this," not "zero."
+ */
+@Serializable
+data class SaleItemDto(
+    @SerialName("variant_id") val variantId: String? = null,
+    val description: String = "",
+    val quantity: Int = 1,
+    @SerialName("unit_price") val unitPrice: Double = 0.0,
+    @SerialName("list_price") val listPrice: Double? = null,
+    @SerialName("line_total") val lineTotal: Double = 0.0,
+    @SerialName("unit_cost") val unitCost: Double? = null,
+    val margin: Double? = null,
 )
 
 @Serializable

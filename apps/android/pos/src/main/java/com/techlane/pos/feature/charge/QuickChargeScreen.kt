@@ -72,6 +72,8 @@ import com.techlane.pos.domain.model.PaymentMethod
 @Composable
 fun QuickChargeScreen(
     onOpenSettings: () -> Unit,
+    onOpenSale: (String) -> Unit = {},
+    onOpenSalesHistory: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: QuickChargeViewModel = hiltViewModel(),
 ) {
@@ -107,6 +109,9 @@ fun QuickChargeScreen(
         onRefresh = viewModel::refresh,
         refreshing = state.refreshing,
         actions = {
+            IconButton(onClick = onOpenSalesHistory) {
+                Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = "Sales history")
+            }
             IconButton(onClick = onOpenSettings) {
                 Icon(Icons.Outlined.Settings, contentDescription = "Settings")
             }
@@ -239,6 +244,9 @@ fun QuickChargeScreen(
             onStopWaiting = viewModel::stopWaiting,
             onDone = { viewModel.finishAndReset() },
             onDismiss = viewModel::dismissResult,
+            onViewSale = (stage as? com.techlane.pos.domain.model.StkStage.Paid)?.saleId?.let { saleId ->
+                { onOpenSale(saleId) }
+            },
         )
     }
 }

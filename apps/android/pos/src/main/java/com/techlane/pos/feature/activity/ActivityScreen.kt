@@ -32,6 +32,8 @@ import com.techlane.pos.core.util.Msisdn
 import com.techlane.pos.core.util.formatKes
 import com.techlane.pos.data.local.ChargeRecordEntity
 import com.techlane.pos.data.repository.ChargeRepository
+import com.techlane.pos.domain.model.ChargeRowDestination
+import com.techlane.pos.domain.model.chargeRowDestination
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -94,7 +96,12 @@ class ActivityViewModel @Inject constructor(
  * so an unconfirmed payment is never simply forgotten at close of day.
  */
 @Composable
-fun ActivityScreen(modifier: Modifier = Modifier, viewModel: ActivityViewModel = hiltViewModel()) {
+fun ActivityScreen(
+    modifier: Modifier = Modifier,
+    onOpenSale: (String) -> Unit = {},
+    onOpenJob: (String) -> Unit = {},
+    viewModel: ActivityViewModel = hiltViewModel(),
+) {
     val records by viewModel.records.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
@@ -118,6 +125,15 @@ fun ActivityScreen(modifier: Modifier = Modifier, viewModel: ActivityViewModel =
             records.forEach { record ->
                 ChargeRow(
                     record = record,
+                    // A record that never got a saleId or repairId (e.g. still
+                    // sending, or failed before either was assigned) has
+                    // nowhere useful to navigate — leave the row inert rather
+                    // than open a broken destination.
+                    onOpen = when (val dest = chargeRowDestination(record.saleId, record.repairId)) {
+                        is ChargeRowDestination.Sale -> { { onOpenSale(dest.saleId) } }
+                        is ChargeRowDestination.Job -> { { onOpenJob(dest.repairId) } }
+                        ChargeRowDestination.None -> null
+                    },
                     onPrint = record.saleId
                         ?.takeIf { record.status == "paid" }
                         ?.let { saleId -> { viewModel.printReceipt(context, saleId) } },
@@ -128,8 +144,8 @@ fun ActivityScreen(modifier: Modifier = Modifier, viewModel: ActivityViewModel =
 }
 
 @Composable
-private fun ChargeRow(record: ChargeRecordEntity, onPrint: (() -> Unit)?) {
-    TlCard {
+private fun ChargeRow(record: ChargeRecordEntity, onOpen: (() -> Unit)?, onPrint: (() -> Unit)?) {
+    TlCard(onClick = onOpen) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.Top,

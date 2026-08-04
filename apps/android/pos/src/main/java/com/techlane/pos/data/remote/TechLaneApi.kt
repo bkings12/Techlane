@@ -133,6 +133,9 @@ interface TechLaneApi {
     @GET("sales/{id}")
     suspend fun sale(@Path("id") id: String): SaleDto
 
+    @GET("sales/{id}/receipt.pdf")
+    suspend fun saleReceiptPdf(@Path("id") id: String): ResponseBody
+
     @POST("sales/{id}/complete")
     suspend fun completeSale(@Path("id") id: String, @Body body: CompleteSaleRequest): SaleDto
 
@@ -283,7 +286,12 @@ interface TechLaneApi {
 
     @GET("sales")
     suspend fun sales(
-        @Query("branch_id") branchId: String?,
+        @Query("branch_id") branchId: String? = null,
         @Query("limit") limit: Int = 25,
+        @Query("q") query: String? = null,
+        @Query("method") method: String? = null,
+        @Query("status") status: String? = null,
+        @Query("from") from: String? = null,
+        @Query("to") to: String? = null,
     ): ItemsEnvelope<SaleDto>
 }

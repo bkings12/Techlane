@@ -138,7 +138,51 @@ func (s *Service) BuildSaleReceipt(ctx context.Context, tenantID, saleID uuid.UU
 		doc.Lines = append(doc.Lines, receipts.Line{Description: "Discount", Amount: -discount})
 	}
 
-	payRows, err := s.pool.Query(ctx, `
+	payInfos, err := s.resolveSalePayments(ctx, tenantID, saleID)
+	if err != nil {
+		return receipts.Document{}, err
+	}
+	for _, p := range payInfos {
+		stamp := p.At
+		doc.Payments = append(doc.Payments, receipts.PaymentLine{
+			Method: p.Method, Amount: p.Amount, Status: p.Status, Reference: p.Reference, At: &stamp,
+		})
+		if p.Status == "allocated" || p.Status == "confirmed" {
+			doc.Paid += p.Amount
+		}
+		// Always surface the phone that paid for M-Pesa, even without a linked customer.
+		if doc.CustomerPhone == "" && p.Phone != "" {
+			doc.CustomerPhone = p.Phone
+		}
+	}
+
+	doc.Balance = doc.Total - doc.Paid
+	if doc.Balance < 0 {
+		doc.Balance = 0
+	}
+	doc.Subtotal, doc.VATAmount = receipts.SplitVAT(doc.Total, doc.VATRateBPS, doc.VATInclusive)
+	return doc, nil
+}
+
+func shortRef(id uuid.UUID) string {
+	return "SL-" + strings.ToUpper(id.String()[:8])
+}
+
+// paymentInfo is one payment resolved against a sale, with its customer-
+// facing reference (M-Pesa/bank) already extracted — shared by the receipt
+// document builder and GetSale so the LATERAL-join resolution logic exists
+// exactly once.
+type paymentInfo struct {
+	Method    string
+	Amount    float64
+	Status    string
+	Reference string
+	Phone     string
+	At        time.Time
+}
+
+func (s *Service) resolveSalePayments(ctx context.Context, tenantID, saleID uuid.UUID) ([]paymentInfo, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT p.method, p.amount::float8, p.status,
 			COALESCE(stk.mpesa_receipt, ''),
 			COALESCE(stk.raw_callback::text, ''),
@@ -167,19 +211,20 @@ func (s *Service) BuildSaleReceipt(ctx context.Context, tenantID, saleID uuid.UU
 		WHERE a.tenant_id = $1 AND a.payable_type = 'sale' AND a.payable_id = $2
 		ORDER BY p.created_at`, tenantID, saleID)
 	if err != nil {
-		return receipts.Document{}, err
+		return nil, err
 	}
-	defer payRows.Close()
-	for payRows.Next() {
+	defer rows.Close()
+	var out []paymentInfo
+	for rows.Next() {
 		var method, payStatus string
 		var amount float64
 		var stkReceipt, rawCallback, stkPhone, c2bTrans, c2bMSISDN, c2bTransTime, bankRef, providerRef string
 		var at time.Time
-		if err := payRows.Scan(
+		if err := rows.Scan(
 			&method, &amount, &payStatus, &stkReceipt, &rawCallback, &stkPhone,
 			&c2bTrans, &c2bMSISDN, &c2bTransTime, &bankRef, &providerRef, &at,
 		); err != nil {
-			return receipts.Document{}, err
+			return nil, err
 		}
 		reference := receipts.CustomerPaymentRef(
 			stkReceipt,
@@ -194,40 +239,21 @@ func (s *Service) BuildSaleReceipt(ctx context.Context, tenantID, saleID uuid.UU
 		} else if txAt := receipts.ParseMpesaTransactionDate(c2bTransTime); txAt != nil {
 			stamp = *txAt
 		}
-		doc.Payments = append(doc.Payments, receipts.PaymentLine{
-			Method: method, Amount: amount, Status: payStatus, Reference: reference, At: &stamp,
-		})
-		if payStatus == "allocated" || payStatus == "confirmed" {
-			doc.Paid += amount
-		}
-		// Always surface the phone that paid for M-Pesa, even without a linked customer.
-		if doc.CustomerPhone == "" {
-			switch method {
-			case "mpesa_stk":
-				phone := strings.TrimSpace(stkPhone)
-				if phone == "" {
-					phone = receipts.MpesaPhoneFromSTKCallback(rawCallback)
-				}
-				doc.CustomerPhone = phone
-			case "mpesa_c2b":
-				doc.CustomerPhone = strings.TrimSpace(c2bMSISDN)
+		phone := ""
+		switch method {
+		case "mpesa_stk":
+			phone = strings.TrimSpace(stkPhone)
+			if phone == "" {
+				phone = receipts.MpesaPhoneFromSTKCallback(rawCallback)
 			}
+		case "mpesa_c2b":
+			phone = strings.TrimSpace(c2bMSISDN)
 		}
+		out = append(out, paymentInfo{
+			Method: method, Amount: amount, Status: payStatus, Reference: reference, Phone: phone, At: stamp,
+		})
 	}
-	if err := payRows.Err(); err != nil {
-		return receipts.Document{}, err
-	}
-
-	doc.Balance = doc.Total - doc.Paid
-	if doc.Balance < 0 {
-		doc.Balance = 0
-	}
-	doc.Subtotal, doc.VATAmount = receipts.SplitVAT(doc.Total, doc.VATRateBPS, doc.VATInclusive)
-	return doc, nil
-}
-
-func shortRef(id uuid.UUID) string {
-	return "SL-" + strings.ToUpper(id.String()[:8])
+	return out, rows.Err()
 }
 
 func mathAbs(v float64) float64 {

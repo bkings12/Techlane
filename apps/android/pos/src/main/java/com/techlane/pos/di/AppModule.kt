@@ -8,6 +8,7 @@ import com.techlane.pos.data.local.CatalogDao
 import com.techlane.pos.data.local.ChargeDao
 import com.techlane.pos.data.local.JobDao
 import com.techlane.pos.data.local.PosDatabase
+import com.techlane.pos.data.local.SaleCacheDao
 import com.techlane.pos.data.local.ServiceDao
 import com.techlane.pos.data.remote.AuthHeaderInterceptor
 import com.techlane.pos.data.remote.TechLaneApi
@@ -106,4 +107,7 @@ object AppModule {
 
     @Provides
     fun jobDao(db: PosDatabase): JobDao = db.jobDao()
+
+    @Provides
+    fun saleCacheDao(db: PosDatabase): SaleCacheDao = db.saleCacheDao()
 }

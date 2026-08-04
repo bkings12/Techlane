@@ -4,4 +4,6 @@
     <external-files-path name="camera_ext" path="camera/" />
     <files-path name="camera_files" path="camera/" />
     <cache-path name="camera_cache" path="camera/" />
+    <!-- Sale/repair receipt PDFs, written just-in-time for a share-sheet intent. -->
+    <cache-path name="receipts_cache" path="receipts/" />
 </paths>

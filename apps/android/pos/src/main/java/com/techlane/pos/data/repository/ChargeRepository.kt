@@ -191,7 +191,7 @@ class ChargeRepository @Inject constructor(
             idempotencyKey = idempotencyKey,
             reference = reference,
         )
-        writeRecord(request, idempotencyKey, status = "sent", paymentId = null, saleId = null)
+        writeRecord(request, idempotencyKey, status = "sent", paymentId = null, saleId = null, repairId = repairId)
 
         val payment = try {
             api.createPayment(
@@ -472,6 +472,7 @@ class ChargeRepository @Inject constructor(
         status: String,
         paymentId: String?,
         saleId: String?,
+        repairId: String? = null,
     ) {
         val now = System.currentTimeMillis()
         chargeDao.upsert(
@@ -488,6 +489,7 @@ class ChargeRepository @Inject constructor(
                 failureReason = null,
                 createdAt = now,
                 updatedAt = now,
+                repairId = repairId,
             ),
         )
     }

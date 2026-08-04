@@ -106,6 +106,16 @@ data class PosPreferences(
     val canForceReconcile: Boolean get() = roles.any { it == "owner" || it == "manager" }
 
     /**
+     * Whether Sale Details should show cost/margin. The real gate is the
+     * server's reports.read permission check (internal/sales/handler.go) —
+     * a cashier-role caller simply never receives unit_cost/margin on the
+     * wire. This is UI-side politeness matching that same role convention
+     * (Android only tracks roles, not the fine-grained permission list), not
+     * an independent security boundary.
+     */
+    val canSeeCost: Boolean get() = roles.any { it == "owner" || it == "manager" }
+
+    /**
      * Whether to offer intake. Intake is permissioned server-side regardless,
      * so this only avoids showing a button that would 403.
      *

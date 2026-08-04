@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.outlined.Share
@@ -91,6 +92,8 @@ fun StkStatusScreen(
     onDismiss: () -> Unit,
     /** Non-null when this charge was started from a repair job — adds "View job". */
     onViewJob: (() -> Unit)? = null,
+    /** Non-null when a sale (not a job payment) was produced — adds "View Sale" next to "New sale". */
+    onViewSale: (() -> Unit)? = null,
 ) {
     val inFlight = stage is StkStage.Sending || stage is StkStage.Waiting || stage is StkStage.Finalising
 
@@ -179,6 +182,7 @@ fun StkStatusScreen(
                         onDone = onDone,
                         onDismiss = onDismiss,
                         onViewJob = onViewJob,
+                        onViewSale = onViewSale,
                     )
                 }
             }
@@ -267,6 +271,7 @@ private fun Actions(
     onDone: () -> Unit,
     onDismiss: () -> Unit,
     onViewJob: (() -> Unit)?,
+    onViewSale: (() -> Unit)?,
 ) {
     when (stage) {
         StkStage.Sending, StkStage.Finalising -> Unit
@@ -317,6 +322,14 @@ private fun Actions(
                 )
                 TlNeutralButton(text = "Done", onClick = onDone, modifier = Modifier.fillMaxWidth())
             } else {
+                if (onViewSale != null) {
+                    TlSecondaryButton(
+                        text = "View Sale",
+                        onClick = onViewSale,
+                        icon = Icons.AutoMirrored.Outlined.ReceiptLong,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 TlNeutralButton(text = "New sale", onClick = onDone, modifier = Modifier.fillMaxWidth())
             }
         }
