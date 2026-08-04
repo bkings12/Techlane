@@ -44,13 +44,18 @@ export function WhatsAppSettingsPage() {
   }, [load]);
 
   useEffect(() => {
+    // Stop polling once the sidecar's circuit breaker has tripped — the
+    // pairing failed repeatedly and needs an explicit Reconnect, not another
+    // silent retry the next time this component happens to poll.
     if (!cfg?.enabled || cfg.connected || !cfg.service_configured) return;
+    if (cfg.connection_status === "reconnect_failed") return;
     let cancelled = false;
     const tick = () => {
       getWhatsAppQR()
         .then((q) => {
           if (!cancelled) setQr(q);
           if (!cancelled && q.status === "connected") load();
+          if (!cancelled && q.status === "reconnect_failed") load();
         })
         .catch(() => {
           /* keep previous QR */
@@ -62,7 +67,7 @@ export function WhatsAppSettingsPage() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [cfg?.enabled, cfg?.connected, cfg?.service_configured, load]);
+  }, [cfg?.enabled, cfg?.connected, cfg?.service_configured, cfg?.connection_status, load]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -146,7 +151,9 @@ export function WhatsAppSettingsPage() {
     ? "Server not configured"
     : cfg.connected
       ? "Connected"
-      : cfg.connection_status || "Not linked";
+      : cfg.connection_status === "reconnect_failed"
+        ? "Couldn't link — retry"
+        : cfg.connection_status || "Not linked";
 
   return (
     <div>
@@ -227,12 +234,29 @@ export function WhatsAppSettingsPage() {
               <Button type="button" variant="secondary" disabled={qrBusy} onClick={doReconnect}>
                 Reconnect
               </Button>
-              <Button type="button" variant="danger" disabled={qrBusy || !cfg?.connected} onClick={doDisconnect}>
-                Disconnect
+              {/* Reset needs to work precisely when nothing is connected — a
+                  pairing stuck after repeated failures has no live session to
+                  gate this on, and that is exactly when a clean reset matters. */}
+              <Button
+                type="button"
+                variant="danger"
+                disabled={qrBusy || (!cfg?.connected && cfg?.connection_status !== "reconnect_failed")}
+                onClick={doDisconnect}
+              >
+                {cfg?.connected ? "Disconnect" : "Reset"}
               </Button>
             </div>
             {cfg.connected ? (
               <p className="form-success">WhatsApp is linked and ready.</p>
+            ) : cfg.connection_status === "reconnect_failed" ? (
+              <div className="stack-sm">
+                <p className="form-error">
+                  Couldn't get a stable connection{cfg.last_error ? `: ${cfg.last_error}` : "."}
+                </p>
+                <p className="muted">
+                  Tap Reset to clear this attempt, then Reconnect for a fresh QR.
+                </p>
+              </div>
             ) : qr?.qr ? (
               <div className="wa-qr-wrap">
                 <img src={qr.qr} alt="WhatsApp QR code" width={280} height={280} />

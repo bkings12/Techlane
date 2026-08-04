@@ -44,6 +44,21 @@ const connectionStatus = new Map();
 const chatStore = new Map(); // Store chats and messages per tenant
 /** Prevent overlapping makeWASocket calls for the same tenant (QR races break Business pairing). */
 const initLocks = new Map();
+/**
+ * Consecutive close-without-ever-connecting counts, per tenant.
+ *
+ * A device pairing that keeps failing before `connection === 'open'` was
+ * retrying forever on a flat 5s timer with no circuit breaker: every retry
+ * printed a fresh QR, so the code on screen rotated faster than a human could
+ * scan it, and "no valid QR" on the phone was really "the QR your camera just
+ * read is already three retries old." Tracked here so repeated failures stop
+ * auto-retrying and surface a real status instead of spinning silently.
+ */
+const reconnectFailures = new Map();
+/** The actual reason the last close happened — statusCode alone is often `undefined`. */
+const lastDisconnectReason = new Map();
+const MAX_QUICK_RETRIES = 4;
+const QUICK_RETRY_WINDOW_MS = 60_000;
 /** LID (local id) → phone digits, so inbound @lid replies map to customer MSISDNs. */
 const lidPhoneMap = new Map(); // key: `${tenantId}:${lid}` → phone digits
 
@@ -518,28 +533,57 @@ async function initializeSession(tenantId) {
             const loggedOut = statusCode === DisconnectReason.loggedOut;
             // 515 = restart required after QR scan — keep auth, reopen socket.
             const restartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
-            
-            console.log(`[${sessionId}] Connection closed, status: ${statusCode}`);
+            const errMessage = lastDisconnect?.error?.message || String(lastDisconnect?.error || 'unknown');
+
+            console.log(`[${sessionId}] Connection closed, status: ${statusCode}, reason: ${errMessage}`);
+            lastDisconnectReason.set(sessionId, errMessage);
             if (sessions.get(sessionId) === sock) {
                 sessions.delete(sessionId);
             }
-            connectionStatus.set(sessionId, loggedOut ? 'logged_out' : 'disconnected');
             if (!restartRequired) {
                 qrCodes.delete(sessionId);
             }
-            
-            if (!loggedOut) {
-                const delayMs = restartRequired ? 1500 : 5000;
-                console.log(`[${sessionId}] Reconnecting in ${delayMs}ms...`);
-                setTimeout(() => initializeSession(sessionId), delayMs);
-            } else {
+
+            if (loggedOut) {
+                connectionStatus.set(sessionId, 'logged_out');
+                reconnectFailures.delete(sessionId);
                 // Clear auth files on logout
                 const dir = getSessionDir(sessionId);
                 fs.rmSync(dir, { recursive: true, force: true });
+                return;
             }
+
+            // A device that was actually paired reconnecting after a real drop
+            // is the common case and should keep retrying quietly. A pairing
+            // that never reached `open` is the QR-thrashing case — count those
+            // specifically, since "was ever connected" is what tells them apart.
+            const everConnected = fs.existsSync(path.join(getSessionDir(sessionId), 'creds.json'));
+            if (!everConnected) {
+                const now = Date.now();
+                const record = reconnectFailures.get(sessionId) || { count: 0, windowStart: now };
+                if (now - record.windowStart > QUICK_RETRY_WINDOW_MS) {
+                    record.count = 0;
+                    record.windowStart = now;
+                }
+                record.count += 1;
+                reconnectFailures.set(sessionId, record);
+                if (record.count >= MAX_QUICK_RETRIES) {
+                    console.log(`[${sessionId}] ${record.count} failed pairing attempts in ${QUICK_RETRY_WINDOW_MS}ms — stopping auto-retry, last reason: ${errMessage}`);
+                    connectionStatus.set(sessionId, 'reconnect_failed');
+                    qrCodes.delete(sessionId);
+                    return;
+                }
+            }
+
+            connectionStatus.set(sessionId, 'disconnected');
+            const delayMs = restartRequired ? 1500 : 5000;
+            console.log(`[${sessionId}] Reconnecting in ${delayMs}ms...`);
+            setTimeout(() => initializeSession(sessionId), delayMs);
         } else if (connection === 'open') {
             console.log(`[${sessionId}] Connected!`);
             connectionStatus.set(sessionId, 'connected');
+            reconnectFailures.delete(sessionId);
+            lastDisconnectReason.delete(sessionId);
             qrCodes.delete(sessionId);
             
             // Sync existing chats after connection
@@ -725,15 +769,18 @@ app.use(requireServiceSecret);
 // Get QR code for linking
 app.get('/qr/:tenantId?', async (req, res) => {
     const tenantId = req.params.tenantId || 'default';
-    
-    // Initialize session if not exists
-    if (!sessions.has(tenantId)) {
+
+    // The frontend polls this every few seconds while waiting to be scanned.
+    // Auto-initializing on every poll is what let a tripped circuit breaker
+    // get silently re-armed by the next GET — only an explicit /reconnect
+    // should retry once we've stopped for repeated failures.
+    if (!sessions.has(tenantId) && connectionStatus.get(tenantId) !== 'reconnect_failed') {
         await initializeSession(tenantId);
     }
 
     // Wait a bit for QR to generate
     let attempts = 0;
-    while (!qrCodes.has(tenantId) && attempts < 10) {
+    while (!qrCodes.has(tenantId) && attempts < 10 && connectionStatus.get(tenantId) !== 'reconnect_failed') {
         await new Promise(r => setTimeout(r, 500));
         attempts++;
     }
@@ -748,6 +795,15 @@ app.get('/qr/:tenantId?', async (req, res) => {
             status: 'connected',
             user: sock?.user || null,
             qr: null
+        });
+    }
+
+    if (status === 'reconnect_failed') {
+        return res.json({
+            success: true,
+            status,
+            qr: null,
+            message: `Couldn't get a stable connection (${lastDisconnectReason.get(tenantId) || 'unknown error'}). Tap Reconnect to try again.`,
         });
     }
 
@@ -772,7 +828,8 @@ app.get('/status/:tenantId?', (req, res) => {
         status,
         connected: status === 'connected',
         user: sock?.user || null,
-        hasQr: qrCodes.has(tenantId)
+        hasQr: qrCodes.has(tenantId),
+        lastError: status === 'reconnect_failed' ? (lastDisconnectReason.get(tenantId) || null) : null,
     });
 });
 
@@ -1032,15 +1089,22 @@ app.post('/disconnect/:tenantId?', async (req, res) => {
     const sock = sessions.get(tenantId);
 
     if (sock) {
-        await sock.logout();
+        try {
+            await sock.logout();
+        } catch (_) {
+            /* best-effort — we're clearing local state either way */
+        }
         sessions.delete(tenantId);
-        connectionStatus.delete(tenantId);
-        qrCodes.delete(tenantId);
-        
-        // Clear auth files
-        const dir = getSessionDir(tenantId);
-        fs.rmSync(dir, { recursive: true, force: true });
     }
+    // Runs even with no live socket: a pairing stuck in reconnect_failed has
+    // none, and that is exactly when a full reset is most needed rather than
+    // this silently no-op-ing.
+    connectionStatus.delete(tenantId);
+    qrCodes.delete(tenantId);
+    reconnectFailures.delete(tenantId);
+    lastDisconnectReason.delete(tenantId);
+    const dir = getSessionDir(tenantId);
+    fs.rmSync(dir, { recursive: true, force: true });
 
     res.json({ success: true, message: 'Disconnected' });
 });
@@ -1048,7 +1112,7 @@ app.post('/disconnect/:tenantId?', async (req, res) => {
 // Reconnect
 app.post('/reconnect/:tenantId?', async (req, res) => {
     const tenantId = req.params.tenantId || 'default';
-    
+
     // Close existing if any
     const existingSock = sessions.get(tenantId);
     if (existingSock) {
@@ -1057,6 +1121,9 @@ app.post('/reconnect/:tenantId?', async (req, res) => {
         } catch (e) {}
         sessions.delete(tenantId);
     }
+    // An explicit tap on "Reconnect" is a fresh attempt — clear the circuit
+    // breaker so it doesn't immediately re-trip on the first retry.
+    reconnectFailures.delete(tenantId);
 
     await initializeSession(tenantId);
     res.json({ success: true, message: 'Reconnecting...' });

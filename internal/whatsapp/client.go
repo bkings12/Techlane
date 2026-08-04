@@ -38,6 +38,9 @@ type StatusResponse struct {
 	HasQR     bool   `json:"hasQr"`
 	User      any    `json:"user"`
 	Error     string `json:"error"`
+	// The reason the sidecar's circuit breaker tripped, when Status is
+	// "reconnect_failed". Empty otherwise.
+	LastError string `json:"lastError"`
 }
 
 type QRResponse struct {

@@ -1166,6 +1166,7 @@ export type WhatsAppSettings = {
   service_configured: boolean;
   connected: boolean;
   connection_status: string;
+  last_error?: string;
   session_id: string;
   updated_at: string;
 };

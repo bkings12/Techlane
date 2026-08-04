@@ -20,8 +20,11 @@ type Settings struct {
 	ServiceConfigured bool     `json:"service_configured"`
 	Connected        bool      `json:"connected"`
 	ConnectionStatus string    `json:"connection_status"`
-	SessionID        string    `json:"session_id"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	// Populated only when ConnectionStatus is "reconnect_failed" — the sidecar's
+	// circuit breaker tripped after repeated pairing failures, and this is why.
+	LastError string    `json:"last_error,omitempty"`
+	SessionID string    `json:"session_id"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type UpsertSettingsInput struct {
@@ -83,6 +86,7 @@ func (s *Service) GetSettings(ctx context.Context, tenantID uuid.UUID) (*Setting
 		} else if st != nil {
 			out.ConnectionStatus = st.Status
 			out.Connected = st.Connected
+			out.LastError = st.LastError
 		}
 	}
 	return out, nil
