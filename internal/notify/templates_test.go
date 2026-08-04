@@ -168,3 +168,42 @@ func TestCustomerSMSOnStatus(t *testing.T) {
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }
+
+func defBody(t *testing.T, key string) string {
+	t.Helper()
+	for _, d := range DefaultTemplateDefs() {
+		if d.Key == key {
+			return d.DefaultBody
+		}
+	}
+	t.Fatalf("template %q is not registered", key)
+	return ""
+}
+
+// A counter sale has no job code, so its thank-you must not reference one —
+// the repair wording would render a visible gap to the customer.
+func TestPaymentThanksTemplateHasNoJobCode(t *testing.T) {
+	body := defBody(t, "payment.thanks")
+	if strings.Contains(body, "{{job_code}}") {
+		t.Fatalf("counter-sale thank-you must not reference a job code: %q", body)
+	}
+	for _, want := range []string{"{{customer_name}}", "{{amount}}", "{{currency}}", "{{shop_name}}"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("payment.thanks is missing %s: %q", want, body)
+		}
+	}
+}
+
+// The repair variant still names the job — that is the whole point of it.
+func TestPaymentConfirmedTemplateStillNamesTheJob(t *testing.T) {
+	if body := defBody(t, "payment.confirmed"); !strings.Contains(body, "{{job_code}}") {
+		t.Fatalf("repair payment message should name the job: %q", body)
+	}
+}
+
+// WhatsApp copy is generated from the same layer, never duplicated in clients.
+func TestPaymentThanksHasWhatsAppBody(t *testing.T) {
+	if _, ok := DefaultWhatsAppBody("payment.thanks"); !ok {
+		t.Fatal("payment.thanks has no WhatsApp body")
+	}
+}

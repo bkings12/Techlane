@@ -107,7 +107,12 @@ func (a NotifyAdapter) PaymentNotifyContext(ctx context.Context, tenantID, payme
 	}
 	amount = fmt.Sprintf("%.0f", amt)
 	if payableType != "repair" {
-		return nil, "", "", amount, currency, nil
+		// A counter sale has no job, but it usually still has someone to thank:
+		// either a customer attached to the sale, or — for an M-Pesa prompt —
+		// the number the prompt was actually sent to. Without this the
+		// payment.confirmed subscriber saw an empty phone and returned, so no
+		// POS sale ever produced a thank-you message.
+		return nil, "", a.salePaymentPhone(ctx, tenantID, paymentID, payableType, payableID), amount, currency, nil
 	}
 	repairID = &payableID
 	info, lErr := a.RepairNotifyInfo(ctx, tenantID, payableID)
@@ -115,6 +120,45 @@ func (a NotifyAdapter) PaymentNotifyContext(ctx context.Context, tenantID, payme
 		return repairID, "", "", amount, currency, lErr
 	}
 	return repairID, info.JobCode, info.Phone, amount, currency, nil
+}
+
+/**
+ * Who to thank for a non-repair payment.
+ *
+ * Prefers a customer actually attached to the sale, because that is a person
+ * the shop has a relationship with. Falls back to the number an M-Pesa prompt
+ * was sent to, which for a Quick Prompt is the only contact detail that
+ * exists — the customer paid from it, so it is both known-good and clearly in
+ * scope for a receipt-style acknowledgement.
+ *
+ * Returns "" when neither is available (cash at the counter, no customer), and
+ * the caller simply sends nothing.
+ */
+func (a NotifyAdapter) salePaymentPhone(
+	ctx context.Context,
+	tenantID, paymentID uuid.UUID,
+	payableType string,
+	payableID uuid.UUID,
+) string {
+	var phone *string
+	if payableType == "sale" {
+		_ = a.Svc.pool.QueryRow(ctx, `
+			SELECT c.phone
+			FROM sales.sales s
+			JOIN repair.customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
+			WHERE s.tenant_id = $1 AND s.id = $2`, tenantID, payableID).Scan(&phone)
+		if phone != nil && strings.TrimSpace(*phone) != "" {
+			return strings.TrimSpace(*phone)
+		}
+	}
+	var stkPhone *string
+	_ = a.Svc.pool.QueryRow(ctx, `
+		SELECT phone FROM payments.mpesa_stk_transactions
+		WHERE tenant_id = $1 AND payment_id = $2 LIMIT 1`, tenantID, paymentID).Scan(&stkPhone)
+	if stkPhone != nil {
+		return strings.TrimSpace(*stkPhone)
+	}
+	return ""
 }
 
 func deviceLabel(d *Device) string {

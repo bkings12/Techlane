@@ -102,6 +102,16 @@ func DefaultTemplateDefs() []TemplateDef {
 			DefaultBody: "{{shop_name}}: Estimate for {{job_code}} ({{device_label}}): {{currency}} {{total_amount}}.{{recommendation_line}} Approve in the customer portal/app to start work.",
 		},
 		{
+			Key:         "payment.thanks",
+			Label:       "Payment thank-you (counter sale)",
+			Description: "Sent after a confirmed counter/Quick Prompt payment that is not against a repair job.",
+			Audience:    "customer",
+			Helpers: []string{
+				"shop_name", "customer_name", "amount", "currency", "method",
+			},
+			DefaultBody: "Hi {{customer_name}}, thank you for your payment of {{currency}} {{amount}} to {{shop_name}}. Your payment has been received successfully. We appreciate your business.",
+		},
+		{
 			Key:         "payment.confirmed",
 			Label:       "Payment confirmed",
 			Description: "Sent to the customer when a payment is confirmed.",
@@ -154,6 +164,8 @@ func DefaultWhatsAppBody(key string) (string, bool) {
 		return "{{shop_name}}: Hi {{customer_name}}. Your {{device_label}} ({{job_code}}) is ready. Bring your receipt to collect. Balance due: {{currency}} {{balance}}. See you at {{pickup_place}}.", true
 	case "repair.quick_thanks":
 		return "{{shop_name}}: Asante {{customer_name}}! Thank you for choosing {{shop_name}}. Karibu tena.", true
+	case "payment.thanks":
+		return "Hi {{customer_name}}, thank you for your payment of {{currency}} {{amount}} to {{shop_name}}. Your payment has been received successfully. We appreciate your business.", true
 	case "payment.confirmed":
 		return "{{shop_name}}: We received {{currency}} {{amount}} for {{job_code}}. Remaining balance: {{currency}} {{balance}}. Asante!", true
 	case "repair.collected":

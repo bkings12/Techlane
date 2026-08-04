@@ -765,11 +765,20 @@ func (s *Service) onPaymentConfirmed(ctx context.Context, e events.Envelope, loo
 			"payment.confirmed", payload)
 		return
 	}
-	s.enqueueReachable(ctx, e.TenantID, "customer", phone, "payment.confirmed", payload)
-	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID,
-		fmt.Sprintf("Payment confirmed · %s", jobCode),
-		fmt.Sprintf("Payment of %s %s received for job %s.", currency, amount, jobCode),
-		"payment.confirmed", payload)
+	// A counter sale has no job code, so the repair wording ("… for {{job_code}}")
+	// would render a gap. Thank them for the payment itself instead.
+	template := "payment.confirmed"
+	if repairID == nil {
+		template = "payment.thanks"
+	}
+	s.enqueueReachable(ctx, e.TenantID, "customer", phone, template, payload)
+	inboxTitle := fmt.Sprintf("Payment confirmed · %s", jobCode)
+	inboxBody := fmt.Sprintf("Payment of %s %s received for job %s.", currency, amount, jobCode)
+	if repairID == nil {
+		inboxTitle = "Payment confirmed · counter sale"
+		inboxBody = fmt.Sprintf("Payment of %s %s received at the counter.", currency, amount)
+	}
+	_ = s.PostStaffInbox(ctx, e.TenantID, e.BranchID, inboxTitle, inboxBody, "payment.confirmed", payload)
 }
 
 func (s *Service) onRepairCollected(ctx context.Context, e events.Envelope, lookup RepairLookup) {
