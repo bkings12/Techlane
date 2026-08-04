@@ -1,6 +1,7 @@
 package com.techlane.pos.core.designsystem.theme
 
 import androidx.compose.material3.Typography
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -29,6 +30,7 @@ private fun tl(
     lineHeight: Int,
     weight: FontWeight = FontWeight.Normal,
     tracking: Double = 0.0,
+    color: Color = Color.Unspecified,
 ) = TextStyle(
     fontFamily = Outfit,
     fontWeight = weight,
@@ -37,16 +39,28 @@ private fun tl(
     letterSpacing = tracking.sp,
     lineHeightStyle = TightLineHeight,
     platformStyle = PlatformTextStyle(includeFontPadding = false),
+    color = color,
 )
 
+/**
+ * Navy is baked into the heading styles rather than applied per screen, so
+ * every page title and section heading carries the brand without each screen
+ * having to remember to ask for it.
+ *
+ * Deliberately not applied to title/label/body styles: those are used *inside*
+ * buttons and coloured surfaces, where a hard-coded navy would override the
+ * white the container needs and produce navy-on-blue.
+ */
+private val Heading = Color(0xFF102A43)
+
 val TlTypography = Typography(
-    displayLarge = tl(56, 60, FontWeight.Bold, -1.0),
-    displayMedium = tl(45, 50, FontWeight.Bold, -0.8),
-    displaySmall = tl(36, 42, FontWeight.SemiBold, -0.5),
-    headlineLarge = tl(32, 38, FontWeight.SemiBold, -0.4),
-    headlineMedium = tl(28, 34, FontWeight.SemiBold, -0.3),
-    headlineSmall = tl(24, 30, FontWeight.SemiBold, -0.2),
-    titleLarge = tl(21, 27, FontWeight.SemiBold, -0.1),
+    displayLarge = tl(56, 60, FontWeight.Bold, -1.0, Heading),
+    displayMedium = tl(45, 50, FontWeight.Bold, -0.8, Heading),
+    displaySmall = tl(36, 42, FontWeight.SemiBold, -0.5, Heading),
+    headlineLarge = tl(32, 38, FontWeight.SemiBold, -0.4, Heading),
+    headlineMedium = tl(28, 34, FontWeight.SemiBold, -0.3, Heading),
+    headlineSmall = tl(24, 30, FontWeight.SemiBold, -0.2, Heading),
+    titleLarge = tl(21, 27, FontWeight.SemiBold, -0.1, Heading),
     titleMedium = tl(17, 23, FontWeight.SemiBold),
     titleSmall = tl(15, 20, FontWeight.SemiBold),
     bodyLarge = tl(16, 24),
@@ -58,5 +72,5 @@ val TlTypography = Typography(
 )
 
 /** Tabular-ish numeral style for money — keeps totals from jittering as they update. */
-val MoneyDisplay = tl(44, 50, FontWeight.Bold, -1.2)
-val MoneyTitle = tl(24, 30, FontWeight.Bold, -0.4)
+val MoneyDisplay = tl(44, 50, FontWeight.Bold, -1.2, Heading)
+val MoneyTitle = tl(24, 30, FontWeight.Bold, -0.4, Heading)

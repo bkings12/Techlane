@@ -38,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -382,6 +383,9 @@ private fun BottomBar(
                     Text(
                         tab.label,
                         style = MaterialTheme.typography.labelSmall,
+                        // Weight as well as colour: on a bright counter the
+                        // selected tab has to survive glare and a glance.
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                         color = if (selected) {
                             MaterialTheme.colorScheme.primary
                         } else {

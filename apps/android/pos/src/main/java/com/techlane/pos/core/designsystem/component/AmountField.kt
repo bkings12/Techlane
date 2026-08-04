@@ -67,8 +67,9 @@ fun TlAmountField(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = enabled,
                 singleLine = true,
-                textStyle = LocalTextStyle.current.merge(textStyle)
-                    .copy(color = MaterialTheme.colorScheme.onSurface),
+                // Keeps the style's own colour (navy) rather than flattening the
+                // biggest number on the screen to plain body ink.
+                textStyle = LocalTextStyle.current.merge(textStyle),
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = imeAction),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(
