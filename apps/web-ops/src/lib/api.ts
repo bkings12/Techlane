@@ -1167,6 +1167,7 @@ export type WhatsAppSettings = {
   connected: boolean;
   connection_status: string;
   last_error?: string;
+  pairing_code?: string;
   session_id: string;
   updated_at: string;
 };
@@ -1206,6 +1207,22 @@ export async function disconnectWhatsApp() {
 
 export async function reconnectWhatsApp() {
   return api<{ ok: boolean }>("/whatsapp/reconnect", { method: "POST" });
+}
+
+export type WhatsAppPairingCode = {
+  success?: boolean;
+  status: string;
+  code?: string;
+  phone?: string;
+  message?: string;
+  error?: string;
+};
+
+export async function requestWhatsAppPairingCode(phone: string) {
+  return api<WhatsAppPairingCode>("/whatsapp/pairing-code", {
+    method: "POST",
+    body: JSON.stringify({ phone }),
+  });
 }
 
 export type Supplier = {

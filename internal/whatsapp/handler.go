@@ -24,6 +24,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("GET /whatsapp/qr", auth(http.HandlerFunc(h.qr)))
 	mux.Handle("POST /whatsapp/disconnect", auth(http.HandlerFunc(h.disconnect)))
 	mux.Handle("POST /whatsapp/reconnect", auth(http.HandlerFunc(h.reconnect)))
+	mux.Handle("POST /whatsapp/pairing-code", auth(http.HandlerFunc(h.pairingCode)))
 	// Sidecar → platform (service key, no staff JWT).
 	mux.HandleFunc("POST /whatsapp/inbound", h.inbound)
 }
@@ -156,6 +157,40 @@ func (h *Handler) reconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) pairingCode(w http.ResponseWriter, r *http.Request) {
+	claims, ok := h.claims(w, r)
+	if !ok {
+		return
+	}
+	if h.svc.Client() == nil || !h.svc.Client().Configured() {
+		apierrors.Write(w, http.StatusServiceUnavailable, "UNAVAILABLE", "WhatsApp service is not configured on the server", httpx.CorrelationID(r.Context()))
+		return
+	}
+	var req struct {
+		Phone string `json:"phone"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", httpx.CorrelationID(r.Context()))
+		return
+	}
+	phone := strings.TrimSpace(req.Phone)
+	if phone == "" {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", "phone is required", httpx.CorrelationID(r.Context()))
+		return
+	}
+	normalized, err := normalizePairingPhone(phone)
+	if err != nil {
+		apierrors.Write(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	res, err := h.svc.Client().RequestPairingCode(r.Context(), SessionID(claims.TenantID), normalized)
+	if err != nil {
+		apierrors.Write(w, http.StatusBadGateway, "BAD_GATEWAY", err.Error(), httpx.CorrelationID(r.Context()))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
 }
 
 func (h *Handler) inbound(w http.ResponseWriter, r *http.Request) {

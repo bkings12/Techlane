@@ -23,7 +23,9 @@ type Settings struct {
 	// Populated only when ConnectionStatus is "reconnect_failed" — the sidecar's
 	// circuit breaker tripped after repeated pairing failures, and this is why.
 	LastError string    `json:"last_error,omitempty"`
-	SessionID string    `json:"session_id"`
+	// Populated only when ConnectionStatus is "waiting_pairing_code".
+	PairingCode string    `json:"pairing_code,omitempty"`
+	SessionID   string    `json:"session_id"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -87,6 +89,7 @@ func (s *Service) GetSettings(ctx context.Context, tenantID uuid.UUID) (*Setting
 			out.ConnectionStatus = st.Status
 			out.Connected = st.Connected
 			out.LastError = st.LastError
+			out.PairingCode = st.PairingCode
 		}
 	}
 	return out, nil
@@ -191,6 +194,26 @@ func digitsOnly(phone string) string {
 		}
 	}
 	return b.String()
+}
+
+// normalizePairingPhone mirrors notify.NormalizeRecipientPhone's Kenya-number
+// handling. It's duplicated locally rather than imported because the notify
+// package already imports whatsapp (for ShouldNotify), and this package
+// importing notify back would create an import cycle.
+func normalizePairingPhone(raw string) (string, error) {
+	digits := digitsOnly(raw)
+	switch {
+	case strings.HasPrefix(digits, "254") && len(digits) == 12:
+		return digits, nil
+	case strings.HasPrefix(digits, "0") && len(digits) == 10:
+		return "254" + digits[1:], nil
+	case strings.HasPrefix(digits, "7") && len(digits) == 9:
+		return "254" + digits, nil
+	case len(digits) >= 10 && len(digits) <= 15:
+		return digits, nil
+	default:
+		return "", errors.New("invalid phone number")
+	}
 }
 
 func (s *Service) RememberPending(

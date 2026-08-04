@@ -61,6 +61,21 @@ const MAX_QUICK_RETRIES = 4;
 const QUICK_RETRY_WINDOW_MS = 60_000;
 /** LID (local id) → phone digits, so inbound @lid replies map to customer MSISDNs. */
 const lidPhoneMap = new Map(); // key: `${tenantId}:${lid}` → phone digits
+/**
+ * The 8-character link code for phone-number-based pairing, when requested —
+ * an alternative to scanning a QR. WhatsApp Business has historically been
+ * pickier about QR-based linking than a personal account; the pairing code
+ * uses a different companion-registration flow that is often accepted where
+ * a Business app's QR scan reports "couldn't link device".
+ */
+const pairingCodes = new Map();
+/**
+ * Digits-only phone remembered across the auto-retry-on-drop path, so a
+ * pairing-code attempt that gets interrupted mid-handshake (socket closes
+ * before registration completes) keeps trying pairing-code linking on the
+ * next internal retry instead of silently falling back to QR.
+ */
+const pendingPairingPhone = new Map();
 
 function lidMapPath(tenantId) {
     return path.join(CHATS_DIR, `${tenantId || 'default'}_lid_map.json`);
@@ -147,7 +162,10 @@ function rememberMappingFromMessage(tenantId, jid, rawMsg) {
 }
 
 // Logger
-const logger = pino({ level: 'warn' });
+// 'debug' temporarily, to catch the actual handshake failure behind the
+// pairing loop — 'warn' was hiding every socket-level error that didn't
+// carry a structured Baileys DisconnectReason (which is most of them here).
+const logger = pino({ level: process.env.WHATSAPP_LOG_LEVEL || 'warn' });
 
 // Ensure directories exist
 if (!fs.existsSync(AUTH_DIR)) {
@@ -457,8 +475,9 @@ async function resolveWaVersion() {
 }
 
 // Initialize WhatsApp connection for a tenant
-async function initializeSession(tenantId) {
+async function initializeSession(tenantId, opts = {}) {
     const sessionId = tenantId || 'default';
+    const pairingPhone = opts.pairingPhone || pendingPairingPhone.get(sessionId) || null;
 
     if (initLocks.get(sessionId)) {
         return initLocks.get(sessionId);
@@ -504,6 +523,28 @@ async function initializeSession(tenantId) {
         getMessage: async () => ({ conversation: '' }),
     });
 
+    // Pairing-code linking — an alternative to scanning a QR, requested when
+    // a phone number is supplied and this auth state hasn't registered a
+    // device yet. WhatsApp Business has been seen refusing QR scans
+    // ("couldn't link device") more often than personal WhatsApp; the
+    // pairing-code handshake is a different registration path that tends to
+    // succeed where QR does not, so it's offered as a second option rather
+    // than a replacement.
+    if (pairingPhone && !state.creds.registered) {
+        pendingPairingPhone.set(sessionId, pairingPhone);
+        try {
+            const digits = String(pairingPhone).replace(/\D/g, '');
+            const code = await sock.requestPairingCode(digits);
+            pairingCodes.set(sessionId, { code, phone: digits, requestedAt: Date.now() });
+            connectionStatus.set(sessionId, 'waiting_pairing_code');
+            console.log(`[${sessionId}] Pairing code requested for ${digits}: ${code}`);
+        } catch (err) {
+            console.error(`[${sessionId}] requestPairingCode failed:`, err?.message || err);
+            pairingCodes.delete(sessionId);
+            pendingPairingPhone.delete(sessionId);
+        }
+    }
+
     // Handle connection updates
     sock.ev.on('connection.update', async (update) => {
         // Ignore events from a replaced socket.
@@ -512,19 +553,29 @@ async function initializeSession(tenantId) {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            // Generate QR code as base64
-            try {
-                const qrDataUrl = await QRCode.toDataURL(qr, {
-                    width: 512,
-                    margin: 2,
-                    errorCorrectionLevel: 'M',
-                    color: { dark: '#000000', light: '#ffffff' },
-                });
-                qrCodes.set(sessionId, qrDataUrl);
-                connectionStatus.set(sessionId, 'waiting_qr');
-                console.log(`[${sessionId}] QR Code generated`);
-            } catch (err) {
-                console.error(`[${sessionId}] QR generation error:`, err);
+            // A socket that was already in flight when the breaker tripped can
+            // still emit its own qr event afterward — without this guard that
+            // silently flips status back to waiting_qr and the breaker never
+            // actually stops anything.
+            if (connectionStatus.get(sessionId) === 'reconnect_failed') {
+                console.log(`[${sessionId}] Dropping QR from a stale in-flight socket — breaker is tripped`);
+            } else if (pairingCodes.has(sessionId) && connectionStatus.get(sessionId) === 'waiting_pairing_code') {
+                console.log(`[${sessionId}] Dropping QR — a pairing-code request is active for this socket`);
+            } else {
+                // Generate QR code as base64
+                try {
+                    const qrDataUrl = await QRCode.toDataURL(qr, {
+                        width: 512,
+                        margin: 2,
+                        errorCorrectionLevel: 'M',
+                        color: { dark: '#000000', light: '#ffffff' },
+                    });
+                    qrCodes.set(sessionId, qrDataUrl);
+                    connectionStatus.set(sessionId, 'waiting_qr');
+                    console.log(`[${sessionId}] QR Code generated`);
+                } catch (err) {
+                    console.error(`[${sessionId}] QR generation error:`, err);
+                }
             }
         }
 
@@ -542,11 +593,13 @@ async function initializeSession(tenantId) {
             }
             if (!restartRequired) {
                 qrCodes.delete(sessionId);
+                pairingCodes.delete(sessionId);
             }
 
             if (loggedOut) {
                 connectionStatus.set(sessionId, 'logged_out');
                 reconnectFailures.delete(sessionId);
+                pendingPairingPhone.delete(sessionId);
                 // Clear auth files on logout
                 const dir = getSessionDir(sessionId);
                 fs.rmSync(dir, { recursive: true, force: true });
@@ -571,6 +624,8 @@ async function initializeSession(tenantId) {
                     console.log(`[${sessionId}] ${record.count} failed pairing attempts in ${QUICK_RETRY_WINDOW_MS}ms — stopping auto-retry, last reason: ${errMessage}`);
                     connectionStatus.set(sessionId, 'reconnect_failed');
                     qrCodes.delete(sessionId);
+                    pairingCodes.delete(sessionId);
+                    pendingPairingPhone.delete(sessionId);
                     return;
                 }
             }
@@ -585,6 +640,8 @@ async function initializeSession(tenantId) {
             reconnectFailures.delete(sessionId);
             lastDisconnectReason.delete(sessionId);
             qrCodes.delete(sessionId);
+            pairingCodes.delete(sessionId);
+            pendingPairingPhone.delete(sessionId);
             
             // Sync existing chats after connection
             syncExistingChats(sessionId, sock);
@@ -823,14 +880,72 @@ app.get('/status/:tenantId?', (req, res) => {
     const status = connectionStatus.get(tenantId) || 'not_initialized';
     const sock = sessions.get(tenantId);
 
+    const pairing = pairingCodes.get(tenantId);
     res.json({
         success: true,
         status,
         connected: status === 'connected',
         user: sock?.user || null,
         hasQr: qrCodes.has(tenantId),
+        pairingCode: status === 'waiting_pairing_code' ? (pairing?.code || null) : null,
         lastError: status === 'reconnect_failed' ? (lastDisconnectReason.get(tenantId) || null) : null,
     });
+});
+
+// Request a pairing code for the given phone number — an alternative to
+// scanning a QR, useful when WhatsApp Business refuses the QR handshake.
+// Tears down any existing (not-yet-registered) socket for this tenant the
+// same way /reconnect does, then starts a fresh session asking Baileys for
+// a code instead of a QR.
+app.post('/pairing-code/:tenantId?', async (req, res) => {
+    const tenantId = req.params.tenantId || 'default';
+    const phone = String(req.body?.phone || '').replace(/\D/g, '');
+
+    if (!phone || phone.length < 9) {
+        return res.status(400).json({ success: false, error: 'A valid phone number (with country code) is required' });
+    }
+
+    const sessionDir = getSessionDir(tenantId);
+    if (fs.existsSync(path.join(sessionDir, 'creds.json'))) {
+        return res.status(400).json({
+            success: false,
+            error: 'This tenant already has a linked or in-progress session. Reset it first if you need to relink.',
+        });
+    }
+
+    const existingSock = sessions.get(tenantId);
+    if (existingSock) {
+        try {
+            existingSock.end();
+        } catch (_) {
+            /* ignore */
+        }
+        sessions.delete(tenantId);
+    }
+    reconnectFailures.delete(tenantId);
+    qrCodes.delete(tenantId);
+    pairingCodes.delete(tenantId);
+
+    try {
+        const result = await initializeSession(tenantId, { pairingPhone: phone });
+        const pairing = pairingCodes.get(tenantId);
+        if (!pairing) {
+            return res.status(500).json({
+                success: false,
+                error: 'Could not get a pairing code from WhatsApp. Try again or use the QR option.',
+            });
+        }
+        res.json({
+            success: true,
+            status: result?.status || connectionStatus.get(tenantId) || 'waiting_pairing_code',
+            code: pairing.code,
+            phone: pairing.phone,
+            message: 'Enter this code on the phone: Settings → Linked devices → Link a device → Link with phone number instead.',
+        });
+    } catch (err) {
+        console.error(`[${tenantId}] pairing-code request failed:`, err?.message || err);
+        res.status(500).json({ success: false, error: err?.message || 'Pairing code request failed' });
+    }
 });
 
 // Send message
@@ -1101,6 +1216,8 @@ app.post('/disconnect/:tenantId?', async (req, res) => {
     // this silently no-op-ing.
     connectionStatus.delete(tenantId);
     qrCodes.delete(tenantId);
+    pairingCodes.delete(tenantId);
+    pendingPairingPhone.delete(tenantId);
     reconnectFailures.delete(tenantId);
     lastDisconnectReason.delete(tenantId);
     const dir = getSessionDir(tenantId);
@@ -1122,8 +1239,13 @@ app.post('/reconnect/:tenantId?', async (req, res) => {
         sessions.delete(tenantId);
     }
     // An explicit tap on "Reconnect" is a fresh attempt — clear the circuit
-    // breaker so it doesn't immediately re-trip on the first retry.
+    // breaker so it doesn't immediately re-trip on the first retry. This is
+    // the QR path specifically, so also drop any pending pairing-code phone
+    // from an earlier attempt — otherwise initializeSession would silently
+    // keep requesting a pairing code instead of showing a QR.
     reconnectFailures.delete(tenantId);
+    pairingCodes.delete(tenantId);
+    pendingPairingPhone.delete(tenantId);
 
     await initializeSession(tenantId);
     res.json({ success: true, message: 'Reconnecting...' });

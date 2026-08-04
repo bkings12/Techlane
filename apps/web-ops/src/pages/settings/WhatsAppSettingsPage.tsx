@@ -6,6 +6,7 @@ import {
   getWhatsAppQR,
   getWhatsAppSettings,
   reconnectWhatsApp,
+  requestWhatsAppPairingCode,
   updateWhatsAppSettings,
   type WhatsAppQR,
   type WhatsAppSettings,
@@ -21,6 +22,8 @@ export function WhatsAppSettingsPage() {
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [qrBusy, setQrBusy] = useState(false);
+  const [pairingPhone, setPairingPhone] = useState("");
+  const [pairingBusy, setPairingBusy] = useState(false);
 
   const [enabled, setEnabled] = useState(false);
   const [notifyCustomers, setNotifyCustomers] = useState(true);
@@ -49,6 +52,10 @@ export function WhatsAppSettingsPage() {
     // silent retry the next time this component happens to poll.
     if (!cfg?.enabled || cfg.connected || !cfg.service_configured) return;
     if (cfg.connection_status === "reconnect_failed") return;
+    // While a pairing code is showing, poll settings (not QR) below instead —
+    // requesting /qr here would start a competing QR socket for the same
+    // not-yet-registered session.
+    if (cfg.connection_status === "waiting_pairing_code") return;
     let cancelled = false;
     const tick = () => {
       getWhatsAppQR()
@@ -68,6 +75,20 @@ export function WhatsAppSettingsPage() {
       window.clearInterval(id);
     };
   }, [cfg?.enabled, cfg?.connected, cfg?.service_configured, cfg?.connection_status, load]);
+
+  useEffect(() => {
+    // Pairing-code linking resolves via the phone confirming the code, so
+    // there's nothing to poll but plain settings — watch for connected/failed.
+    if (cfg?.connection_status !== "waiting_pairing_code") return;
+    let cancelled = false;
+    const id = window.setInterval(() => {
+      if (!cancelled) load();
+    }, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [cfg?.connection_status, load]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -119,6 +140,26 @@ export function WhatsAppSettingsPage() {
       setError(err instanceof Error ? err.message : "Reconnect failed");
     } finally {
       setQrBusy(false);
+    }
+  }
+
+  async function doPairingCode(e: FormEvent) {
+    e.preventDefault();
+    setPairingBusy(true);
+    setError("");
+    try {
+      const res = await requestWhatsAppPairingCode(pairingPhone);
+      if (!res.success && res.error) {
+        setError(res.error);
+      } else {
+        setQr(null);
+        setSaved("Enter this code on the phone: Linked devices → Link a device → Link with phone number instead.");
+      }
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not get pairing code");
+    } finally {
+      setPairingBusy(false);
     }
   }
 
@@ -254,8 +295,15 @@ export function WhatsAppSettingsPage() {
                   Couldn't get a stable connection{cfg.last_error ? `: ${cfg.last_error}` : "."}
                 </p>
                 <p className="muted">
-                  Tap Reset to clear this attempt, then Reconnect for a fresh QR.
+                  Tap Reset to clear this attempt, then Reconnect for a fresh QR, or try the pairing
+                  code option below — WhatsApp Business sometimes accepts that when it refuses the QR.
                 </p>
+              </div>
+            ) : cfg.connection_status === "waiting_pairing_code" && cfg.pairing_code ? (
+              <div className="stack-sm">
+                <p>On the phone: Linked devices → Link a device → Link with phone number instead.</p>
+                <p style={{ fontSize: 28, fontWeight: 700, letterSpacing: 4 }}>{cfg.pairing_code}</p>
+                <p className="muted">Code expires after a short while — request a new one if it lapses.</p>
               </div>
             ) : qr?.qr ? (
               <div className="wa-qr-wrap">
@@ -271,6 +319,24 @@ export function WhatsAppSettingsPage() {
               Session id
               <Input value={cfg.session_id || ""} readOnly />
             </label>
+
+            {!cfg.connected && cfg.connection_status !== "waiting_pairing_code" ? (
+              <div className="stack-sm" style={{ marginTop: 12 }}>
+                <p className="muted" style={{ margin: 0 }}>
+                  QR not scanning on WhatsApp Business? Link with a phone number instead:
+                </p>
+                <form className="row gap" onSubmit={doPairingCode}>
+                  <Input
+                    placeholder="0712345678 or 254712345678"
+                    value={pairingPhone}
+                    onChange={(e) => setPairingPhone(e.target.value)}
+                  />
+                  <Button type="submit" variant="secondary" disabled={pairingBusy || !pairingPhone.trim()}>
+                    {pairingBusy ? "Requesting…" : "Get pairing code"}
+                  </Button>
+                </form>
+              </div>
+            ) : null}
           </>
         )}
       </section>

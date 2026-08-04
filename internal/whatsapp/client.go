@@ -41,6 +41,9 @@ type StatusResponse struct {
 	// The reason the sidecar's circuit breaker tripped, when Status is
 	// "reconnect_failed". Empty otherwise.
 	LastError string `json:"lastError"`
+	// The active pairing code, when Status is "waiting_pairing_code". Empty
+	// otherwise.
+	PairingCode string `json:"pairingCode"`
 }
 
 type QRResponse struct {
@@ -49,6 +52,18 @@ type QRResponse struct {
 	QR      string `json:"qr"`
 	Message string `json:"message"`
 	User    any    `json:"user"`
+	Error   string `json:"error"`
+}
+
+// PairingCodeResponse is returned when requesting phone-number pairing-code
+// linking — an alternative to scanning a QR that WhatsApp Business often
+// accepts where its QR scan is refused.
+type PairingCodeResponse struct {
+	Success bool   `json:"success"`
+	Status  string `json:"status"`
+	Code    string `json:"code"`
+	Phone   string `json:"phone"`
+	Message string `json:"message"`
 	Error   string `json:"error"`
 }
 
@@ -83,6 +98,25 @@ func (c *Client) Disconnect(ctx context.Context, sessionID string) error {
 func (c *Client) Reconnect(ctx context.Context, sessionID string) error {
 	var out map[string]any
 	return c.post(ctx, "/reconnect/"+sessionID, nil, &out)
+}
+
+// RequestPairingCode asks the sidecar to link via a phone-number pairing
+// code instead of a QR scan. phone should include the country code (digits
+// only or with punctuation — the sidecar strips non-digits).
+func (c *Client) RequestPairingCode(ctx context.Context, sessionID, phone string) (*PairingCodeResponse, error) {
+	body := map[string]any{"phone": phone}
+	var out PairingCodeResponse
+	if err := c.post(ctx, "/pairing-code/"+sessionID, body, &out); err != nil {
+		return nil, err
+	}
+	if !out.Success {
+		errMsg := strings.TrimSpace(out.Error)
+		if errMsg == "" {
+			errMsg = "pairing code request failed"
+		}
+		return &out, fmt.Errorf("%s", errMsg)
+	}
+	return &out, nil
 }
 
 func (c *Client) Send(ctx context.Context, sessionID, phone, message string) (*SendResponse, error) {
