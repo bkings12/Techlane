@@ -12,6 +12,7 @@ import com.techlane.pos.data.session.PosPreferences
 import com.techlane.pos.data.session.PreferencesStore
 import com.techlane.pos.domain.model.ChargeRequest
 import com.techlane.pos.domain.model.ChargeTarget
+import com.techlane.pos.domain.model.MpesaReference
 import com.techlane.pos.domain.model.PaymentMethod
 import com.techlane.pos.domain.model.StkFailure
 import com.techlane.pos.domain.model.StkStage
@@ -35,6 +36,8 @@ import javax.inject.Inject
 data class ChargeUiState(
     val amountDigits: String = "",
     val phone: String = "",
+    /** M-Pesa code for a Paybill payment the customer already made. */
+    val reference: String = "",
     val target: ChargeTarget = ChargeTarget.None,
     val method: PaymentMethod = PaymentMethod.MpesaStk,
     val prefs: PosPreferences = PosPreferences(),
@@ -51,11 +54,18 @@ data class ChargeUiState(
     val normalisedPhone: String? get() = Msisdn.normalise(phone)
     val phoneValid: Boolean get() = normalisedPhone != null
 
+    /** Null when the Paybill code is acceptable; only meaningful for Paybill. */
+    val referenceError: String? get() = MpesaReference.validationError(reference)
+
     val canCharge: Boolean
         get() = hasAmount &&
             prefs.tillReady &&
             stage == null &&
-            (method == PaymentMethod.Cash || (phoneValid && mpesaConfigured))
+            when (method) {
+                PaymentMethod.Cash -> true
+                PaymentMethod.Paybill -> referenceError == null
+                PaymentMethod.MpesaStk -> phoneValid && mpesaConfigured
+            }
 
     /** Why the charge button is off, phrased as the next thing to do. */
     val blockedReason: String?
@@ -65,6 +75,9 @@ data class ChargeUiState(
             method == PaymentMethod.MpesaStk && !mpesaConfigured ->
                 "M-Pesa isn't set up for this shop yet. Take cash, or ask an owner to finish setup."
             method == PaymentMethod.MpesaStk && !phoneValid -> "Enter the customer's M-Pesa number."
+            method == PaymentMethod.Paybill && reference.isBlank() ->
+                "Enter the M-Pesa code from the customer's message."
+            method == PaymentMethod.Paybill -> referenceError
             else -> null
         }
 
@@ -95,6 +108,25 @@ class QuickChargeViewModel @Inject constructor(
 
     /** Throttles [syncCatalogIfStale] so returning to the screen repeatedly doesn't refetch every time. */
     private var lastCatalogSyncAtMs = 0L
+
+    /**
+     * Idempotency key for the charge currently on screen.
+     *
+     * Held rather than minted per tap so that a double-tap — or a tap on a
+     * handset that never rendered the result — replays the same charge
+     * server-side instead of creating a second sale. Rotated only when the
+     * operator starts something genuinely new: a fresh sale, or an explicit
+     * retry after a failure (where replaying the failed payment would be wrong).
+     */
+    private var pendingChargeKey: String? = null
+
+    private fun chargeKey(): String = pendingChargeKey ?: UUID.randomUUID().toString().also {
+        pendingChargeKey = it
+    }
+
+    private fun rotateChargeKey() {
+        pendingChargeKey = null
+    }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val products: StateFlow<List<CatalogItemEntity>> =
@@ -157,10 +189,19 @@ class QuickChargeViewModel @Inject constructor(
 
     // -------------------------------------------------------------- entry edits
 
-    fun onAmountChange(digits: String) =
+    fun onAmountChange(digits: String) {
+        // Editing the amount means this is a different charge, so it must not
+        // replay the previous one's correlation and hand back the old payment.
+        rotateChargeKey()
         _state.update { it.copy(amountDigits = digits.filter(Char::isDigit), validationError = null) }
+    }
 
     fun onPhoneChange(value: String) = _state.update { it.copy(phone = value, validationError = null) }
+
+    /** Uppercased as typed — M-Pesa codes are printed uppercase on the SMS. */
+    fun onReferenceChange(value: String) = _state.update {
+        it.copy(reference = MpesaReference.normalise(value).take(10), validationError = null)
+    }
 
     fun onMethodChange(method: PaymentMethod) = _state.update { it.copy(method = method, validationError = null) }
 
@@ -261,7 +302,8 @@ class QuickChargeViewModel @Inject constructor(
             method = current.method,
             phone = current.normalisedPhone,
             target = current.target,
-            idempotencyKey = UUID.randomUUID().toString(),
+            idempotencyKey = chargeKey(),
+            reference = current.reference.takeIf { current.method.needsReference && it.isNotBlank() },
         )
         lastRequest = request
 
@@ -343,6 +385,8 @@ class QuickChargeViewModel @Inject constructor(
         chargeJob?.cancel()
         chargeJob = null
         lastRequest = null
+        // The next customer is a genuinely new sale, so it must not replay this one.
+        rotateChargeKey()
         _state.update {
             it.copy(
                 stage = null,
@@ -350,6 +394,9 @@ class QuickChargeViewModel @Inject constructor(
                 amountDigits = "",
                 target = ChargeTarget.None,
                 phone = if (keepPhone) it.phone else "",
+                // A code belongs to exactly one payment; carrying it forward
+                // would attach the same M-Pesa transaction to a second sale.
+                reference = "",
                 validationError = null,
             )
         }
@@ -363,12 +410,16 @@ class QuickChargeViewModel @Inject constructor(
     }
 
     fun switchToCashAndCharge() {
+        // A different tender is a new payment attempt; replaying the failed
+        // M-Pesa correlation would just hand back the failure.
+        rotateChargeKey()
         _state.update { it.copy(stage = null, method = PaymentMethod.Cash) }
         charge()
     }
 
     fun retryFailed() {
         val failure = (_state.value.stage as? StkStage.Failed)?.reason
+        rotateChargeKey()
         _state.update { it.copy(stage = null) }
         // A bad number is the one failure where re-sending unchanged is pointless.
         if (failure == StkFailure.InvalidNumber) return

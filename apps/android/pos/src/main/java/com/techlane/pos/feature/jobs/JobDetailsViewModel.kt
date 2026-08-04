@@ -19,6 +19,7 @@ import com.techlane.pos.domain.model.JobDetail
 import com.techlane.pos.domain.model.JobPart
 import com.techlane.pos.domain.model.JobPhoto
 import com.techlane.pos.domain.model.JobStatus
+import com.techlane.pos.domain.model.MpesaReference
 import com.techlane.pos.domain.model.PaymentMethod
 import com.techlane.pos.domain.model.PhotoKind
 import com.techlane.pos.domain.model.StkStage
@@ -122,7 +123,7 @@ class JobDetailsViewModel @Inject constructor(
     // sale — see ChargeRepository.chargeRepair. The job is refreshed on success
     // so the balance the screen shows is the server's, never a local guess.
 
-    fun takePayment(method: PaymentMethod) {
+    fun takePayment(method: PaymentMethod, reference: String? = null) {
         val detail = job.value ?: return
         val branchId = _state.value.branchId
         if (branchId == null) {
@@ -131,6 +132,12 @@ class JobDetailsViewModel @Inject constructor(
         }
         if (detail.balanceDue <= 0.0) return
         if (_state.value.paymentStage != null) return
+        if (method.needsReference) {
+            MpesaReference.validationError(reference.orEmpty())?.let { problem ->
+                _state.update { it.copy(error = problem) }
+                return
+            }
+        }
 
         _state.update { it.copy(paymentMethod = method, error = null, message = null) }
         paymentJob?.cancel()
@@ -143,6 +150,7 @@ class JobDetailsViewModel @Inject constructor(
                 phone = detail.customer.phone,
                 label = "${detail.jobCode} · ${detail.device.label}",
                 idempotencyKey = UUID.randomUUID().toString(),
+                reference = reference?.let(MpesaReference::normalise),
             ).collect { stage ->
                 _state.update { it.copy(paymentStage = stage) }
                 // A settled payment changes the balance and can move the job's

@@ -57,10 +57,19 @@ fun TlButton(
         shape = MaterialTheme.shapes.small,
         interactionSource = interaction,
         colors = ButtonDefaults.buttonColors(
-            containerColor = containerColor,
+            // Bright blue on press: a 2% squeeze alone is easy to miss on a
+            // cheap panel, so the colour steps up as well.
+            containerColor = if (pressed && containerColor == MaterialTheme.colorScheme.primary) {
+                TlTheme.colors.brandBright
+            } else {
+                containerColor
+            },
             contentColor = contentColor,
-            disabledContainerColor = containerColor.copy(alpha = 0.35f),
-            disabledContentColor = contentColor.copy(alpha = 0.6f),
+            // A 35% wash of the brand reads as "broken", not "not yet". A
+            // neutral surface with readable text says disabled without
+            // looking like a rendering fault.
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
         elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
         contentPadding = ButtonDefaults.ContentPadding,

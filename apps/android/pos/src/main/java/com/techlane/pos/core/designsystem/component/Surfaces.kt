@@ -85,7 +85,10 @@ fun TlSectionHeader(
             Text(
                 text = title.uppercase(),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // Navy, not grey: section headings are the app's structural
+                // spine and were the single biggest source of the "everything
+                // looks washed out" read.
+                color = TlTheme.colors.brand,
             )
             if (subtitle != null) {
                 Text(
@@ -128,7 +131,9 @@ fun TlListRow(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = leadingTint.copy(alpha = 0.12f),
+                        // A 12% wash of any colour is grey. The tint container
+                        // is a real brand surface, so the glyph reads as blue.
+                        color = MaterialTheme.colorScheme.primaryContainer,
                         modifier = Modifier.size(TlTheme.sizes.avatar),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -149,7 +154,7 @@ fun TlListRow(
                 Text(
                     title,
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = TlTheme.colors.brand,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

@@ -94,6 +94,12 @@ interface TechLaneApi {
     @POST("pos/checkout")
     suspend fun checkout(
         @Body body: CheckoutRequest,
+        /**
+         * The server's replay guard keys off X-Correlation-ID, not
+         * Idempotency-Key — sending only the latter meant every retry minted a
+         * fresh correlation id server-side and created a duplicate sale.
+         */
+        @Header("X-Correlation-ID") correlationId: String,
         @Header("Idempotency-Key") idempotencyKey: String,
     ): CheckoutResponse
 
@@ -108,6 +114,8 @@ interface TechLaneApi {
     @POST("payments")
     suspend fun createPayment(
         @Body body: CreatePaymentRequest,
+        /** See [checkout] — this is the header the server's replay guard reads. */
+        @Header("X-Correlation-ID") correlationId: String,
         @Header("Idempotency-Key") idempotencyKey: String,
     ): PaymentDto
 

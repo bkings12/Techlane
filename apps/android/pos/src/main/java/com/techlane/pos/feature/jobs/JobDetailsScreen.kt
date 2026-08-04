@@ -20,7 +20,9 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,6 +44,7 @@ import com.techlane.pos.core.designsystem.component.TlLoading
 import com.techlane.pos.core.designsystem.component.TlScreen
 import com.techlane.pos.core.designsystem.component.TlSecondaryButton
 import com.techlane.pos.core.designsystem.component.TlStatusPill
+import com.techlane.pos.core.designsystem.component.TlTextField
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.TlTheme
 import com.techlane.pos.core.util.Msisdn
@@ -49,6 +52,7 @@ import com.techlane.pos.core.util.formatKes
 import com.techlane.pos.domain.model.JobAction
 import com.techlane.pos.domain.model.JobDetail
 import com.techlane.pos.domain.model.JobStatus
+import com.techlane.pos.domain.model.MpesaReference
 import com.techlane.pos.domain.model.PaymentMethod
 import com.techlane.pos.domain.model.PhotoKind
 import com.techlane.pos.feature.charge.StkStatusScreen
@@ -90,6 +94,7 @@ fun JobDetailsScreen(
     val partsResults by viewModel.partsResults.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var menuOpen by remember { mutableStateOf(false) }
+    var showPaybillSheet by remember { mutableStateOf(false) }
 
     val detail = job
 
@@ -196,6 +201,7 @@ fun JobDetailsScreen(
             busy = state.paymentStage != null,
             onTakePayment = { viewModel.takePayment(PaymentMethod.MpesaStk) },
             onTakeCash = { viewModel.takePayment(PaymentMethod.Cash) },
+            onRecordPaybill = { showPaybillSheet = true },
         )
 
         PartsCard(
@@ -289,6 +295,17 @@ fun JobDetailsScreen(
                 onTakePhoto(kind)
             },
             onDismiss = viewModel::closeSheet,
+        )
+    }
+
+    if (showPaybillSheet) {
+        PaybillSheet(
+            amount = detail?.balanceDue ?: 0.0,
+            onConfirm = { code ->
+                showPaybillSheet = false
+                viewModel.takePayment(PaymentMethod.Paybill, code)
+            },
+            onDismiss = { showPaybillSheet = false },
         )
     }
 
@@ -421,6 +438,56 @@ private fun CustomerDeviceCard(
 }
 
 /**
+ * Records a Paybill payment the customer has already made. No prompt is sent —
+ * this is bookkeeping, so the only thing it really needs is the code off the
+ * customer's confirmation message to tie the two together.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PaybillSheet(
+    amount: Double,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var code by remember { mutableStateOf("") }
+    val problem = MpesaReference.validationError(code)
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = TlTheme.spacing.gutter)
+                .padding(bottom = TlTheme.spacing.xxl),
+            verticalArrangement = Arrangement.spacedBy(TlTheme.spacing.md),
+        ) {
+            Text("Record Paybill payment", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "For money the customer has already sent to the shop's Paybill. " +
+                    "No prompt goes to their phone.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TlKeyValue("Amount", formatKes(amount), emphasise = true)
+            TlTextField(
+                value = code,
+                onValueChange = { code = MpesaReference.normalise(it).take(10) },
+                label = "M-Pesa code",
+                placeholder = "e.g. QHK7T9XXXX",
+                error = problem.takeIf { code.isNotBlank() },
+                helper = "From the customer's M-Pesa confirmation message",
+                showClear = true,
+            )
+            TlButton(
+                text = "Record payment",
+                onClick = { onConfirm(code) },
+                enabled = problem == null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/**
  * What the customer owes, and the one action that settles it. Hidden entirely
  * on a job with no money attached — an empty totals block on a warranty repair
  * is noise the counter has to read past.
@@ -432,6 +499,7 @@ private fun MoneyCard(
     busy: Boolean,
     onTakePayment: () -> Unit,
     onTakeCash: () -> Unit,
+    onRecordPaybill: () -> Unit,
 ) {
     if (total <= 0.0 && balance <= 0.0) return
     val settled = balance <= 0.0
@@ -457,12 +525,23 @@ private fun MoneyCard(
                 icon = Icons.Outlined.PhoneAndroid,
                 modifier = Modifier.fillMaxWidth(),
             )
-            TlSecondaryButton(
-                text = "Record cash",
-                onClick = onTakeCash,
-                enabled = !busy,
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-            )
+                horizontalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm),
+            ) {
+                TlSecondaryButton(
+                    text = "Cash",
+                    onClick = onTakeCash,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                )
+                TlSecondaryButton(
+                    text = "Paybill",
+                    onClick = onRecordPaybill,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }

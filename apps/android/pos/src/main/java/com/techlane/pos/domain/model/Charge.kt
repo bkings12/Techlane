@@ -39,9 +39,51 @@ sealed interface ChargeTarget {
         }
 }
 
+/**
+ * Wire values mirror `internal/payments` — `mpesa_c2b` is the backend's name
+ * for a Paybill/till payment the customer made themselves, so we adopt it
+ * rather than inventing a "paybill" the server would reject.
+ */
 enum class PaymentMethod(val wire: String, val display: String) {
     MpesaStk("mpesa_stk", "M-Pesa prompt"),
     Cash("cash", "Cash"),
+    Paybill("mpesa_c2b", "Paybill"),
+    ;
+
+    /** Only STK pushes a prompt and then waits on Daraja. */
+    val isPrompted: Boolean get() = this == MpesaStk
+
+    /** Paybill is money already received; we are recording it, not collecting it. */
+    val needsReference: Boolean get() = this == Paybill
+
+    /** Receipt wording, matching what the printed slip should say. */
+    val receiptLabel: String
+        get() = when (this) {
+            MpesaStk -> "M-PESA STK"
+            Cash -> "CASH"
+            Paybill -> "M-PESA PAYBILL"
+        }
+}
+
+/**
+ * Basic shape check for an M-Pesa transaction code (e.g. QHK7T9XXX): ten
+ * alphanumerics, which is what Safaricom issues. Deliberately permissive about
+ * case and surrounding spaces — a technician copying a code off a customer's
+ * phone should not be fighting the field.
+ */
+object MpesaReference {
+    private val PATTERN = Regex("^[A-Z0-9]{10}$")
+
+    fun normalise(input: String): String = input.trim().uppercase()
+
+    fun isValid(input: String): Boolean = PATTERN.matches(normalise(input))
+
+    /** Null when acceptable, otherwise the reason to show under the field. */
+    fun validationError(input: String): String? = when {
+        input.isBlank() -> "Enter the M-Pesa code from the customer's message."
+        !isValid(input) -> "That doesn't look like an M-Pesa code — they are 10 letters and numbers."
+        else -> null
+    }
 }
 
 /** One charge attempt as the UI knows it. */
@@ -57,4 +99,6 @@ data class ChargeRequest(
      * cannot turn one charge into two sales.
      */
     val idempotencyKey: String,
+    /** M-Pesa transaction code, for a Paybill payment the customer already made. */
+    val reference: String? = null,
 )

@@ -63,10 +63,13 @@ class ChargeRepository @Inject constructor(
                     items = listOf(request.target.toLineItem(request.amount)),
                     method = request.method.wire,
                     phone = phone,
-                    // account_reference is left to the server: Daraja caps it at
+                    // For STK the server picks the reference: Daraja caps it at
                     // 12 characters and rejects the longer labels staff pick.
-                    accountReference = null,
+                    // For Paybill it is the customer's own transaction code,
+                    // which the server requires for mpesa_c2b.
+                    accountReference = request.reference,
                 ),
+                correlationId = request.idempotencyKey,
                 idempotencyKey = request.idempotencyKey,
             )
         } catch (e: Exception) {
@@ -89,6 +92,24 @@ class ChargeRepository @Inject constructor(
             markRecord(recordId, "paid", null, null)
             saleId?.let(printers::autoPrintSaleReceiptIfEnabled)
             emit(StkStage.Paid(request.amount, null, saleId))
+            return@flow
+        }
+
+        // Paybill is money the customer already sent, so there is nothing to
+        // wait for either. The server only auto-completes cash and bank
+        // tenders, so the sale is closed here explicitly — otherwise it would
+        // sit in draft forever and never deduct stock.
+        if (request.method == PaymentMethod.Paybill) {
+            val finalSaleId = saleId?.also { id ->
+                runCatching {
+                    if (api.sale(id).status == "draft") {
+                        api.completeSale(id, CompleteSaleRequest(request.locationId))
+                    }
+                }
+            }
+            markRecord(recordId, "paid", request.reference, null)
+            finalSaleId?.let(printers::autoPrintSaleReceiptIfEnabled)
+            emit(StkStage.Paid(request.amount, request.reference, finalSaleId))
             return@flow
         }
 
@@ -143,12 +164,17 @@ class ChargeRepository @Inject constructor(
         phone: String?,
         label: String,
         idempotencyKey: String,
+        reference: String? = null,
     ): Flow<StkStage> = flow {
         emit(StkStage.Sending)
 
         val normalised = phone?.let(Msisdn::normalise)
         if (method == PaymentMethod.MpesaStk && normalised == null) {
             emit(failure(StkFailure.InvalidNumber, "Enter a valid M-Pesa number before sending the prompt.", null))
+            return@flow
+        }
+        if (method == PaymentMethod.Paybill && reference.isNullOrBlank()) {
+            emit(failure(StkFailure.Unknown, "Enter the M-Pesa code before recording a Paybill payment.", null))
             return@flow
         }
 
@@ -163,6 +189,7 @@ class ChargeRepository @Inject constructor(
             phone = normalised,
             target = ChargeTarget.Service(id = null, name = label, price = amount),
             idempotencyKey = idempotencyKey,
+            reference = reference,
         )
         writeRecord(request, idempotencyKey, status = "sent", paymentId = null, saleId = null)
 
@@ -175,7 +202,9 @@ class ChargeRepository @Inject constructor(
                     payableId = repairId,
                     branchId = branchId,
                     phone = normalised,
+                    accountReference = reference,
                 ),
+                correlationId = idempotencyKey,
                 idempotencyKey = idempotencyKey,
             )
         } catch (e: Exception) {
@@ -191,10 +220,11 @@ class ChargeRepository @Inject constructor(
 
         markRecordIds(idempotencyKey, payment.id, null)
 
-        // Cash against a job is settled server-side the moment it is recorded.
-        if (method == PaymentMethod.Cash) {
-            markRecord(idempotencyKey, "paid", null, null)
-            emit(StkStage.Paid(amount, null, null))
+        // Cash and Paybill against a job are money already received, so there
+        // is no prompt to wait on — the server records them settled outright.
+        if (!method.isPrompted) {
+            markRecord(idempotencyKey, "paid", reference, null)
+            emit(StkStage.Paid(amount, reference, null))
             return@flow
         }
 

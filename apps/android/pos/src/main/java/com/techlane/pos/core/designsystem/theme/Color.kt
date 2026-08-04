@@ -6,74 +6,90 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 /**
- * Raw brand values from design-tokens/tokens.json. Screens never reach for
- * these — they read [androidx.compose.material3.MaterialTheme.colorScheme]
- * or [TlTheme.colors] instead, so a future retint only ever happens here.
+ * TechLane brand values. Screens never reach for these — they read
+ * [androidx.compose.material3.MaterialTheme.colorScheme] or [TlTheme.colors]
+ * instead, so a retint only ever happens here.
+ *
+ * Navy anchors headings and totals; Blue carries every primary action; Bright
+ * is the pressed/active step above it; Amber is an accent for "needs
+ * attention" and nothing else.
  */
 internal object BrandPalette {
-    val Navy = Color(0xFF060386)
-    val NavyDark = Color(0xFF040257)
-    val NavyTint = Color(0xFFE6E5FA)
-    val NavyLight = Color(0xFFA9A7F0)
+    val Navy = Color(0xFF102A43)
+    val Blue = Color(0xFF1565C0)
+    val BlueBright = Color(0xFF2583E8)
+    val BlueTint = Color(0xFFEEF6FF)
+    val BlueTintStrong = Color(0xFFD6E9FC)
 
-    val Gold = Color(0xFFF2BE2A)
-    val GoldDark = Color(0xFFC69C22)
-    val GoldTint = Color(0xFFFCF0CD)
+    val Amber = Color(0xFFF59E0B)
+    val AmberTint = Color(0xFFFFFBEB)
+    val AmberDeep = Color(0xFF92400E)
 
-    val Ink = Color(0xFF0F172A)
-    val Slate700 = Color(0xFF334155)
-    val Slate600 = Color(0xFF475569)
-    val Slate500 = Color(0xFF64748B)
-    val Slate300 = Color(0xFFCBD5E1)
-    val Slate200 = Color(0xFFE2E8F0)
-    val Slate100 = Color(0xFFEEF2F7)
-    val Canvas = Color(0xFFF5F7FB)
+    /** Body copy. Near-black with a cool cast, never pure #000. */
+    val Ink = Color(0xFF172033)
+    val TextSecondary = Color(0xFF667085)
+    val TextMuted = Color(0xFF98A2B3)
 
-    val Success = Color(0xFF059669)
-    val Warning = Color(0xFFD97706)
+    val Border = Color(0xFFE2E8F0)
+    val BorderStrong = Color(0xFFCBD5E1)
+    val SurfaceSecondary = Color(0xFFF8FAFC)
+    val Canvas = Color(0xFFF6F8FB)
+
+    val Success = Color(0xFF16A34A)
+    val SuccessTint = Color(0xFFF0FDF4)
+    val SuccessDeep = Color(0xFF14532D)
     val Danger = Color(0xFFDC2626)
-    val Info = Color(0xFF4F46E5)
+    val DangerTint = Color(0xFFFEF2F2)
+    val DangerDeep = Color(0xFF7F1D1D)
+    /** Diagnosed/in-review states, kept distinct from the brand blue. */
+    val Violet = Color(0xFF7C3AED)
+    val VioletTint = Color(0xFFF5F3FF)
+    val VioletDeep = Color(0xFF4C1D95)
 }
 
 val TlLightColorScheme = lightColorScheme(
-    primary = BrandPalette.Navy,
+    // Blue, not Navy, is primary: it is the action colour, and Navy is dark
+    // enough that a screen full of it reads as black rather than as a brand.
+    primary = BrandPalette.Blue,
     onPrimary = Color.White,
-    primaryContainer = BrandPalette.NavyTint,
-    onPrimaryContainer = BrandPalette.NavyDark,
-    inversePrimary = BrandPalette.NavyLight,
-    secondary = BrandPalette.GoldDark,
-    onSecondary = Color(0xFF1D1704),
-    secondaryContainer = BrandPalette.GoldTint,
-    onSecondaryContainer = Color(0xFF5C470A),
-    tertiary = BrandPalette.Gold,
-    onTertiary = Color(0xFF1D1704),
-    tertiaryContainer = BrandPalette.GoldTint,
-    onTertiaryContainer = Color(0xFF5C470A),
+    primaryContainer = BrandPalette.BlueTint,
+    onPrimaryContainer = BrandPalette.Blue,
+    inversePrimary = BrandPalette.BlueBright,
+    secondary = BrandPalette.Navy,
+    onSecondary = Color.White,
+    secondaryContainer = BrandPalette.BlueTintStrong,
+    onSecondaryContainer = BrandPalette.Navy,
+    tertiary = BrandPalette.Amber,
+    onTertiary = Color.White,
+    tertiaryContainer = BrandPalette.AmberTint,
+    onTertiaryContainer = BrandPalette.AmberDeep,
     background = BrandPalette.Canvas,
-    onBackground = BrandPalette.Ink,
+    onBackground = BrandPalette.Navy,
     surface = Color.White,
     onSurface = BrandPalette.Ink,
-    surfaceVariant = BrandPalette.Slate100,
-    onSurfaceVariant = BrandPalette.Slate600,
+    surfaceVariant = BrandPalette.SurfaceSecondary,
+    // Secondary text is a readable slate, not the near-invisible grey Material
+    // defaults to — this single slot drives most of the app's body copy.
+    onSurfaceVariant = BrandPalette.TextSecondary,
     surfaceContainerLowest = Color.White,
-    surfaceContainerLow = Color(0xFFFBFCFE),
-    surfaceContainer = BrandPalette.Canvas,
-    surfaceContainerHigh = BrandPalette.Slate100,
-    surfaceContainerHighest = Color(0xFFE5EAF1),
-    inverseSurface = Color(0xFF111A2B),
-    inverseOnSurface = Color(0xFFF2F4F7),
-    outline = BrandPalette.Slate300,
-    outlineVariant = BrandPalette.Slate200,
+    surfaceContainerLow = Color.White,
+    surfaceContainer = BrandPalette.SurfaceSecondary,
+    surfaceContainerHigh = BrandPalette.Canvas,
+    surfaceContainerHighest = BrandPalette.BlueTint,
+    inverseSurface = BrandPalette.Navy,
+    inverseOnSurface = Color.White,
+    outline = BrandPalette.BorderStrong,
+    outlineVariant = BrandPalette.Border,
     error = BrandPalette.Danger,
     onError = Color.White,
-    errorContainer = Color(0xFFFEE2E2),
-    onErrorContainer = Color(0xFF7F1D1D),
-    scrim = Color(0xFF060B18),
+    errorContainer = BrandPalette.DangerTint,
+    onErrorContainer = BrandPalette.DangerDeep,
+    scrim = BrandPalette.Navy,
 )
 
 /**
- * Semantics Material 3 has no slot for: pass/fail/waiting states, money emphasis,
- * and the hairline used on cards. Read through [TlTheme.colors].
+ * Semantics Material 3 has no slot for: pass/fail/waiting states, money
+ * emphasis, and the hairline used on cards. Read through [TlTheme.colors].
  */
 @Immutable
 data class TlSemanticColors(
@@ -90,8 +106,14 @@ data class TlSemanticColors(
     val onInfoContainer: Color,
     val accent: Color,
     val onAccent: Color,
+    val violet: Color,
+    val violetContainer: Color,
+    val onVioletContainer: Color,
     val hairline: Color,
     val elevatedSurface: Color,
+    /** Navy — headings, totals, and anything that should read as "TechLane". */
+    val brand: Color,
+    val brandBright: Color,
     val moneyPositive: Color,
     val scrimHeavy: Color,
 )
@@ -99,21 +121,26 @@ data class TlSemanticColors(
 val LightSemanticColors = TlSemanticColors(
     success = BrandPalette.Success,
     onSuccess = Color.White,
-    successContainer = Color(0xFFD1FAE5),
-    onSuccessContainer = Color(0xFF064E3B),
-    warning = BrandPalette.Warning,
+    successContainer = BrandPalette.SuccessTint,
+    onSuccessContainer = BrandPalette.SuccessDeep,
+    warning = BrandPalette.Amber,
     onWarning = Color.White,
-    warningContainer = Color(0xFFFEF3C7),
-    onWarningContainer = Color(0xFF78350F),
-    info = BrandPalette.Info,
-    infoContainer = Color(0xFFE0E7FF),
-    onInfoContainer = Color(0xFF312E81),
-    accent = BrandPalette.Gold,
-    onAccent = Color(0xFF1D1704),
-    hairline = BrandPalette.Slate200,
+    warningContainer = BrandPalette.AmberTint,
+    onWarningContainer = BrandPalette.AmberDeep,
+    info = BrandPalette.Blue,
+    infoContainer = BrandPalette.BlueTint,
+    onInfoContainer = BrandPalette.Blue,
+    accent = BrandPalette.Amber,
+    onAccent = Color.White,
+    violet = BrandPalette.Violet,
+    violetContainer = BrandPalette.VioletTint,
+    onVioletContainer = BrandPalette.VioletDeep,
+    hairline = BrandPalette.Border,
     elevatedSurface = Color.White,
+    brand = BrandPalette.Navy,
+    brandBright = BrandPalette.BlueBright,
     moneyPositive = BrandPalette.Success,
-    scrimHeavy = Color(0xE60B1220),
+    scrimHeavy = Color(0xE6102A43),
 )
 
 internal val LocalTlSemanticColors = staticCompositionLocalOf { LightSemanticColors }

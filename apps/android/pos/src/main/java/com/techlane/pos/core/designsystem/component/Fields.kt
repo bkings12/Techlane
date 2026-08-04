@@ -3,6 +3,8 @@ package com.techlane.pos.core.designsystem.component
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
@@ -15,6 +17,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.ImeAction
@@ -47,11 +51,20 @@ fun TlTextField(
     visualTransformation: VisualTransformation = VisualTransformation.None,
     showClear: Boolean = false,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(TlTheme.spacing.xs)) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // The label follows the field: brand blue when focused, danger on
+            // error, quiet otherwise — so the active input is unmistakable.
+            color = when {
+                error != null -> MaterialTheme.colorScheme.error
+                focused -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
         )
         OutlinedTextField(
             value = value,
@@ -87,6 +100,7 @@ fun TlTextField(
                 }
                 else -> null
             },
+            interactionSource = interaction,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction),
             visualTransformation = visualTransformation,
             shape = MaterialTheme.shapes.small,
@@ -96,6 +110,9 @@ fun TlTextField(
                 focusedContainerColor = MaterialTheme.colorScheme.surface,
                 unfocusedContainerColor = MaterialTheme.colorScheme.surface,
                 disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                cursorColor = MaterialTheme.colorScheme.primary,
+                focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
             ),
         )
         val message = error ?: helper

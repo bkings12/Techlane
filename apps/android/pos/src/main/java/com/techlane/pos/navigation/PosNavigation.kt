@@ -354,8 +354,11 @@ private fun BottomBar(
                     Surface(
                         onClick = { onSelect(tab) },
                         shape = PillShape,
+                        // A solid brand-tinted pill rather than a 12% wash of
+                        // it — the selected tab has to be obvious at a glance
+                        // on a bright shop floor.
                         color = if (selected) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            MaterialTheme.colorScheme.primaryContainer
                         } else {
                             androidx.compose.ui.graphics.Color.Transparent
                         },

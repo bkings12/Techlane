@@ -204,4 +204,6 @@ data class CreatePaymentRequest(
     @SerialName("payable_id") val payableId: String,
     @SerialName("branch_id") val branchId: String? = null,
     val phone: String? = null,
+    /** Required by the server for mpesa_c2b — the customer's transaction code. */
+    @SerialName("account_reference") val accountReference: String? = null,
 )

@@ -143,9 +143,11 @@ fun TlTopBar(
         actions = actions,
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.background,
-            titleContentColor = MaterialTheme.colorScheme.onBackground,
-            actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+            titleContentColor = TlTheme.colors.brand,
+            // Bar actions are real controls, so they carry the action colour
+            // rather than the grey Material hands out by default.
+            actionIconContentColor = MaterialTheme.colorScheme.primary,
+            navigationIconContentColor = MaterialTheme.colorScheme.primary,
         ),
     )
 }
@@ -180,7 +182,7 @@ fun TlIconBubble(
 ) {
     Surface(
         shape = com.techlane.pos.core.designsystem.theme.PillShape,
-        color = tint.copy(alpha = 0.12f),
+        color = MaterialTheme.colorScheme.primaryContainer,
         modifier = modifier.size(size),
     ) {
         Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {

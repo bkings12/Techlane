@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.LocalAtm
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ShoppingBag
@@ -54,6 +55,7 @@ import com.techlane.pos.core.designsystem.component.TlDivider
 import com.techlane.pos.core.designsystem.component.TlPhoneField
 import com.techlane.pos.core.designsystem.component.TlScreen
 import com.techlane.pos.core.designsystem.component.TlStepper
+import com.techlane.pos.core.designsystem.component.TlTextField
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.PillShape
 import com.techlane.pos.core.designsystem.theme.TlTheme
@@ -115,6 +117,7 @@ fun QuickChargeScreen(
                 text = when (state.method) {
                     PaymentMethod.MpesaStk -> "Send M-Pesa prompt · ${formatKes(state.amount)}"
                     PaymentMethod.Cash -> "Record cash · ${formatKes(state.amount)}"
+                    PaymentMethod.Paybill -> "Record Paybill · ${formatKes(state.amount)}"
                 },
                 onClick = viewModel::charge,
                 enabled = state.canCharge,
@@ -147,8 +150,8 @@ fun QuickChargeScreen(
             },
             label = "methodFields",
         ) { method ->
-            if (method == PaymentMethod.MpesaStk) {
-                TlPhoneField(
+            when (method) {
+                PaymentMethod.MpesaStk -> TlPhoneField(
                     value = state.phone,
                     onValueChange = viewModel::onPhoneChange,
                     error = if (state.phone.isNotBlank() && !state.phoneValid) {
@@ -158,8 +161,34 @@ fun QuickChargeScreen(
                     },
                     helper = state.normalisedPhone?.let { "Prompt goes to ${Msisdn.formatLocal(it)}" },
                 )
-            } else {
-                Spacer(Modifier.height(0.dp))
+
+                // Paybill records money the customer has already sent, so the
+                // code off their confirmation SMS is what ties this sale to it.
+                PaymentMethod.Paybill -> Column(
+                    verticalArrangement = Arrangement.spacedBy(TlTheme.spacing.md),
+                ) {
+                    TlTextField(
+                        value = state.reference,
+                        onValueChange = viewModel::onReferenceChange,
+                        label = "M-Pesa code",
+                        placeholder = "e.g. QHK7T9XXXX",
+                        error = state.referenceError.takeIf { state.reference.isNotBlank() },
+                        helper = "From the customer's M-Pesa confirmation message",
+                        showClear = true,
+                    )
+                    TlPhoneField(
+                        value = state.phone,
+                        onValueChange = viewModel::onPhoneChange,
+                        label = "Customer phone (optional)",
+                        error = if (state.phone.isNotBlank() && !state.phoneValid) {
+                            "That doesn't look like a Kenyan mobile number."
+                        } else {
+                            null
+                        },
+                    )
+                }
+
+                PaymentMethod.Cash -> Spacer(Modifier.height(0.dp))
             }
         }
 
@@ -238,7 +267,7 @@ private fun AmountCard(
 
         Row(horizontalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm), modifier = Modifier.fillMaxWidth()) {
             MethodChip(
-                label = "M-Pesa prompt",
+                label = "Prompt",
                 icon = Icons.Outlined.PhoneAndroid,
                 selected = method == PaymentMethod.MpesaStk,
                 onClick = { onMethodChange(PaymentMethod.MpesaStk) },
@@ -249,6 +278,13 @@ private fun AmountCard(
                 icon = Icons.Outlined.LocalAtm,
                 selected = method == PaymentMethod.Cash,
                 onClick = { onMethodChange(PaymentMethod.Cash) },
+                modifier = Modifier.weight(1f),
+            )
+            MethodChip(
+                label = "Paybill",
+                icon = Icons.AutoMirrored.Outlined.ReceiptLong,
+                selected = method == PaymentMethod.Paybill,
+                onClick = { onMethodChange(PaymentMethod.Paybill) },
                 modifier = Modifier.weight(1f),
             )
         }
