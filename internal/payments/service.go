@@ -438,11 +438,25 @@ func (s *Service) ConfirmMpesaWebhook(ctx context.Context, tenantID, paymentID u
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `
+	// Guarded on status, not just the read above: a webhook callback and a
+	// manual/scheduled reconcile can both reach this point for the same
+	// payment within the same window (both see it as not-yet-confirmed before
+	// either writes). Without this, both would run the allocation and publish
+	// steps below, and the customer would be thanked twice for one payment.
+	tag, err := tx.Exec(ctx, `
 		UPDATE payments.payments SET status = 'confirmed', provider_ref = $1, updated_at = now(), version = version + 1
-		WHERE id = $2`, storeRef, paymentID)
+		WHERE id = $2 AND status NOT IN ('allocated', 'confirmed')`, storeRef, paymentID)
 	if err != nil {
 		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		// Lost the race — someone else's confirm already landed. Their
+		// codepath owns the allocation and the publish; ours must not repeat
+		// either. Still worth another pass at attaching the customer / completing
+		// the sale in case the winner's own attempt hit a transient failure.
+		_ = tx.Rollback(ctx)
+		s.afterDigitalPaymentSettled(ctx, tenantID, paymentID, method, uuid.Nil)
+		return s.GetPayment(ctx, tenantID, paymentID)
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE payments.payments SET status = 'allocated', updated_at = now(), version = version + 1
