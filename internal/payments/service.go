@@ -370,6 +370,12 @@ func (s *Service) CreatePayment(ctx context.Context, in CreatePaymentInput) (*Pa
 		out.Status = "initiated"
 	}
 	s.notifyPayableHooks(ctx, in.TenantID, id, in.ActorID)
+	// Cash (and store credit) settle in this request — fire the same
+	// payment.confirmed path digital methods use after webhook allocation so
+	// thank-you SMS/WhatsApp and loyalty run once per confirmed payment.
+	if IsCashMethod(in.Method) || in.Method == "store_credit" {
+		s.publishPaymentConfirmed(ctx, in.TenantID, id, in.ActorID, in.CorrID)
+	}
 	if IsCashMethod(in.Method) && in.CorrID != uuid.Nil {
 		s.recordCashIdempotency(ctx, in.TenantID, in.CorrID, in.BodyHash, out)
 	}
@@ -711,16 +717,19 @@ func (s *Service) ListPaymentsForPayable(ctx context.Context, tenantID uuid.UUID
 	// same payment twice. Use LATERAL subqueries capped at one row each to guarantee a
 	// single result row per payment regardless of how many child rows exist.
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.id, p.method, p.amount::float8, p.status,
-		       COALESCE(stk.checkout_request_id, ''), COALESCE(stk.phone, c2b.msisdn, '')
+		SELECT p.id, p.method, p.amount::float8, p.status, p.created_at,
+		       COALESCE(p.provider_ref, ''),
+		       COALESCE(stk.checkout_request_id, ''),
+		       COALESCE(stk.phone, c2b.msisdn, ''),
+		       COALESCE(stk.account_reference, c2b.bill_ref_number, '')
 		FROM payments.payments p
 		LEFT JOIN LATERAL (
-			SELECT checkout_request_id, phone FROM payments.mpesa_stk_transactions
+			SELECT checkout_request_id, phone, account_reference FROM payments.mpesa_stk_transactions
 			WHERE payment_id = p.id
 			ORDER BY created_at DESC LIMIT 1
 		) stk ON true
 		LEFT JOIN LATERAL (
-			SELECT msisdn FROM payments.mpesa_c2b_transactions
+			SELECT msisdn, bill_ref_number FROM payments.mpesa_c2b_transactions
 			WHERE payment_id = p.id AND status IS DISTINCT FROM 'superseded'
 			ORDER BY created_at DESC LIMIT 1
 		) c2b ON true
@@ -737,8 +746,16 @@ func (s *Service) ListPaymentsForPayable(ctx context.Context, tenantID uuid.UUID
 	var items []Payment
 	for rows.Next() {
 		var p Payment
-		if err := rows.Scan(&p.ID, &p.Method, &p.Amount, &p.Status, &p.CheckoutRequestID, &p.Phone); err != nil {
+		var providerRef string
+		if err := rows.Scan(
+			&p.ID, &p.Method, &p.Amount, &p.Status, &p.CreatedAt,
+			&providerRef, &p.CheckoutRequestID, &p.Phone, &p.AccountRef,
+		); err != nil {
 			return nil, err
+		}
+		// Prefer M-Pesa receipt / provider ref when present; bill ref is fallback.
+		if providerRef != "" {
+			p.AccountRef = providerRef
 		}
 		items = append(items, p)
 	}

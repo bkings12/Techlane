@@ -170,12 +170,16 @@ data class PaymentDto(
     @SerialName("checkout_request_id") val checkoutRequestId: String = "",
     val phone: String = "",
     @SerialName("account_reference") val accountReference: String = "",
+    @SerialName("provider_ref") val providerRef: String = "",
     @SerialName("payable_type") val payableType: String = "",
     @SerialName("payable_id") val payableId: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
 ) {
     val isSettled: Boolean get() = status == "allocated" || status == "confirmed"
     val isFailed: Boolean get() = status == "failed" || status == "cancelled"
+    /** Customer-facing M-Pesa code when present, else bill/account ref. */
+    val displayReference: String
+        get() = providerRef.ifBlank { accountReference }
 }
 
 @Serializable
@@ -237,6 +241,40 @@ data class CreatePaymentRequest(
     @SerialName("payable_id") val payableId: String,
     @SerialName("branch_id") val branchId: String? = null,
     val phone: String? = null,
-    /** Required by the server for mpesa_c2b — the customer's transaction code. */
+    /** Bill ref for C2B (job code) or optional TransID for till Paybill. */
     @SerialName("account_reference") val accountReference: String? = null,
+)
+
+@Serializable
+data class C2bTransactionDto(
+    val id: String,
+    @SerialName("payment_id") val paymentId: String? = null,
+    @SerialName("trans_id") val transId: String = "",
+    val amount: Double = 0.0,
+    @SerialName("business_shortcode") val businessShortcode: String = "",
+    @SerialName("bill_ref_number") val billRefNumber: String = "",
+    val msisdn: String = "",
+    val status: String = "",
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+@Serializable
+data class MatchC2bRequest(@SerialName("payment_id") val paymentId: String)
+
+@Serializable
+data class HandoverRequest(
+    @SerialName("collected_by_name") val collectedByName: String,
+    val relationship: String = "self",
+    @SerialName("id_number") val idNumber: String? = null,
+    val note: String? = null,
+    @SerialName("otp_code") val otpCode: String? = null,
+    @SerialName("pickup_code") val pickupCode: String? = null,
+)
+
+@Serializable
+data class HandoverDto(
+    val id: String = "",
+    @SerialName("collected_by_name") val collectedByName: String = "",
+    val relationship: String = "",
+    @SerialName("verification_method") val verificationMethod: String = "",
 )

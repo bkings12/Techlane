@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -165,6 +166,11 @@ class ChargeRepository @Inject constructor(
         label: String,
         idempotencyKey: String,
         reference: String? = null,
+        /**
+         * Job code used as the C2B bill reference so Safaricom Paybill
+         * confirmations can auto-match this payment. Required for Paybill.
+         */
+        jobCode: String? = null,
     ): Flow<StkStage> = flow {
         emit(StkStage.Sending)
 
@@ -173,8 +179,15 @@ class ChargeRepository @Inject constructor(
             emit(failure(StkFailure.InvalidNumber, "Enter a valid M-Pesa number before sending the prompt.", null))
             return@flow
         }
-        if (method == PaymentMethod.Paybill && reference.isNullOrBlank()) {
-            emit(failure(StkFailure.Unknown, "Enter the M-Pesa code before recording a Paybill payment.", null))
+        // C2B needs a bill ref the customer typed (or we told them). The job
+        // code is that ref — not an optional TransID paste.
+        val billRef = when (method) {
+            PaymentMethod.Paybill -> jobCode?.trim()?.takeIf { it.isNotEmpty() }
+                ?: reference?.trim()?.takeIf { it.isNotEmpty() }
+            else -> reference
+        }
+        if (method == PaymentMethod.Paybill && billRef.isNullOrBlank()) {
+            emit(failure(StkFailure.Unknown, "Missing job code for Paybill account reference.", null))
             return@flow
         }
 
@@ -189,7 +202,7 @@ class ChargeRepository @Inject constructor(
             phone = normalised,
             target = ChargeTarget.Service(id = null, name = label, price = amount),
             idempotencyKey = idempotencyKey,
-            reference = reference,
+            reference = billRef,
         )
         writeRecord(request, idempotencyKey, status = "sent", paymentId = null, saleId = null, repairId = repairId)
 
@@ -202,7 +215,7 @@ class ChargeRepository @Inject constructor(
                     payableId = repairId,
                     branchId = branchId,
                     phone = normalised,
-                    accountReference = reference,
+                    accountReference = billRef,
                 ),
                 correlationId = idempotencyKey,
                 idempotencyKey = idempotencyKey,
@@ -220,11 +233,12 @@ class ChargeRepository @Inject constructor(
 
         markRecordIds(idempotencyKey, payment.id, null)
 
-        // Cash and Paybill against a job are money already received, so there
-        // is no prompt to wait on — the server records them settled outright.
-        if (!method.isPrompted) {
-            markRecord(idempotencyKey, "paid", reference, null)
-            emit(StkStage.Paid(amount, reference, null))
+        // Cash settles immediately on the server (confirmed). Paybill/C2B stays
+        // initiated until Safaricom confirms or staff match an unmatched row —
+        // never treat "accepted" as paid.
+        if (method == PaymentMethod.Cash) {
+            markRecord(idempotencyKey, "paid", billRef, null)
+            emit(StkStage.Paid(amount, billRef, null))
             return@flow
         }
 
@@ -249,6 +263,33 @@ class ChargeRepository @Inject constructor(
                 locationId = "",
                 fallbackAmount = amount,
             ),
+        )
+    }
+
+    /**
+     * Creates an initiated C2B payment against a repair so an unmatched Paybill
+     * row can be linked via MatchC2B. Does not poll — caller matches next.
+     */
+    suspend fun createRepairPaymentPending(
+        repairId: String,
+        branchId: String,
+        amount: Double,
+        jobCode: String,
+        phone: String?,
+    ): PaymentDto {
+        val key = UUID.randomUUID().toString()
+        return api.createPayment(
+            body = CreatePaymentRequest(
+                method = PaymentMethod.Paybill.wire,
+                amount = amount,
+                payableType = "repair",
+                payableId = repairId,
+                branchId = branchId,
+                phone = phone?.let(Msisdn::normalise),
+                accountReference = jobCode,
+            ),
+            correlationId = key,
+            idempotencyKey = key,
         )
     }
 

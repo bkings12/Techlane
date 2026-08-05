@@ -44,6 +44,7 @@ import com.techlane.pos.core.designsystem.component.TlLoading
 import com.techlane.pos.core.designsystem.component.TlScreen
 import com.techlane.pos.core.designsystem.component.TlSecondaryButton
 import com.techlane.pos.core.designsystem.component.TlStatusPill
+import com.techlane.pos.core.designsystem.component.TlTextButton
 import com.techlane.pos.core.designsystem.component.TlTextField
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.TlTheme
@@ -52,12 +53,12 @@ import com.techlane.pos.core.util.formatKes
 import com.techlane.pos.domain.model.JobAction
 import com.techlane.pos.domain.model.JobDetail
 import com.techlane.pos.domain.model.JobStatus
-import com.techlane.pos.domain.model.MpesaReference
-import com.techlane.pos.domain.model.PaymentMethod
 import com.techlane.pos.domain.model.PhotoKind
+import com.techlane.pos.domain.model.StkStage
 import com.techlane.pos.feature.charge.StkStatusScreen
 import com.techlane.pos.feature.jobs.components.AddServiceSheet
 import com.techlane.pos.feature.jobs.components.ApprovalCard
+import com.techlane.pos.feature.jobs.components.CollectHandoverSheet
 import com.techlane.pos.feature.jobs.components.CustomerUpdateSheet
 import com.techlane.pos.feature.jobs.components.DiagnosisSheet
 import com.techlane.pos.feature.jobs.components.EstimateSheet
@@ -70,6 +71,7 @@ import com.techlane.pos.feature.jobs.components.RepairPhotoGallery
 import com.techlane.pos.feature.jobs.components.RepairTimeline
 import com.techlane.pos.feature.jobs.components.StatusPickerBottomSheet
 import com.techlane.pos.feature.jobs.components.SyncStatusIndicator
+import com.techlane.pos.feature.jobs.components.TakePaymentSheet
 import com.techlane.pos.feature.jobs.components.TechnicianPicker
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -95,7 +97,6 @@ fun JobDetailsScreen(
     val partsResults by viewModel.partsResults.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var menuOpen by remember { mutableStateOf(false) }
-    var showPaybillSheet by remember { mutableStateOf(false) }
 
     val detail = job
 
@@ -198,11 +199,15 @@ fun JobDetailsScreen(
 
         MoneyCard(
             total = detail.amountDue,
+            paid = detail.paidTotal,
             balance = detail.balanceDue,
-            busy = state.paymentStage != null,
-            onTakePayment = { viewModel.takePayment(PaymentMethod.MpesaStk) },
-            onTakeCash = { viewModel.takePayment(PaymentMethod.Cash) },
-            onRecordPaybill = { showPaybillSheet = true },
+            methodSummary = paymentMethodSummary(state.payments),
+            payments = state.payments,
+            unmatchedC2b = state.unmatchedC2b,
+            busy = state.paymentStage != null || state.busy,
+            onTakePayment = viewModel::openTakePayment,
+            onMatchC2b = viewModel::matchC2b,
+            onPrintReceipt = viewModel::reprintFinalReceipt,
         )
 
         LineItemsCard(
@@ -261,8 +266,10 @@ fun JobDetailsScreen(
                 } else {
                     null
                 },
+                balanceDue = it.balanceDue,
                 onSelect = viewModel::changeStatus,
                 onRequestApproval = { viewModel.openSheet(JobSheet.Approval) },
+                onTakePayment = viewModel::openTakePayment,
                 onDismiss = viewModel::closeSheet,
             )
         }
@@ -336,27 +343,40 @@ fun JobDetailsScreen(
             },
             onDismiss = viewModel::closeSheet,
         )
-    }
 
-    if (showPaybillSheet) {
-        PaybillSheet(
-            amount = detail?.balanceDue ?: 0.0,
-            onConfirm = { code ->
-                showPaybillSheet = false
-                viewModel.takePayment(PaymentMethod.Paybill, code)
-            },
-            onDismiss = { showPaybillSheet = false },
-        )
+        JobSheet.TakePayment -> detail?.let {
+            TakePaymentSheet(
+                balanceDue = it.balanceDue,
+                customerPhone = it.customer.phone,
+                jobCode = it.jobCode,
+                onConfirm = viewModel::takePayment,
+                onDismiss = viewModel::closeSheet,
+            )
+        }
+
+        JobSheet.Collect -> detail?.let {
+            CollectHandoverSheet(
+                customerName = it.customer.name,
+                balanceDue = it.balanceDue,
+                canVouch = state.canReleaseUnverified,
+                sendingCode = state.sendingHandoverCode,
+                onConfirm = viewModel::recordHandover,
+                onSendCode = viewModel::sendHandoverCode,
+                onTakePayment = viewModel::openTakePayment,
+                onDismiss = viewModel::closeSheet,
+            )
+        }
     }
 
     // The payment result covers this screen rather than navigating away, so
     // "Done" simply closes it and the operator is already back on the job —
     // no back-stack unwinding, and no way to land on a stale payment screen.
     state.paymentStage?.let { stage ->
+        val balanceAfter = detail?.balanceDue ?: 0.0
         StkStatusScreen(
             stage = stage,
-            amount = detail?.balanceDue ?: 0.0,
-            phone = detail?.customer?.phone,
+            amount = state.paymentAmount.takeIf { it > 0 } ?: (detail?.balanceDue ?: 0.0),
+            phone = state.paymentPhone ?: detail?.customer?.phone,
             label = detail?.let { "${it.jobCode} · ${it.device.label}" }.orEmpty(),
             method = state.paymentMethod,
             canForceReconcile = state.canForceReconcile,
@@ -370,9 +390,27 @@ fun JobDetailsScreen(
             onStopWaiting = viewModel::dismissPayment,
             onDone = viewModel::dismissPayment,
             onDismiss = viewModel::dismissPayment,
-            // Already on the job, so "View job" would be a no-op button; the
-            // Done action is the honest one here.
             onViewJob = null,
+            onMarkCollected = if (stage is StkStage.Paid &&
+                state.offerCollectAfterPay
+            ) {
+                {
+                    viewModel.dismissPayment()
+                    viewModel.openCollect()
+                }
+            } else {
+                null
+            },
+            onTakeAnotherPayment = if (stage is StkStage.Paid &&
+                !state.offerCollectAfterPay && balanceAfter > 0.009
+            ) {
+                {
+                    viewModel.dismissPayment()
+                    viewModel.openTakePayment()
+                }
+            } else {
+                null
+            },
         )
     }
 }
@@ -478,56 +516,6 @@ private fun CustomerDeviceCard(
 }
 
 /**
- * Records a Paybill payment the customer has already made. No prompt is sent —
- * this is bookkeeping, so the only thing it really needs is the code off the
- * customer's confirmation message to tie the two together.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PaybillSheet(
-    amount: Double,
-    onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var code by remember { mutableStateOf("") }
-    val problem = MpesaReference.validationError(code)
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = TlTheme.spacing.gutter)
-                .padding(bottom = TlTheme.spacing.xxl),
-            verticalArrangement = Arrangement.spacedBy(TlTheme.spacing.md),
-        ) {
-            Text("Record Paybill payment", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "For money the customer has already sent to the shop's Paybill. " +
-                    "No prompt goes to their phone.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            TlKeyValue("Amount", formatKes(amount), emphasise = true)
-            TlTextField(
-                value = code,
-                onValueChange = { code = MpesaReference.normalise(it).take(10) },
-                label = "M-Pesa code",
-                placeholder = "e.g. QHK7T9XXXX",
-                error = problem.takeIf { code.isNotBlank() },
-                helper = "From the customer's M-Pesa confirmation message",
-                showClear = true,
-            )
-            TlButton(
-                text = "Record payment",
-                onClick = { onConfirm(code) },
-                enabled = problem == null,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-    }
-}
-
-/**
  * What the customer owes, and the one action that settles it. Hidden entirely
  * on a job with no money attached — an empty totals block on a warranty repair
  * is noise the counter has to read past.
@@ -535,55 +523,135 @@ private fun PaybillSheet(
 @Composable
 private fun MoneyCard(
     total: Double,
+    paid: Double,
     balance: Double,
+    methodSummary: String?,
+    payments: List<com.techlane.pos.data.remote.dto.PaymentDto>,
+    unmatchedC2b: List<com.techlane.pos.data.remote.dto.C2bTransactionDto>,
     busy: Boolean,
     onTakePayment: () -> Unit,
-    onTakeCash: () -> Unit,
-    onRecordPaybill: () -> Unit,
+    onMatchC2b: (String) -> Unit,
+    onPrintReceipt: () -> Unit,
 ) {
-    if (total <= 0.0 && balance <= 0.0) return
-    val settled = balance <= 0.0
+    if (total <= 0.0 && balance <= 0.0 && payments.isEmpty()) return
+    val settled = balance <= 0.009
     TlCard {
-        Text("Money", style = MaterialTheme.typography.titleSmall)
+        Text("PAYMENT", style = MaterialTheme.typography.titleSmall)
         TlKeyValue("Total", formatKes(total))
-        TlKeyValue("Paid", formatKes((total - balance).coerceAtLeast(0.0)))
+        TlKeyValue("Paid", formatKes(paid))
         TlKeyValue(
             label = if (settled) "Balance" else "Balance due",
             value = formatKes(balance),
             emphasise = true,
-            // Green only when it is genuinely settled — money on a screen is
-            // not a success state by itself.
             valueColor = if (settled) TlTheme.colors.success else MaterialTheme.colorScheme.error,
         )
+        if (!methodSummary.isNullOrBlank()) {
+            TlKeyValue("Methods", methodSummary)
+        }
         if (settled) {
             TlStatusPill(text = "PAID IN FULL", tone = TlTone.Success, leadingDot = false)
         } else {
             TlButton(
-                text = "Take payment · ${formatKes(balance)}",
+                text = "Take Payment · ${formatKes(balance)}",
                 onClick = onTakePayment,
                 enabled = !busy,
-                icon = Icons.Outlined.PhoneAndroid,
                 modifier = Modifier.fillMaxWidth(),
+                large = true,
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(TlTheme.spacing.sm),
-            ) {
-                TlSecondaryButton(
-                    text = "Cash",
-                    onClick = onTakeCash,
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                )
-                TlSecondaryButton(
-                    text = "Paybill",
-                    onClick = onRecordPaybill,
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                )
+        }
+
+        if (unmatchedC2b.isNotEmpty() && !settled) {
+            Text("Recent unmatched payments", style = MaterialTheme.typography.titleSmall)
+            unmatchedC2b.take(5).forEach { row ->
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(TlTheme.spacing.xs),
+                ) {
+                    Text(
+                        listOfNotNull(
+                            row.transId.takeIf { it.isNotBlank() }?.let { "MPESA $it" },
+                            row.msisdn.takeIf { it.isNotBlank() },
+                            formatKes(row.amount),
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    TlSecondaryButton(
+                        text = "Match to Job",
+                        onClick = { onMatchC2b(row.id) },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+
+        val history = payments.filter { it.isSettled || it.status == "initiated" }
+        if (history.isNotEmpty()) {
+            Text("Payment History", style = MaterialTheme.typography.titleSmall)
+            history.take(8).forEach { pay ->
+                val methodLabel = when (pay.method) {
+                    "cash" -> "Cash"
+                    "mpesa_stk" -> "M-Pesa"
+                    "mpesa_c2b" -> "Paybill"
+                    else -> pay.method
+                }
+                val statusLabel = when {
+                    pay.isSettled -> "Confirmed"
+                    pay.isFailed -> "Failed"
+                    else -> "Pending"
+                }
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        listOfNotNull(
+                            pay.createdAt?.let { formatPaymentTime(it) },
+                            methodLabel,
+                            formatKes(pay.amount),
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        listOfNotNull(
+                            pay.displayReference.takeIf { it.isNotBlank() },
+                            statusLabel,
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (pay.isSettled) {
+                        TlTextButton(
+                            text = "View / print receipt",
+                            onClick = onPrintReceipt,
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+private fun paymentMethodSummary(payments: List<com.techlane.pos.data.remote.dto.PaymentDto>): String? {
+    val labels = payments.filter { it.isSettled }.mapNotNull {
+        when (it.method) {
+            "cash" -> "Cash"
+            "mpesa_stk", "mpesa_c2b" -> "M-Pesa"
+            else -> null
+        }
+    }.distinct()
+    return when {
+        labels.isEmpty() -> null
+        labels.size == 1 -> labels.first()
+        else -> labels.joinToString(" + ")
+    }
+}
+
+private fun formatPaymentTime(iso: String): String {
+    return runCatching {
+        val instant = java.time.Instant.parse(iso)
+        dateFormat.format(Date.from(instant))
+    }.getOrElse { iso }
 }
 
 @Composable
@@ -636,7 +704,7 @@ private fun DiagnosisCard(detail: JobDetail, onEdit: () -> Unit) {
  */
 @Composable
 private fun QuickActions(detail: JobDetail, onAction: (JobAction) -> Unit) {
-    val actions = JobAction.forStatus(detail.status, detail.needsApprovalBeforeBench)
+    val actions = JobAction.forStatus(detail.status, detail.needsApprovalBeforeBench, detail.balanceDue)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -665,7 +733,8 @@ private fun JobDetailsViewModel.handle(action: JobAction, onTakePhoto: (PhotoKin
         JobAction.UpdateStatus -> openSheet(JobSheet.Status)
         JobAction.ResumeRepair -> changeStatus(JobStatus.InProgress, "Resuming — part received", null)
         JobAction.MarkReady -> openSheet(JobSheet.Status)
-        JobAction.MarkComplete -> openSheet(JobSheet.Status)
+        JobAction.MarkCollected -> openCollect()
+        JobAction.TakePayment -> openTakePayment()
     }
 }
 

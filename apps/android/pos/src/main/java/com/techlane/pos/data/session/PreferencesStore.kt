@@ -106,6 +106,12 @@ data class PosPreferences(
     val canForceReconcile: Boolean get() = roles.any { it == "owner" || it == "manager" }
 
     /**
+     * Staff vouch for handover without pickup code / OTP — matches
+     * `repairs.release_unverified` (owner/manager convention on POS).
+     */
+    val canReleaseUnverified: Boolean get() = roles.any { it == "owner" || it == "manager" }
+
+    /**
      * Whether Sale Details should show cost/margin. The real gate is the
      * server's reports.read permission check (internal/sales/handler.go) —
      * a cashier-role caller simply never receives unit_cost/margin on the

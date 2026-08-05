@@ -45,7 +45,7 @@ import java.util.UUID
 import javax.inject.Inject
 
 /** Which secondary surface, if any, is open over the detail screen. */
-enum class JobSheet { None, Status, Technician, Diagnosis, Estimate, Approval, Parts, AddService, AddProduct, CustomerUpdate, Photo }
+enum class JobSheet { None, Status, Technician, Diagnosis, Estimate, Approval, Parts, AddService, AddProduct, CustomerUpdate, Photo, TakePayment, Collect }
 
 data class JobDetailsUiState(
     val loading: Boolean = true,
@@ -62,8 +62,17 @@ data class JobDetailsUiState(
     /** Non-null while a job payment is in flight or resolved — drives the STK sheet. */
     val paymentStage: StkStage? = null,
     val paymentMethod: PaymentMethod = PaymentMethod.MpesaStk,
+    /** Amount of the payment currently in flight (may be partial). */
+    val paymentAmount: Double = 0.0,
+    val paymentPhone: String? = null,
     val branchId: String? = null,
     val canForceReconcile: Boolean = false,
+    val canReleaseUnverified: Boolean = false,
+    val payments: List<com.techlane.pos.data.remote.dto.PaymentDto> = emptyList(),
+    val unmatchedC2b: List<com.techlane.pos.data.remote.dto.C2bTransactionDto> = emptyList(),
+    val sendingHandoverCode: Boolean = false,
+    /** After a confirmed payment with zero balance, nudge collection. */
+    val offerCollectAfterPay: Boolean = false,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -111,6 +120,7 @@ class JobDetailsViewModel @Inject constructor(
                     locationId = preferences.locationId,
                     branchId = preferences.branchId,
                     canForceReconcile = preferences.canForceReconcile,
+                    canReleaseUnverified = preferences.canReleaseUnverified,
                 )
             }
         }
@@ -123,7 +133,15 @@ class JobDetailsViewModel @Inject constructor(
     // sale — see ChargeRepository.chargeRepair. The job is refreshed on success
     // so the balance the screen shows is the server's, never a local guess.
 
-    fun takePayment(method: PaymentMethod, reference: String? = null) {
+    fun openTakePayment() = _state.update {
+        it.copy(sheet = JobSheet.TakePayment, message = null, error = null)
+    }
+
+    fun openCollect() = _state.update {
+        it.copy(sheet = JobSheet.Collect, message = null, error = null, offerCollectAfterPay = false)
+    }
+
+    fun takePayment(draft: com.techlane.pos.feature.jobs.components.TakePaymentDraft) {
         val detail = job.value ?: return
         val branchId = _state.value.branchId
         if (branchId == null) {
@@ -132,32 +150,65 @@ class JobDetailsViewModel @Inject constructor(
         }
         if (detail.balanceDue <= 0.0) return
         if (_state.value.paymentStage != null) return
-        if (method.needsReference) {
-            MpesaReference.validationError(reference.orEmpty())?.let { problem ->
+        if (draft.amount <= 0.0 || draft.amount > detail.balanceDue + 0.009) {
+            _state.update { it.copy(error = "Enter an amount up to the outstanding balance.") }
+            return
+        }
+        if (draft.method == PaymentMethod.Paybill && !draft.reference.isNullOrBlank()) {
+            MpesaReference.validationError(draft.reference)?.let { problem ->
                 _state.update { it.copy(error = problem) }
                 return
             }
         }
 
-        _state.update { it.copy(paymentMethod = method, error = null, message = null) }
+        _state.update {
+            it.copy(
+                paymentMethod = draft.method,
+                paymentAmount = draft.amount,
+                paymentPhone = draft.phone ?: detail.customer.phone,
+                sheet = JobSheet.None,
+                error = null,
+                message = null,
+                offerCollectAfterPay = false,
+            )
+        }
         paymentJob?.cancel()
         paymentJob = viewModelScope.launch {
             charges.chargeRepair(
                 repairId = jobId,
                 branchId = branchId,
-                amount = detail.balanceDue,
-                method = method,
-                phone = detail.customer.phone,
+                amount = draft.amount,
+                method = draft.method,
+                phone = draft.phone ?: detail.customer.phone,
                 label = "${detail.jobCode} · ${detail.device.label}",
                 idempotencyKey = UUID.randomUUID().toString(),
-                reference = reference?.let(MpesaReference::normalise),
+                reference = draft.reference?.let(MpesaReference::normalise),
+                jobCode = detail.jobCode,
             ).collect { stage ->
                 _state.update { it.copy(paymentStage = stage) }
-                // A settled payment changes the balance and can move the job's
-                // own state server-side, so re-read rather than patching locally.
-                if (stage is StkStage.Paid) jobs.refreshJob(jobId)
+                if (stage is StkStage.Paid) {
+                    jobs.refreshJob(jobId)
+                    loadPayments()
+                    val remaining = (detail.balanceDue - stage.amount).coerceAtLeast(0.0)
+                    _state.update {
+                        it.copy(offerCollectAfterPay = remaining <= 0.009)
+                    }
+                }
             }
         }
+    }
+
+    /** Legacy entry used by retry / take-cash-instead after a failed prompt. */
+    fun takePayment(method: PaymentMethod, reference: String? = null) {
+        val detail = job.value ?: return
+        takePayment(
+            com.techlane.pos.feature.jobs.components.TakePaymentDraft(
+                method = method,
+                amount = detail.balanceDue,
+                phone = detail.customer.phone,
+                reference = reference,
+            ),
+        )
     }
 
     /** Closes the payment sheet. Never cancels a prompt that is still in flight. */
@@ -166,7 +217,9 @@ class JobDetailsViewModel @Inject constructor(
         if (stage is StkStage.Sending || stage is StkStage.Waiting || stage is StkStage.Finalising) return
         paymentJob?.cancel()
         paymentJob = null
+        val offerCollect = _state.value.offerCollectAfterPay
         _state.update { it.copy(paymentStage = null) }
+        if (offerCollect) openCollect()
     }
 
     fun retryPayment() {
@@ -179,6 +232,84 @@ class JobDetailsViewModel @Inject constructor(
         takePayment(PaymentMethod.Cash)
     }
 
+    fun matchC2b(c2bId: String) {
+        val detail = job.value ?: return
+        val branchId = _state.value.branchId ?: return
+        if (_state.value.busy) return
+        _state.update { it.copy(busy = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                val payment = charges.createRepairPaymentPending(
+                    repairId = jobId,
+                    branchId = branchId,
+                    amount = detail.balanceDue,
+                    jobCode = detail.jobCode,
+                    phone = detail.customer.phone,
+                )
+                jobs.matchC2bToPayment(c2bId, payment.id).getOrThrow()
+                jobs.refreshJob(jobId)
+                loadPayments()
+                loadUnmatchedC2b()
+                _state.update {
+                    it.copy(
+                        message = "Paybill matched",
+                        offerCollectAfterPay = (job.value?.balanceDue ?: 1.0) <= 0.009,
+                    )
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(error = e.message ?: "Could not match Paybill") }
+            }
+            _state.update { it.copy(busy = false) }
+        }
+    }
+
+    fun recordHandover(
+        collectedByName: String,
+        relationship: String,
+        note: String?,
+        pickupCode: String?,
+        otp: String?,
+    ) {
+        _state.update { it.copy(busy = true, error = null) }
+        viewModelScope.launch {
+            jobs.recordHandover(jobId, collectedByName, relationship, note, pickupCode, otp)
+                .onSuccess {
+                    _state.update {
+                        it.copy(
+                            sheet = JobSheet.None,
+                            message = "Device collected",
+                            offerCollectAfterPay = false,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(error = e.message ?: "Could not record handover") }
+                }
+            _state.update { it.copy(busy = false) }
+        }
+    }
+
+    fun sendHandoverCode() {
+        if (_state.value.sendingHandoverCode) return
+        _state.update { it.copy(sendingHandoverCode = true, error = null) }
+        viewModelScope.launch {
+            jobs.sendHandoverCode(jobId)
+                .onSuccess { _state.update { it.copy(message = "Handover code sent") } }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "Could not send code") } }
+            _state.update { it.copy(sendingHandoverCode = false) }
+        }
+    }
+
+    private suspend fun loadPayments() {
+        jobs.listRepairPayments(jobId)
+            .onSuccess { list -> _state.update { it.copy(payments = list) } }
+    }
+
+    private suspend fun loadUnmatchedC2b() {
+        jobs.listUnmatchedC2b()
+            .onSuccess { list -> _state.update { it.copy(unmatchedC2b = list) } }
+    }
+
     fun refresh(initial: Boolean = false) {
         _state.update { it.copy(refreshing = !initial, loading = initial && job.value == null, error = null) }
         viewModelScope.launch {
@@ -186,6 +317,8 @@ class JobDetailsViewModel @Inject constructor(
                 // Cached detail is still the technician's working copy.
                 _state.update { it.copy(error = error.message) }
             }
+            loadPayments()
+            loadUnmatchedC2b()
             _state.update { it.copy(refreshing = false, loading = false) }
         }
     }
@@ -220,6 +353,10 @@ class JobDetailsViewModel @Inject constructor(
     // asks WorkManager to try; it never blocks the UI on the result.
 
     fun changeStatus(status: JobStatus, note: String?, closureReason: ClosureReason?) {
+        if (status == JobStatus.Collected) {
+            openCollect()
+            return
+        }
         viewModelScope.launch {
             jobs.changeStatus(jobId, status, note, closureReason?.wire)
             kick()

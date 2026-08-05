@@ -90,9 +90,27 @@ class JobWorkflowTest {
         val bench = JobAction.forStatus(JobStatus.InProgress, needsApproval = false)
         assertTrue(JobAction.MarkReady in bench)
 
-        val ready = JobAction.forStatus(JobStatus.ReadyForPickup, needsApproval = false)
-        assertTrue(JobAction.NotifyCustomer in ready)
-        assertTrue(JobAction.MarkComplete in ready)
+        val ready = JobAction.forStatus(JobStatus.ReadyForPickup, needsApproval = false, balanceDue = 8000.0)
+        assertTrue(JobAction.TakePayment in ready)
+        assertFalse(JobAction.MarkCollected in ready)
+
+        val paidReady = JobAction.forStatus(JobStatus.ReadyForPickup, needsApproval = false, balanceDue = 0.0)
+        assertTrue(JobAction.MarkCollected in paidReady)
+        assertFalse(JobAction.TakePayment in paidReady)
+    }
+
+    @Test
+    fun `zero balance ready job can be collected`() {
+        val job = detail(JobStatus.ReadyForPickup).copy(balanceDue = 0.0)
+        assertTrue(job.canCollect)
+        assertEquals(8000.0, job.paidTotal, 0.001)
+    }
+
+    @Test
+    fun `outstanding balance blocks collection`() {
+        val job = detail(JobStatus.ReadyForPickup)
+        assertFalse(job.canCollect)
+        assertEquals(0.0, job.paidTotal, 0.001)
     }
 
     @Test

@@ -39,6 +39,7 @@ import com.techlane.pos.core.designsystem.component.TlTextField
 import com.techlane.pos.core.designsystem.component.TlTone
 import com.techlane.pos.core.designsystem.theme.PillShape
 import com.techlane.pos.core.designsystem.theme.TlTheme
+import com.techlane.pos.core.util.formatKes
 import com.techlane.pos.data.local.TechnicianEntity
 import com.techlane.pos.domain.model.ClosureReason
 import com.techlane.pos.domain.model.JobStatus
@@ -56,8 +57,10 @@ import com.techlane.pos.domain.model.JobStatus
 fun StatusPickerBottomSheet(
     current: JobStatus,
     blockedReason: String?,
+    balanceDue: Double = 0.0,
     onSelect: (JobStatus, note: String?, closureReason: ClosureReason?) -> Unit,
     onRequestApproval: () -> Unit,
+    onTakePayment: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -88,11 +91,13 @@ fun StatusPickerBottomSheet(
             if (pending == null) {
                 current.allowedNext.forEach { next ->
                     val blocked = next == JobStatus.InProgress && blockedReason != null
+                    val paymentBlocked = next == JobStatus.Collected && balanceDue > 0.009
                     StatusOption(
                         status = next,
-                        blocked = blocked,
+                        blocked = blocked || paymentBlocked,
                         onClick = {
                             when {
+                                paymentBlocked -> confirming = next
                                 blocked -> confirming = next
                                 next.needsConfirmation -> confirming = next
                                 else -> onSelect(next, null, null)
@@ -107,6 +112,24 @@ fun StatusPickerBottomSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            } else if (pending == JobStatus.Collected && balanceDue > 0.009) {
+                TlBanner(
+                    message = "Payment is still outstanding. ${formatKes(balanceDue)} due.",
+                    tone = TlTone.Warning,
+                )
+                TlButton(
+                    text = "Take Payment",
+                    onClick = {
+                        onTakePayment()
+                        onDismiss()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TlNeutralButton(
+                    text = "Cancel",
+                    onClick = { confirming = null },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             } else if (pending == JobStatus.InProgress && blockedReason != null) {
                 // The authorization gate. Deliberately not bypassable: the server
                 // refuses this transition too, so pretending otherwise here would

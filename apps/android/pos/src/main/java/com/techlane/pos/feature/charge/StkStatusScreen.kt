@@ -94,6 +94,10 @@ fun StkStatusScreen(
     onViewJob: (() -> Unit)? = null,
     /** Non-null when a sale (not a job payment) was produced — adds "View Sale" next to "New sale". */
     onViewSale: (() -> Unit)? = null,
+    /** After a job payment settles the balance — finish handover without leaving. */
+    onMarkCollected: (() -> Unit)? = null,
+    /** Partial payment on a job — take another installment. */
+    onTakeAnotherPayment: (() -> Unit)? = null,
 ) {
     val inFlight = stage is StkStage.Sending || stage is StkStage.Waiting || stage is StkStage.Finalising
 
@@ -183,6 +187,8 @@ fun StkStatusScreen(
                         onDismiss = onDismiss,
                         onViewJob = onViewJob,
                         onViewSale = onViewSale,
+                        onMarkCollected = onMarkCollected,
+                        onTakeAnotherPayment = onTakeAnotherPayment,
                     )
                 }
             }
@@ -202,10 +208,17 @@ private fun StkStage.artKey(): ArtKey = when (this) {
 }
 
 private fun StkStage.headline(method: PaymentMethod): String = when (this) {
-    StkStage.Sending -> if (method == PaymentMethod.Cash) "Recording cash…" else "Sending the prompt…"
-    is StkStage.Waiting -> "Waiting for the customer"
+    StkStage.Sending -> when (method) {
+        PaymentMethod.Cash -> "Recording cash…"
+        PaymentMethod.Paybill -> "Recording Paybill…"
+        PaymentMethod.MpesaStk -> "Sending the prompt…"
+    }
+    is StkStage.Waiting -> when (method) {
+        PaymentMethod.Paybill -> "Waiting for Paybill confirmation"
+        else -> "Waiting for the customer"
+    }
     StkStage.Finalising -> "Payment received — closing the sale"
-    is StkStage.Paid -> "Paid"
+    is StkStage.Paid -> "Payment received"
     is StkStage.Failed -> "Not paid"
     is StkStage.TimedOut -> "Not confirmed yet"
 }
@@ -272,6 +285,8 @@ private fun Actions(
     onDismiss: () -> Unit,
     onViewJob: (() -> Unit)?,
     onViewSale: (() -> Unit)?,
+    onMarkCollected: (() -> Unit)?,
+    onTakeAnotherPayment: (() -> Unit)?,
 ) {
     when (stage) {
         StkStage.Sending, StkStage.Finalising -> Unit
@@ -289,11 +304,9 @@ private fun Actions(
         }
 
         is StkStage.Paid -> {
-            // A receipt only exists once the sale is closed server-side, which is
-            // exactly what reaching Paid means — so it is offered here and nowhere
-            // earlier in the flow.
             val hasSale = stage.saleId != null
-            if (hasSale) {
+            val isJobPayment = onMarkCollected != null || onTakeAnotherPayment != null
+            if (hasSale || isJobPayment) {
                 TlButton(
                     text = if (receiptBusy) "Loading receipt…" else "Print receipt",
                     onClick = onPrintReceipt,
@@ -302,24 +315,38 @@ private fun Actions(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 TlSecondaryButton(
-                    text = "Send receipt",
+                    text = "Share receipt",
                     onClick = onShareReceipt,
                     icon = Icons.Outlined.Share,
                     enabled = !receiptBusy,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            // Every completed charge offers one unmistakable way out, so the
-            // counter never has to reach for system Back to escape a finished
-            // transaction. Where it came from decides where "done" leads:
-            // a job payment returns to the job, a till charge to a fresh charge.
-            if (onViewJob != null) {
-                TlSecondaryButton(
-                    text = "View job",
-                    onClick = onViewJob,
-                    icon = Icons.Outlined.Build,
+            if (onMarkCollected != null) {
+                TlButton(
+                    text = "Mark collected",
+                    onClick = onMarkCollected,
                     modifier = Modifier.fillMaxWidth(),
+                    large = true,
                 )
+            }
+            if (onTakeAnotherPayment != null) {
+                TlButton(
+                    text = "Take another payment",
+                    onClick = onTakeAnotherPayment,
+                    modifier = Modifier.fillMaxWidth(),
+                    large = true,
+                )
+            }
+            if (onViewJob != null) {
+                if (!isJobPayment) {
+                    TlSecondaryButton(
+                        text = "View job",
+                        onClick = onViewJob,
+                        icon = Icons.Outlined.Build,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 TlNeutralButton(text = "Done", onClick = onDone, modifier = Modifier.fillMaxWidth())
             } else {
                 if (onViewSale != null) {

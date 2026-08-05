@@ -8,12 +8,16 @@ import com.techlane.pos.data.remote.dto.AddSaleLineRequest
 import com.techlane.pos.data.remote.dto.AssignRequest
 import com.techlane.pos.data.remote.dto.AuthorizeWorkRequest
 import com.techlane.pos.data.remote.dto.BranchDto
+import com.techlane.pos.data.remote.dto.C2bTransactionDto
 import com.techlane.pos.data.remote.dto.ChangeStatusRequest
 import com.techlane.pos.data.remote.dto.CreateEstimateRequest
 import com.techlane.pos.data.remote.dto.CreatePaymentRequest
 import com.techlane.pos.data.remote.dto.CustomerDto
+import com.techlane.pos.data.remote.dto.HandoverRequest
+import com.techlane.pos.data.remote.dto.HandoverDto
 import com.techlane.pos.data.remote.dto.JobLineItemDto
 import com.techlane.pos.data.remote.dto.JobSaleLineDto
+import com.techlane.pos.data.remote.dto.MatchC2bRequest
 import com.techlane.pos.data.remote.dto.RepairAttachmentDto
 import com.techlane.pos.data.remote.dto.RepairEstimateDto
 import com.techlane.pos.data.remote.dto.RepairJobDto
@@ -108,6 +112,23 @@ interface TechLaneApi {
 
     @GET("payments/{id}")
     suspend fun payment(@Path("id") id: String): PaymentDto
+
+    /** Payments hung off a payable (repair / sale / order). */
+    @GET("payments")
+    suspend fun payments(
+        @Query("payable_type") payableType: String? = null,
+        @Query("payable_id") payableId: String? = null,
+    ): ItemsEnvelope<PaymentDto>
+
+    /** Unmatched / pending C2B rows for Paybill matching. */
+    @GET("payments/c2b")
+    suspend fun c2bTransactions(@Query("status") status: String? = null): ItemsEnvelope<C2bTransactionDto>
+
+    @POST("payments/c2b/{id}/match")
+    suspend fun matchC2b(
+        @Path("id") id: String,
+        @Body body: MatchC2bRequest,
+    ): PaymentDto
 
     /**
      * Pays a repair job's balance. Distinct from [checkout], which creates a
@@ -205,6 +226,20 @@ interface TechLaneApi {
         @Path("id") id: String,
         @Body body: AuthorizeWorkRequest,
     ): RepairJobDto
+
+    /** SMS OTP for device release when staff cannot vouch. */
+    @POST("repairs/{id}/handover/send-code")
+    suspend fun sendHandoverCode(@Path("id") id: String): Response<Unit>
+
+    /**
+     * Releases the device. The only route to `collected` — status→collected via
+     * [changeRepairStatus] is rejected server-side.
+     */
+    @POST("repairs/{id}/handover")
+    suspend fun recordHandover(
+        @Path("id") id: String,
+        @Body body: HandoverRequest,
+    ): HandoverDto
 
     @GET("repairs/{id}/attachments")
     suspend fun repairAttachments(@Path("id") id: String): ItemsEnvelope<RepairAttachmentDto>

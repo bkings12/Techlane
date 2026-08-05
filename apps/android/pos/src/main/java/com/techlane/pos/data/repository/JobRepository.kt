@@ -299,6 +299,52 @@ class JobRepository @Inject constructor(
         enqueue(jobId, JobAction.Assign(technicianId))
     }
 
+    /**
+     * Online-only device release. Refuses to invent a collected status offline —
+     * handover is the money + custody gate the server owns.
+     */
+    suspend fun recordHandover(
+        jobId: String,
+        collectedByName: String,
+        relationship: String,
+        note: String?,
+        pickupCode: String?,
+        otpCode: String?,
+    ): Result<Unit> = runCatching {
+        api.recordHandover(
+            jobId,
+            com.techlane.pos.data.remote.dto.HandoverRequest(
+                collectedByName = collectedByName,
+                relationship = relationship,
+                note = note,
+                pickupCode = pickupCode,
+                otpCode = otpCode,
+            ),
+        )
+        refreshJob(jobId)
+        Unit
+    }.recoverCatching { throw it.toAppException() }
+
+    suspend fun sendHandoverCode(jobId: String): Result<Unit> = runCatching {
+        api.sendHandoverCode(jobId)
+        Unit
+    }.recoverCatching { throw it.toAppException() }
+
+    suspend fun listRepairPayments(jobId: String): Result<List<com.techlane.pos.data.remote.dto.PaymentDto>> =
+        runCatching {
+            api.payments(payableType = "repair", payableId = jobId).items
+        }.recoverCatching { throw it.toAppException() }
+
+    suspend fun listUnmatchedC2b(): Result<List<com.techlane.pos.data.remote.dto.C2bTransactionDto>> =
+        runCatching {
+            api.c2bTransactions(status = "unmatched").items
+        }.recoverCatching { throw it.toAppException() }
+
+    suspend fun matchC2bToPayment(c2bId: String, paymentId: String): Result<com.techlane.pos.data.remote.dto.PaymentDto> =
+        runCatching {
+            api.matchC2b(c2bId, com.techlane.pos.data.remote.dto.MatchC2bRequest(paymentId))
+        }.recoverCatching { throw it.toAppException() }
+
     suspend fun addNote(jobId: String, text: String, authorName: String?) {
         val localId = "local-${UUID.randomUUID()}"
         dao.upsertNotes(

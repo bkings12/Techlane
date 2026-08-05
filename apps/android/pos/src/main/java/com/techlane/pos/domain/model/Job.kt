@@ -375,6 +375,14 @@ data class JobDetail(
     val pendingSyncCount: Int = 0,
     val stale: Boolean = false,
 ) {
+    /** Settled so far — derived so Room does not need a second money column. */
+    val paidTotal: Double get() = (amountDue - balanceDue).coerceAtLeast(0.0)
+
+    /** Ready for physical handover: balance clear and status collectable. */
+    val canCollect: Boolean
+        get() = balanceDue <= 0.009 &&
+            (status == JobStatus.ReadyForPickup || status == JobStatus.Completed)
+
     /** The most recent technician note doubles as the current diagnosis. */
     val latestDiagnosis: JobNote? get() = notes.maxByOrNull { it.createdAt }
 
@@ -471,20 +479,30 @@ enum class JobAction(val label: String) {
     ResumeRepair("Resume repair"),
     MarkReady("Mark ready"),
     NotifyCustomer("Notify customer"),
-    MarkComplete("Mark complete"),
+    /** Opens handover — never a bare status flip past an unpaid balance. */
+    MarkCollected("Mark collected"),
+    TakePayment("Take payment"),
     UpdateStatus("Update status"),
     ;
 
     companion object {
-        fun forStatus(status: JobStatus, needsApproval: Boolean): List<JobAction> = when (status) {
+        fun forStatus(
+            status: JobStatus,
+            needsApproval: Boolean,
+            balanceDue: Double = 0.0,
+        ): List<JobAction> = when (status) {
             JobStatus.Intake ->
                 if (needsApproval) listOf(AddDiagnosis, AddPhoto, SendEstimate) else listOf(AddDiagnosis, AddPhoto)
             JobStatus.Diagnosed ->
                 if (needsApproval) listOf(SendEstimate, RecordApproval, AddPhoto) else listOf(AddPart, AddNote, AddPhoto)
             JobStatus.WaitingParts -> listOf(AddPart, ResumeRepair, AddNote)
             JobStatus.InProgress -> listOf(AddNote, AddPart, MarkReady)
-            JobStatus.ReadyForPickup -> listOf(NotifyCustomer, MarkComplete, AddPhoto)
-            JobStatus.Completed -> listOf(NotifyCustomer, UpdateStatus)
+            JobStatus.ReadyForPickup, JobStatus.Completed -> buildList {
+                if (balanceDue > 0.009) add(TakePayment)
+                else add(MarkCollected)
+                add(NotifyCustomer)
+                add(AddPhoto)
+            }
             JobStatus.Collected, JobStatus.Cancelled, JobStatus.Unrepairable -> listOf(AddNote)
         }
     }
