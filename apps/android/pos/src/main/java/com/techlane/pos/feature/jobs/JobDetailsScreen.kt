@@ -125,6 +125,11 @@ fun JobDetailsScreen(
                     onClick = { menuOpen = false; viewModel.openSheet(JobSheet.CustomerUpdate) },
                 )
                 DropdownMenuItem(
+                    text = { Text("Give guest WiFi") },
+                    enabled = !state.issuingWifi && !state.busy,
+                    onClick = { menuOpen = false; viewModel.giveGuestWifi() },
+                )
+                DropdownMenuItem(
                     text = { Text("Reprint intake slip") },
                     leadingIcon = { Icon(Icons.Outlined.Print, contentDescription = null) },
                     enabled = !state.printingReceipt,
@@ -410,6 +415,9 @@ fun JobDetailsScreen(
                 }
             } else {
                 null
+            },
+            remainingBalance = (balanceAfter).takeIf {
+                stage is StkStage.Paid && it > 0.009
             },
         )
     }

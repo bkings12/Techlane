@@ -116,6 +116,11 @@ const GROUPS: Array<{ label: string; items: SettingsNavItem[] }> = [
     items: [
       { to: "/settings/payments", label: "Payments", icon: ICONS.cash },
       {
+        to: "/settings/wifi",
+        label: "Guest WiFi",
+        icon: <Icon d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01" />,
+      },
+      {
         to: "/settings/sms",
         label: "SMS",
         icon: <Icon d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,

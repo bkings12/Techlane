@@ -31,6 +31,7 @@ import com.techlane.pos.data.remote.dto.CompleteSaleRequest
 import com.techlane.pos.data.remote.dto.IntakePresetDto
 import com.techlane.pos.data.remote.dto.IntakeRequest
 import com.techlane.pos.data.remote.dto.IntakeResultDto
+import com.techlane.pos.data.remote.dto.IssueWifiVoucherRequest
 import com.techlane.pos.data.remote.dto.ItemsEnvelope
 import com.techlane.pos.data.remote.dto.LoginRequest
 import com.techlane.pos.data.remote.dto.LoginResponse
@@ -42,6 +43,7 @@ import com.techlane.pos.data.remote.dto.RefreshRequest
 import com.techlane.pos.data.remote.dto.SaleDto
 import com.techlane.pos.data.remote.dto.StockLocationDto
 import com.techlane.pos.data.remote.dto.TokenPairDto
+import com.techlane.pos.data.remote.dto.WifiVoucherDto
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
@@ -307,6 +309,13 @@ interface TechLaneApi {
     /** Customer updates go through the shop's notification log, not the handset. */
     @POST("sms/send")
     suspend fun sendSms(@Body body: SendSmsRequest): Response<Unit>
+
+    /** Complimentary Guest WiFi voucher via BytePesa partner API. */
+    @POST("wifi/vouchers")
+    suspend fun issueWifiVoucher(@Body body: IssueWifiVoucherRequest): WifiVoucherDto
+
+    @GET("wifi/vouchers/{id}/slip.html")
+    suspend fun wifiVoucherSlipHtml(@Path("id") id: String): ResponseBody
 
     /**
      * Rendered receipt for a completed sale. Returned as a raw body rather than

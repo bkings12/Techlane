@@ -31,6 +31,7 @@ import { DeliveryLocationsPage } from "./pages/settings/DeliveryLocationsPage";
 import { StorefrontSubscribersPage } from "./pages/settings/StorefrontSubscribersPage";
 import { StorefrontReviewsPage } from "./pages/settings/StorefrontReviewsPage";
 import { ShopProfilePage } from "./pages/settings/ShopProfilePage";
+import { GuestWifiSettingsPage } from "./pages/settings/GuestWifiSettingsPage";
 import { SMSSettingsPage } from "./pages/settings/SMSSettingsPage";
 import { WhatsAppSettingsPage } from "./pages/settings/WhatsAppSettingsPage";
 import { LoyaltyMarketingPage } from "./pages/settings/LoyaltyMarketingPage";
@@ -166,6 +167,7 @@ export default function App() {
             <Route path="storefront/delivery" element={<DeliveryLocationsPage />} />
             <Route path="storefront/subscribers" element={<StorefrontSubscribersPage />} />
             <Route path="storefront/reviews" element={<StorefrontReviewsPage />} />
+            <Route path="wifi" element={<GuestWifiSettingsPage />} />
             <Route path="sms" element={<SMSSettingsPage />} />
             <Route path="whatsapp" element={<WhatsAppSettingsPage />} />
             <Route path="loyalty" element={<LoyaltyMarketingPage />} />

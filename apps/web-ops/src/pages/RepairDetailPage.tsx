@@ -50,7 +50,9 @@ import {
   listRepairPayments,
   listSuppliers,
   listTechnicians,
+  issueWifiVoucher,
   openRepairReceipt,
+  openWifiVoucherSlip,
   reconcileMpesaPayment,
   resendRepairIntakeSMS,
   uploadRepairAttachment,
@@ -1159,28 +1161,47 @@ export function RepairDetailPage() {
           <span>Customer</span>
           <strong>{customer?.full_name ?? "Walk-in"}</strong>
           <div className="muted">{customer?.phone ?? "No phone"}</div>
-          {customer?.phone ? (
-            <div className="btn-row" style={{ marginTop: "0.45rem", flexWrap: "wrap" }}>
-              <Button type="button" variant="secondary" disabled={busy} onClick={() => setShowSmsModal(true)}>
-                Send SMS
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={busy}
-                onClick={() =>
-                  void run(async () => {
-                    const res = await resendRepairIntakeSMS(job.id);
-                    window.alert(
-                      `Intake SMS queued to ${res.phone} (${res.template_key === "repair.wait_bench" ? "wait bench" : "intake"}).`,
-                    );
-                  })
-                }
-              >
-                Resend intake SMS
-              </Button>
-            </div>
-          ) : null}
+          <div className="btn-row" style={{ marginTop: "0.45rem", flexWrap: "wrap" }}>
+            {customer?.phone ? (
+              <>
+                <Button type="button" variant="secondary" disabled={busy} onClick={() => setShowSmsModal(true)}>
+                  Send SMS
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      const res = await resendRepairIntakeSMS(job.id);
+                      window.alert(
+                        `Intake SMS queued to ${res.phone} (${res.template_key === "repair.wait_bench" ? "wait bench" : "intake"}).`,
+                      );
+                    })
+                  }
+                >
+                  Resend intake SMS
+                </Button>
+              </>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  const v = await issueWifiVoucher({
+                    repair_id: job.id,
+                    phone: customer?.phone ?? "",
+                    reference: job.job_code ?? job.id,
+                  });
+                  await openWifiVoucherSlip(v.id);
+                })
+              }
+            >
+              Give guest WiFi
+            </Button>
+          </div>
         </div>
         <div>
           <span>Device</span>

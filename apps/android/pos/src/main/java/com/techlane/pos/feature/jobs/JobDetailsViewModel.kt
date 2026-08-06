@@ -4,9 +4,13 @@ import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.techlane.pos.core.print.ReceiptPrinter
 import com.techlane.pos.data.local.CatalogItemEntity
 import com.techlane.pos.data.local.TechnicianEntity
 import com.techlane.pos.data.printer.PrinterRepository
+import com.techlane.pos.data.remote.TechLaneApi
+import com.techlane.pos.data.remote.dto.IssueWifiVoucherRequest
+import com.techlane.pos.data.remote.toAppException
 import com.techlane.pos.data.repository.ChargeRepository
 import com.techlane.pos.data.repository.JobRepository
 import com.techlane.pos.data.repository.ShopRepository
@@ -59,6 +63,8 @@ data class JobDetailsUiState(
     val partsQuery: String = "",
     val pendingPhotoKind: PhotoKind = PhotoKind.Progress,
     val printingReceipt: Boolean = false,
+    val issuingWifi: Boolean = false,
+    val wifiSlipHtml: String? = null,
     /** Non-null while a job payment is in flight or resolved — drives the STK sheet. */
     val paymentStage: StkStage? = null,
     val paymentMethod: PaymentMethod = PaymentMethod.MpesaStk,
@@ -84,6 +90,7 @@ class JobDetailsViewModel @Inject constructor(
     private val prefs: PreferencesStore,
     private val printers: PrinterRepository,
     private val charges: ChargeRepository,
+    private val api: TechLaneApi,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -334,6 +341,43 @@ class JobDetailsViewModel @Inject constructor(
 
     /** Reprints the job's final receipt — what the customer gets on collection. */
     fun reprintFinalReceipt() = reprint("receipt") { printers.printRepairReceipt(jobId) }
+
+    fun dismissWifiSlip() = _state.update { it.copy(wifiSlipHtml = null) }
+
+    /**
+     * Issues a complimentary BytePesa Guest WiFi voucher for the waiting customer
+     * and opens the printable QR slip (system print sheet).
+     */
+    fun giveGuestWifi() {
+        if (_state.value.issuingWifi) return
+        val detail = job.value
+        _state.update { it.copy(issuingWifi = true, error = null, message = null, wifiSlipHtml = null) }
+        viewModelScope.launch {
+            try {
+                val voucher = api.issueWifiVoucher(
+                    IssueWifiVoucherRequest(
+                        phone = detail?.customer?.phone,
+                        repairId = jobId,
+                        reference = detail?.jobCode ?: jobId,
+                    ),
+                )
+                val html = api.wifiVoucherSlipHtml(voucher.id).use { it.string() }
+                ReceiptPrinter.print(context, html, "Guest WiFi ${voucher.code}")
+                _state.update {
+                    it.copy(
+                        message = "Guest WiFi ${voucher.code} · ${voucher.durationMins} min",
+                        wifiSlipHtml = html,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(error = e.toAppException().message ?: "Could not issue Guest WiFi")
+                }
+            } finally {
+                _state.update { it.copy(issuingWifi = false) }
+            }
+        }
+    }
 
     private fun reprint(label: String, action: suspend () -> Result<Unit>) {
         if (_state.value.printingReceipt) return

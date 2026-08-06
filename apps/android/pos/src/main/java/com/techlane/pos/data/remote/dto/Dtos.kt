@@ -105,6 +105,10 @@ data class SaleItemInputDto(
     val quantity: Int = 1,
     val description: String? = null,
     @SerialName("unit_price") val unitPrice: Double? = null,
+    @SerialName("line_type") val lineType: String? = null,
+    @SerialName("unit_cost") val unitCost: Double? = null,
+    @SerialName("override_price") val overridePrice: Double? = null,
+    @SerialName("override_reason") val overrideReason: String? = null,
 )
 
 @Serializable
@@ -115,6 +119,22 @@ data class CheckoutRequest(
     val method: String,
     val phone: String? = null,
     @SerialName("account_reference") val accountReference: String? = null,
+    @SerialName("customer_id") val customerId: String? = null,
+    /** First tender amount; omit/null to charge the full sale total. */
+    val amount: Double? = null,
+)
+
+@Serializable
+data class SalePaymentDto(
+    val id: String = "",
+    val method: String = "",
+    val amount: Double = 0.0,
+    val status: String = "",
+    val reference: String = "",
+    val phone: String = "",
+    @SerialName("payer_phone") val payerPhone: String = "",
+    @SerialName("payer_display_name") val payerDisplayName: String = "",
+    @SerialName("created_at") val createdAt: String? = null,
 )
 
 @Serializable
@@ -138,10 +158,12 @@ data class SaleDto(
     @SerialName("tax_total") val taxTotal: Double = 0.0,
     @SerialName("discount_total") val discountTotal: Double = 0.0,
     @SerialName("paid_total") val paidTotal: Double = 0.0,
+    @SerialName("pending_total") val pendingTotal: Double = 0.0,
     @SerialName("balance_due") val balanceDue: Double = 0.0,
     @SerialName("payment_status") val paymentStatus: String = "",
     @SerialName("payment_reference") val paymentReference: String = "",
     val items: List<SaleItemDto> = emptyList(),
+    val payments: List<SalePaymentDto> = emptyList(),
 )
 
 /**
@@ -159,6 +181,8 @@ data class SaleItemDto(
     @SerialName("line_total") val lineTotal: Double = 0.0,
     @SerialName("unit_cost") val unitCost: Double? = null,
     val margin: Double? = null,
+    @SerialName("line_type") val lineType: String = "",
+    @SerialName("cost_unknown") val costUnknown: Boolean = true,
 )
 
 @Serializable
@@ -198,6 +222,29 @@ data class PaymentSettingsDto(
     @SerialName("mpesa_enabled") val mpesaEnabled: Boolean = false,
     @SerialName("mpesa_shortcode") val mpesaShortcode: String = "",
     val environment: String = "",
+)
+
+// ---------------------------------------------------------------- Guest WiFi (BytePesa)
+
+@Serializable
+data class IssueWifiVoucherRequest(
+    @SerialName("duration_mins") val durationMins: Int? = null,
+    val phone: String? = null,
+    @SerialName("repair_id") val repairId: String? = null,
+    @SerialName("sale_id") val saleId: String? = null,
+    val reference: String? = null,
+)
+
+@Serializable
+data class WifiVoucherDto(
+    val id: String,
+    val code: String,
+    @SerialName("redeem_url") val redeemUrl: String = "",
+    @SerialName("qr_payload") val qrPayload: String = "",
+    @SerialName("duration_mins") val durationMins: Int = 0,
+    @SerialName("expires_at") val expiresAt: String? = null,
+    @SerialName("package_name") val packageName: String = "",
+    val reference: String = "",
 )
 
 // ---------------------------------------------------------------- errors

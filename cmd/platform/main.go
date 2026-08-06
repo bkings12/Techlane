@@ -34,6 +34,7 @@ import (
 	"github.com/techlane/techlane/internal/storefrontcms"
 	"github.com/techlane/techlane/internal/sync"
 	"github.com/techlane/techlane/internal/whatsapp"
+	"github.com/techlane/techlane/internal/wifi"
 	"github.com/techlane/techlane/internal/worker"
 	"github.com/techlane/techlane/packages/pkg/config"
 	"github.com/techlane/techlane/packages/pkg/db"
@@ -153,10 +154,14 @@ func main() {
 	paySvc.SetRepairPaidHook(payments.RepairSettledAdapter{Svc: repairSvc})
 	paySvc.SetSalePaidHook(payments.SalesPaidAdapter{Svc: salesSvc})
 	paySvc.SetOutstandingResolver(func(ctx context.Context, tenantID uuid.UUID, payableType string, payableID uuid.UUID) (float64, bool, error) {
-		if payableType != "repair" {
+		switch payableType {
+		case "repair":
+			return repairSvc.RepairOutstanding(ctx, tenantID, payableID)
+		case "sale":
+			return salesSvc.SaleOutstanding(ctx, tenantID, payableID)
+		default:
 			return 0, false, nil
 		}
-		return repairSvc.RepairOutstanding(ctx, tenantID, payableID)
 	})
 
 	notifySvc.SetSMSResolver(func(ctx context.Context, tenantID uuid.UUID) notify.SMSSender {
@@ -268,6 +273,9 @@ func main() {
 	notifyHandler := notify.NewHandler(notifySvc)
 	notifyHandler.SetRepairLookup(repair.NotifyAdapter{Svc: repairSvc})
 	waHandler := whatsapp.NewHandler(waSvc)
+	wifiSvc := wifi.NewService(pool)
+	wifiHandler := wifi.NewHandler(wifiSvc)
+	wifiHandler.SetReceiptRenderer(receiptSvc)
 
 	auth := httpx.AuthMiddleware(jwtSecret)
 
@@ -292,6 +300,7 @@ func main() {
 	loyaltyHandler.Register(api, auth)
 	receiptHandler.Register(api, auth)
 	waHandler.Register(api, auth)
+	wifiHandler.Register(api, auth)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /health", healthHandler)

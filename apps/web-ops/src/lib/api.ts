@@ -1159,6 +1159,60 @@ export type SMSTemplate = {
   updated_at?: string;
 };
 
+export type WifiSettings = {
+  tenant_id: string;
+  enabled: boolean;
+  api_base_url: string;
+  api_key_set: boolean;
+  site_id: string | null;
+  package_id: string | null;
+  default_duration_mins: number;
+  configured: boolean;
+  updated_at: string;
+};
+
+export type WifiVoucher = {
+  id: string;
+  code: string;
+  redeem_url: string;
+  qr_payload: string;
+  duration_mins: number;
+  expires_at?: string | null;
+  package_name: string;
+  reference: string;
+};
+
+export async function getWifiSettings() {
+  return api<WifiSettings>("/wifi/settings");
+}
+
+export async function updateWifiSettings(body: {
+  enabled?: boolean;
+  api_base_url?: string;
+  api_key?: string;
+  site_id?: string;
+  package_id?: string;
+  default_duration_mins?: number;
+}) {
+  return api<WifiSettings>("/wifi/settings", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function issueWifiVoucher(body: {
+  duration_mins?: number;
+  phone?: string;
+  repair_id?: string;
+  sale_id?: string;
+  reference?: string;
+}) {
+  return api<WifiVoucher>("/wifi/vouchers", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export async function getSMSSettings() {
   return api<SMSSettings>("/sms/settings");
 }
@@ -2223,6 +2277,10 @@ export async function openIntakeSlip(repairId: string, opts?: { force?: boolean 
     return;
   }
   return openPrintable(`/repairs/${repairId}/intake-slip.html`);
+}
+
+export async function openWifiVoucherSlip(voucherId: string) {
+  return openPrintable(`/wifi/vouchers/${voucherId}/slip.html`);
 }
 
 /** Dedupe thermal prints — STK poll / double-clicks can fire more than once. */
